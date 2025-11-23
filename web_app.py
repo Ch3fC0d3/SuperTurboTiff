@@ -11,6 +11,11 @@ Setup:
 
 Free hosting: Deploy to Render.com, Railway.app, or Google Cloud Run
 """
+# Load environment variables from .env and .env.local
+from dotenv import load_dotenv
+load_dotenv()  # Load .env
+load_dotenv('.env.local', override=True)  # Load .env.local (overrides .env)
+
 from flask import Flask, render_template, request, jsonify, send_file
 import os
 import cv2
@@ -1453,6 +1458,65 @@ def reanalyze_panel():
     })
 
 
+@app.route('/crop_to_panel', methods=['POST'])
+def crop_to_panel():
+    """Crop the uploaded image to a working panel/depth window.
+
+    Expects JSON with:
+      - image: data URL string (same as /digitize)
+      - region: { left_px, right_px, top_px, bottom_px } in image pixel coords
+
+    Returns a new data URL plus the cropped width/height so the frontend can
+    treat it as a shorter working image.
+    """
+    data = request.json or {}
+    image_data = data.get('image')
+    region = data.get('region') or {}
+
+    if not image_data or ',' not in image_data:
+        return jsonify({'success': False, 'error': 'Missing image data'}), 400
+
+    try:
+        img_payload = image_data.split(',', 1)[1]
+        img_bytes = base64.b64decode(img_payload)
+    except Exception:
+        return jsonify({'success': False, 'error': 'Invalid image data'}), 400
+
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({'success': False, 'error': 'Could not decode image'}), 400
+
+    H, W, _ = img.shape
+    try:
+        left = max(0, int(region.get('left_px', 0)))
+        right = min(W, int(region.get('right_px', W)))
+        top = max(0, int(region.get('top_px', 0)))
+        bottom = min(H, int(region.get('bottom_px', H)))
+    except Exception:
+        return jsonify({'success': False, 'error': 'Invalid region'}), 400
+
+    if right <= left or bottom <= top:
+        return jsonify({'success': False, 'error': 'Empty region'}), 400
+
+    crop = img[top:bottom, left:right]
+    ch, cw, _ = crop.shape
+
+    ok, buf = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    if not ok:
+        return jsonify({'success': False, 'error': 'Failed to encode crop'}), 500
+
+    b64 = base64.b64encode(buf).decode('ascii')
+    data_url = f"data:image/jpeg;base64,{b64}"
+
+    return jsonify({
+        'success': True,
+        'image': data_url,
+        'width': int(cw),
+        'height': int(ch),
+    })
+
+
 @app.route('/propose_calibration', methods=['POST'])
 def propose_calibration():
     """Use Vision + LLM to propose depth_axis and track calibration for a selected panel.
@@ -2382,11 +2446,23 @@ def upload_file():
     # but still return all tracks so the user can manually choose.
     primary_region = select_primary_track_region(tracks, w)
 
-    # OCR is now deferred until after the user selects a specific panel.
-    # We return empty placeholders here and let /reanalyze_panel do the actual
-    # Vision OCR work on the cropped region the user cares about.
+    # Lightweight header-only OCR: try to infer global top/bottom depth values
+    # (e.g. from a Pass Summary table) without running full-panel OCR yet.
     detected_text = {'raw': [], 'numbers': [], 'suggestions': {}}
     ocr_suggestions = {}
+    if VISION_API_AVAILABLE and vision_client is not None:
+        try:
+            header_h = max(100, int(h * 0.3))
+            header_crop = img[0:header_h, :]
+            ok_header, header_buf = cv2.imencode('.jpg', header_crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if ok_header:
+                header_bytes = header_buf.tobytes()
+                detected_text = detect_text_vision_api(header_bytes)
+                ocr_suggestions = detected_text.get('suggestions', {}) or {}
+        except Exception as exc:
+            print(f"Header OCR error on upload: {exc}")
+            detected_text = {'raw': [], 'numbers': [], 'suggestions': {}}
+            ocr_suggestions = {}
 
     return jsonify({
         'success': True,

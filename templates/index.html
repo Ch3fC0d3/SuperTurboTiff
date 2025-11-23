@@ -15,7 +15,7 @@
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
             background: white;
             border-radius: 12px;
@@ -53,7 +53,7 @@
             max-width: 100%;
             border: 2px solid #ddd;
             border-radius: 8px;
-            margin: 20px 0;
+            margin: 0;
             cursor: crosshair;
         }
         .form-group {
@@ -102,14 +102,7 @@
             z-index: 999;
         }
         .floating-controls {
-            position: fixed;
-            right: 20px;
-            top: 50%;
-            transform: translateY(-50%);
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            z-index: 998;
+            display: none;
         }
         .floating-controls .btn {
             padding: 6px 10px;
@@ -133,17 +126,36 @@
             background: white;
             border: 2px solid #ddd;
             border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 15px;
+            padding: 10px;
+            margin-bottom: 10px;
         }
         .curve-config h3 {
             color: #667eea;
-            margin-bottom: 10px;
+            margin-bottom: 6px;
+            font-size: 0.95rem;
         }
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+        }
+        .curve-config .grid {
+            grid-template-columns: minmax(0, 1fr);
+            gap: 8px;
+        }
+        @media (min-width: 1200px) {
+            .curve-config .grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+        .curve-config .field label {
+            font-size: 0.85rem;
+        }
+        .curve-config .field input,
+        .curve-config .field select {
+            width: 100%;
+            font-size: 0.85rem;
+            padding: 6px 8px;
         }
         .status {
             padding: 15px;
@@ -159,8 +171,157 @@
             display: inline-block;
         }
         .overlay-scroll {
-            max-height: 75vh;
+            max-height: none;
             overflow-y: auto;
+        }
+        .workspace {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 380px;
+            gap: 16px;
+            margin-top: 24px;
+            align-items: stretch;
+        }
+        .control-pane {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-height: calc(100vh - 110px);
+            overflow-y: auto;
+        }
+        .viewer-pane {
+            flex: 1 1 auto;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .viewer-frame {
+            background: #ffffff;
+            border-radius: 10px;
+            padding: 10px;
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.25);
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+        }
+        .viewer-scroll {
+            flex: 0 0 auto;
+            height: calc(100vh - 110px);
+            overflow: auto;
+        }
+        .curve-pane {
+            display: flex;
+            flex-direction: column;
+            max-height: calc(100vh - 110px);
+            overflow-y: auto;
+        }
+        .curve-pane .step {
+            margin-bottom: 0;
+        }
+        .control-pane .form-group label,
+        .curve-pane .form-group label {
+            font-size: 0.85rem;
+        }
+        .control-pane .form-group input,
+        .control-pane .form-group select,
+        .curve-pane .form-group input,
+        .curve-pane .form-group select {
+            font-size: 0.85rem;
+            padding: 6px 8px;
+        }
+        .control-pane .btn,
+        .curve-pane .btn {
+            padding: 6px 10px;
+            font-size: 0.8rem;
+        }
+        .control-pane #configStep {
+            background: #eef2ff;
+        }
+        .calibration-tabs {
+            padding: 12px 16px;
+            margin-bottom: 8px;
+            background: transparent;
+            border-left: none;
+        }
+        .calibration-tab-header {
+            display: flex;
+            gap: 6px;
+            background: #e5e7ff;
+            border-radius: 999px;
+            padding: 4px;
+        }
+        .tab-btn {
+            flex: 1 1 0;
+            border: none;
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: transparent;
+            color: #4b5563;
+        }
+        .tab-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+        }
+        .tab-hidden {
+            display: none !important;
+        }
+        #curvesContainer {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            gap: 12px;
+        }
+        @media (max-width: 1000px) {
+            .workspace {
+                flex-direction: column;
+            }
+            .viewer-scroll {
+                height: auto;
+                max-height: 70vh;
+            }
+            .control-pane,
+            .curve-pane {
+                max-width: none;
+            }
+        }
+        .curve-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: flex-start;
+        }
+        .curve-actions > label,
+        .curve-actions > input {
+            flex: 0 0 100%;
+        }
+        .curve-actions .btn {
+            flex: 1 1 calc(50% - 6px);
+        }
+        .config-layout {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 24px;
+            margin-top: 8px;
+            align-items: flex-start;
+        }
+        .config-column {
+            flex: 1 1 320px;
+            min-width: 280px;
+        }
+        .depth-row {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px 12px;
+            align-items: flex-start;
+            margin-top: 8px;
+        }
+        .depth-row .btn.depth-btn {
+            grid-column: 1 / -1;
+            justify-self: flex-start;
+            padding: 6px 10px;
+            font-size: 0.8em;
+            white-space: nowrap;
         }
         .track-box {
             position: absolute;
@@ -309,6 +470,18 @@
             background: rgba(56, 189, 248, 0.9); /* cyan */
             pointer-events: none;
         }
+        .mouse-tooltip {
+            position: absolute;
+            font-size: 10px;
+            line-height: 1.2;
+            padding: 2px 4px;
+            border-radius: 3px;
+            background: rgba(15, 23, 42, 0.85);
+            color: #f9fafb;
+            pointer-events: none;
+            z-index: 20;
+            white-space: nowrap;
+        }
         .version-footer {
             margin-top: 8px;
             text-align: center;
@@ -325,7 +498,7 @@
             <p>This tool converts well log images (TIFF/PNG/JPG) into QuickSyn-style LAS 1.2 files. The AI suggests defaults, but you stay in control.</p>
             <ol>
                 <li><strong>Upload image:</strong> Drop or choose your log in Step 1. The preview appears in Step 2.</li>
-                <li><strong>Depth setup:</strong> Use <em>Set top/bottom from image</em> and click on the depth scale on the image. The AI snaps to nearby depth labels and fills pixels and depth values.</li>
+                <li><strong>Depth setup:</strong> In Step 3, enter the top and bottom depths from the log header or scale (AI will prefill when possible), and set the corresponding top/bottom pixels so the guidelines line up with the printed depth ticks.</li>
                 <li><strong>Curves:</strong> In Step 3, pick curve types, left/right pixels, and scale values. AI uses track detection, color, and OCR labels to prefill suggestions, but you can edit everything.</li>
                 <li><strong>Digitize:</strong> Click <em>Digitize &amp; Download LAS</em>. The app generates a QuickSyn-compatible LAS file (with 0.5 ft sampling when depth unit is Feet), runs basic checks, and shows depth/curve sanity warnings so you can review before using the file. For QuickSyn workflows, leave depth unit as <em>Feet (FT)</em>.</li>
                 <li><strong>Review AI hints:</strong> Step 4 shows what the AI saw (e.g. header text like "SONIC DT" and sample values) to help you judge if its guesses make sense.</li>
@@ -349,16 +522,8 @@
 
         <div class="content">
             <button type="button" class="btn scroll-bottom-btn" onclick="scrollToBottom()">⬇ Scroll to bottom</button>
-            <div id="floatingControls" class="floating-controls hidden">
-                <button type="button" class="btn" onclick="beginPanelSelection()">📦 Select panel</button>
-                <button type="button" class="btn" onclick="clearPanelSelection()">🧹 Clear selection</button>
-                <button type="button" class="btn" onclick="setDepthAnchorMode('top')">⬆ Set top from image</button>
-                <button type="button" class="btn" onclick="setDepthAnchorMode('bottom')">⬇ Set bottom from image</button>
-                <button type="button" class="btn" onclick="aiCalibratePanel()">⭐ AI calibrate</button>
-                <button type="button" class="btn" onclick="runDigitization()">🚀 Digitize</button>
-            </div>
             <!-- Step 1: Upload -->
-            <div class="step">
+            <div class="step" id="uploadStep">
                 <h2>Step 1: Upload Image</h2>
                 <div class="upload-area" id="uploadArea">
                     <p>📁 Drag & drop your TIFF/PNG/JPG here or click to browse</p>
@@ -368,103 +533,144 @@
                 <div id="imageInfo" class="hidden"></div>
             </div>
 
-            <!-- Step 2: Image Preview -->
-            <div class="step hidden" id="previewStep">
-                <h2>Step 2: Image Preview</h2>
-                <p style="color: #666; margin-top: 10px;">
-                    📐 Image dimensions: <span id="imageDims"></span>
-                </p>
-                <p id="mousePixelReadout" style="color: #666; font-size: 0.85em; margin-top: 4px;">
-                    Mouse pixel: (move over image)
-                </p>
-                <p style="color: #666; font-size: 0.85em; margin-top: 6px;">
-                    Tip: Use <strong>Set top/bottom from image</strong> and then click on the depth scale in the image to anchor your depth.
-                </p>
-                <div class="form-group" style="margin-top: 10px; max-width: 420px;">
-                    <label for="phraseSearch">Jump to label (OCR)</label>
-                    <div style="display: flex; gap: 8px;">
-                        <input type="text" id="phraseSearch" placeholder="e.g. GAMMA RAY" style="flex: 1;">
-                        <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="handlePhraseSearch()">Find</button>
-                    </div>
-                </div>
-                <div class="form-group" style="margin-top: 8px; max-width: 420px;">
-                    <label>Select log panel</label>
-                    <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px;">
-                        <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="beginPanelSelection()">Select panel from image</button>
-                        <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="clearPanelSelection()">Clear selection</button>
-                    </div>
-                    <div class="hint-text" id="selectionSummary">No panel selected. Using full image width and depth.</div>
-                    <div class="hint-text">Click and drag directly on the image to draw a selection box around the log copy you want to digitize.</div>
-                </div>
-                <div class="overlay-scroll" style="margin-top: 14px;">
-                    <div id="overlay">
-                        <img id="imagePreview" alt="Log preview">
-                    </div>
-                </div>
-            </div>
-
-            <!-- Step 3: Configuration -->
-            <div class="step hidden" id="configStep">
-                <h2>Step 3: Configure Digitization</h2>
-                
-                <div class="form-group">
-                    <label>Depth Configuration</label>
-                    <div class="curve-checkboxes" style="margin-top: 8px; margin-bottom: 8px;">
-                        <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="setDepthAnchorMode('top')">Set top from image</button>
-                        <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="setDepthAnchorMode('bottom')">Set bottom from image</button>
-                    </div>
-                    <div class="grid">
-                        <div class="field">
-                            <label for="topPx">Top pixel (Y)</label>
-                            <input type="number" id="topPx" placeholder="Top pixel (Y)">
-                        </div>
-                        <div class="field">
-                            <label for="bottomPx">Bottom pixel (Y)</label>
-                            <input type="number" id="bottomPx" placeholder="Bottom pixel (Y)">
-                        </div>
-                        <div class="field">
-                            <label for="topDepth">Top depth value</label>
-                            <input type="number" id="topDepth" placeholder="Top depth value" step="0.1">
-                        </div>
-                        <div class="field">
-                            <label for="bottomDepth">Bottom depth value</label>
-                            <input type="number" id="bottomDepth" placeholder="Bottom depth value" step="0.1">
-                        </div>
-                        <div class="field">
-                            <label for="depthUnit">Depth unit</label>
-                            <select id="depthUnit">
-                                <option value="FT">Feet (FT)</option>
-                                <option value="M">Meters (M)</option>
-                            </select>
+            <!-- Main workspace: left viewer, right configuration -->
+            <div id="workspace" class="workspace hidden">
+                <!-- Left: log viewer -->
+                <div class="viewer-pane">
+                    <div class="viewer-frame">
+                        <div class="overlay-scroll viewer-scroll">
+                            <div id="overlay">
+                                <img id="imagePreview" alt="Log preview">
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <div class="form-group">
-                    <label>Number of Curves (max 6)</label>
-                    <input type="number" id="numCurves" value="3" min="1" max="6">
-                    <button class="btn" onclick="generateCurveInputs()" style="margin-top: 10px;">Generate Curve Fields</button>
-                    <button class="btn" type="button" onclick="autoFillCurveTypes()" style="margin-top: 10px; margin-left: 8px;">✨ Auto-fill curve types</button>
-                    <button class="btn" type="button" onclick="aiCalibratePanel()" style="margin-top: 10px; margin-left: 8px;">⭐ AI calibrate panel</button>
-                    <button class="btn" type="button" onclick="aiDetectTracks()" style="margin-top: 10px; margin-left: 8px;">🤖 AI detect tracks</button>
-                    <div class="hint-text" style="margin-top: 4px;">Uses scale ranges (GR/RHOB/NPHI/DT) to guess curve types for each track; you can still edit them.</div>
-                    <div class="hint-text" style="margin-top: 4px;">Uses Vision + LLM to propose depth axis and all track calibrations from the selected panel; you can still edit them.</div>
+                <!-- Right: calibration tabs -->
+                <div class="control-pane">
+                    <div class="step calibration-tabs">
+                        <div class="calibration-tab-header">
+                            <button type="button" class="tab-btn calibration-tab-btn active" data-target="calibPanel-main">Steps 2 &amp; 3</button>
+                            <button type="button" class="tab-btn calibration-tab-btn" data-target="calibPanel-curves">Step 4</button>
+                        </div>
+                    </div>
+
+                    <!-- Tab 1: Step 2 + Step 3 stacked -->
+                    <div id="calibPanel-main" class="tab-panel">
+                        <div class="step hidden" id="previewStep">
+                            <h2>Step 2: Image Preview</h2>
+                            <p style="color: #666; margin-top: 10px;">
+                                📐 Image dimensions: <span id="imageDims"></span>
+                            </p>
+                            <p id="mousePixelReadout" style="color: #666; font-size: 0.85em; margin-top: 4px;">
+                                Mouse pixel: (move over image)
+                            </p>
+                            <p style="color: #666; font-size: 0.85em; margin-top: 6px;">
+                                Tip: Use the <strong>Top/Bottom depth</strong> and <strong>Top/Bottom pixel</strong> fields in Step 3 to align the depth guidelines with the printed scale; the mouse readout updates from those values.
+                            </p>
+                            <div class="form-group" style="margin-top: 8px; max-width: 420px;">
+                                <label>Zoom</label>
+                                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                                    <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="adjustZoom(-0.25)">−</button>
+                                    <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="resetZoom()">100%</button>
+                                    <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="adjustZoom(0.25)">+</button>
+                                    <span id="zoomLabel" class="hint-text" style="margin-left: 4px;">100%</span>
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin-top: 8px; max-width: 420px;">
+                                <label>Select log panel</label>
+                                <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px;">
+                                    <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="beginPanelSelection()">Select panel from image</button>
+                                    <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="clearPanelSelection()">Clear selection</button>
+                                </div>
+                                <div class="hint-text" id="selectionSummary">No panel selected. Using full image width and depth.</div>
+                                <div class="hint-text">Click and drag directly on the image to draw a selection box around the log copy you want to digitize.</div>
+                            </div>
+                        </div>
+
+                        <div class="step hidden" id="configStep">
+                            <h2>Step 3: Depth Setup</h2>
+                            <div class="form-group">
+                                <label>Depth Configuration</label>
+
+                                <div class="depth-row">
+                                    <div class="field">
+                                        <label for="topPx">Top pixel (Y)</label>
+                                        <input type="number" id="topPx" placeholder="Top pixel (Y)">
+                                    </div>
+                                    <div class="field">
+                                        <label for="topDepth">Top depth value</label>
+                                        <input type="number" id="topDepth" placeholder="Top depth value" step="0.1" required>
+                                    </div>
+                                </div>
+
+                                <div class="depth-row">
+                                    <div class="field">
+                                        <label for="bottomPx">Bottom pixel (Y)</label>
+                                        <input type="number" id="bottomPx" placeholder="Bottom pixel (Y)">
+                                    </div>
+                                    <div class="field">
+                                        <label for="bottomDepth">Bottom depth value</label>
+                                        <input type="number" id="bottomDepth" placeholder="Bottom depth value" step="0.1" required>
+                                    </div>
+                                </div>
+
+                                <div class="grid" style="margin-top: 8px;">
+                                    <div class="field">
+                                        <label for="depthUnit">Depth unit</label>
+                                        <select id="depthUnit">
+                                            <option value="FT">Feet (FT)</option>
+                                            <option value="M">Meters (M)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin-top: 4px; max-width: 420px;">
+                                <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="cropToWorkingPanel()">✂️ Crop to working panel</button>
+                                <div class="hint-text" style="margin-top: 4px;">
+                                    After selecting a panel and setting depth, crop so only that depth window is used as the working TIFF.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab 2: Step 4 curves -->
+                    <div id="calibPanel-curves" class="tab-panel tab-hidden">
+                        <div class="curve-pane">
+                            <div class="step">
+                                <h2>Step 4: Curve Configuration</h2>
+                                <div class="form-group">
+                                    <label>Curve Configuration</label>
+                                    <div class="curve-actions">
+                                        <label for="numCurves">Number of Curves (max 6)</label>
+                                        <input type="number" id="numCurves" value="3" min="1" max="6">
+                                        <button class="btn" onclick="generateCurveInputs()">Generate Curve Fields</button>
+                                        <button class="btn" type="button" onclick="autoFillCurveTypes()">✨ Auto-fill curve types</button>
+                                        <button class="btn" type="button" onclick="aiCalibratePanel()">⭐ AI calibrate panel</button>
+                                        <button class="btn" type="button" onclick="aiDetectTracks()">🤖 AI detect tracks</button>
+                                    </div>
+                                    <div class="hint-text" style="margin-top: 4px;">Uses scale ranges (GR/RHOB/NPHI/DT) to guess curve types for each track; you can still edit them.</div>
+                                    <div class="hint-text" style="margin-top: 4px;">Uses Vision + LLM to propose depth axis and all track calibrations from the selected panel; you can still edit them.</div>
+                                </div>
+
+                                <div id="curvesContainer"></div>
+                                <div id="curveScaleSummary" class="hint-text" style="margin-top: 8px;"></div>
+
+                                <button class="btn" onclick="runDigitization()" id="digitizeBtn" style="margin-top: 20px;">
+                                    🚀 Digitize & Download LAS
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-
-                <div id="curvesContainer"></div>
-                <div id="curveScaleSummary" class="hint-text" style="margin-top: 8px;"></div>
-
-                <button class="btn" onclick="runDigitization()" id="digitizeBtn" style="margin-top: 20px;">
-                    🚀 Digitize & Download LAS
-                </button>
             </div>
 
             <!-- Status Messages -->
             <div id="statusArea"></div>
 
-            <!-- Step 4: AI Insights -->
+            <!-- Step 5: AI Insights -->
             <div class="step hidden" id="insightsStep">
-                <h2>Step 4: AI Insights</h2>
+                <h2>Step 5: AI Insights</h2>
                 <div id="aiInsightContent" class="insight-card">
                     <p>Upload a log image to see Vision OCR suggestions here.</p>
                 </div>
@@ -493,20 +699,42 @@
         let primaryRegion = null; // { left_px, right_px, track_indices }
         let ocrSuggestions = null;
         let detectedText = null;
-        let depthAnchorMode = null; // 'top' | 'bottom' | null
         let panelSelectMode = false;
         let panelSelectStart = null; // { x, y } first corner of panel selection
         let primaryRegionDrag = { active: false, edge: null };
         let lastDigitizedDepth = null;   // array of depths from last /digitize
         let lastDigitizedCurves = null;  // { curveId: { unit, values[] } }
-
-        // OCR phrase search state (Jump to label)
-        let ocrSearchMatches = [];
-        let ocrSearchIndex = -1;
-        let ocrSearchPhrase = '';
+        let zoomLevel = 1.0;             // zoom factor for the overlay/image
 
         const DEPTH_SESSION_KEY = 'tifflas_depth_config_v1';
         const INTRO_SESSION_KEY = 'tifflas_intro_seen_v1';
+
+        function applyZoom() {
+            const overlay = document.getElementById('overlay');
+            const label = document.getElementById('zoomLabel');
+            if (overlay) {
+                overlay.style.transformOrigin = 'top left';
+                overlay.style.transform = `scale(${zoomLevel})`;
+            }
+            if (label) {
+                label.textContent = `${Math.round(zoomLevel * 100)}%`;
+            }
+        }
+
+        function setZoom(value) {
+            const minZoom = 0.5;
+            const maxZoom = 3.0;
+            zoomLevel = Math.max(minZoom, Math.min(maxZoom, value));
+            applyZoom();
+        }
+
+        function adjustZoom(delta) {
+            setZoom(zoomLevel + delta);
+        }
+
+        function resetZoom() {
+            setZoom(1.0);
+        }
 
         function openIntroModal() {
             const backdrop = document.getElementById('introModalBackdrop');
@@ -522,12 +750,30 @@
             }
         }
 
-        function setDepthAnchorMode(mode) {
-            if (mode === 'top' || mode === 'bottom') {
-                depthAnchorMode = mode;
-            } else {
-                depthAnchorMode = null;
-            }
+        // Depth anchor buttons have been removed; depth configuration is now
+        // driven directly by numeric inputs and AI suggestions.
+
+        function setCalibrationTab(targetId) {
+            const panels = ['calibPanel-main', 'calibPanel-curves'];
+            panels.forEach((id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (id === targetId) {
+                    el.classList.remove('tab-hidden');
+                } else {
+                    el.classList.add('tab-hidden');
+                }
+            });
+
+            const buttons = document.querySelectorAll('.calibration-tab-btn');
+            buttons.forEach((btn) => {
+                const target = btn.getAttribute('data-target');
+                if (target === targetId) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
         }
 
         function beginPanelSelection() {
@@ -563,7 +809,9 @@
 
             autoConfigureCurves();
             generateCurveInputs();
-            applyOcrSuggestions();
+            // When clearing the panel, keep the user's depth config intact.
+            // Only re-apply OCR curve hints.
+            applyOcrSuggestions({ allowDepth: false, allowCurves: true });
             renderAiInsights();
             updateSelectionSummary();
             showStatus('Cleared panel selection: using full image width and depth.', 'info');
@@ -817,6 +1065,21 @@
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
 
+        // Calibration tabs (Step 2 / Step 3) on the right side
+        const calibrationTabButtons = document.querySelectorAll('.calibration-tab-btn');
+        if (calibrationTabButtons && calibrationTabButtons.length) {
+            calibrationTabButtons.forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const target = btn.getAttribute('data-target');
+                    if (target) {
+                        setCalibrationTab(target);
+                    }
+                });
+            });
+            // Default to Steps 2 & 3 tab on initial load
+            setCalibrationTab('calibPanel-main');
+        }
+
         uploadArea.addEventListener('click', () => fileInput.click());
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
@@ -840,12 +1103,14 @@
 
         // Depth anchor & panel/region interaction on image
         const imagePreview = document.getElementById('imagePreview');
+        const imageHitTarget = document.getElementById('overlay') || imagePreview;
         const mousePixelReadout = document.getElementById('mousePixelReadout');
 
-        imagePreview.addEventListener('mousemove', (event) => {
+        if (imageHitTarget) imageHitTarget.addEventListener('mousemove', (event) => {
             if (!mousePixelReadout) return;
 
-            const rect = imagePreview.getBoundingClientRect();
+            if (!imagePreview) return;
+            const rect = imageHitTarget.getBoundingClientRect();
             if (!rect.width || !rect.height) return;
 
             // Prefer the known imageWidth/imageHeight, but fall back to the
@@ -879,9 +1144,16 @@
             const depth = pixelToDepthFromConfig(yImg, depthCfg);
 
             let text = `Mouse pixel: X=${xImg}, Y=${yImg}`;
+            let depthDisplay = '';
             if (Number.isFinite(depth)) {
                 const unit = depthCfg ? depthCfg.unit : '';
-                text += ` • Depth: ${depth.toFixed(1)} ${unit}`;
+                if (unit === 'FT') {
+                    depthDisplay = `${Math.round(depth)} ${unit}`;
+                    text += ` • Depth: ${depthDisplay}`;
+                } else {
+                    depthDisplay = `${depth.toFixed(1)} ${unit}`;
+                    text += ` • Depth: ${depthDisplay}`;
+                }
             }
 
             // Find active track under cursor
@@ -916,19 +1188,36 @@
                 }
             }
 
-            let suffix = '';
-            if (depthAnchorMode === 'top') {
-                suffix = ' • anchoring TOP';
-            } else if (depthAnchorMode === 'bottom') {
-                suffix = ' • anchoring BOTTOM';
-            }
+            mousePixelReadout.textContent = text + valueText;
 
-            mousePixelReadout.textContent = text + valueText + suffix;
+            // Update small tooltip near the mouse
+            let tooltip = document.getElementById('mouseTooltip');
+            if (!tooltip) {
+                const overlay = document.getElementById('overlay');
+                if (overlay) {
+                    tooltip = document.createElement('div');
+                    tooltip.id = 'mouseTooltip';
+                    tooltip.className = 'mouse-tooltip';
+                    overlay.appendChild(tooltip);
+                }
+            }
+            if (tooltip) {
+                const lines = [`X=${xImg}`, `Y=${yImg}`];
+                if (depthDisplay) {
+                    lines.push(depthDisplay);
+                }
+                tooltip.textContent = lines.join(' • ');
+                const offsetX = 8;
+                const offsetY = 8;
+                tooltip.style.left = `${x + offsetX}px`;
+                tooltip.style.top = `${y + offsetY}px`;
+                tooltip.style.display = 'block';
+            }
         });
 
         // Marquee-style panel selection (click-drag-release)
-        imagePreview.addEventListener('mousedown', (event) => {
-            if (!imageWidth || !imageHeight) return;
+        if (imageHitTarget) imageHitTarget.addEventListener('mousedown', (event) => {
+            if (!imageWidth || !imageHeight || !imagePreview) return;
 
             const rect = imagePreview.getBoundingClientRect();
             if (!rect.width || !rect.height) return;
@@ -974,17 +1263,17 @@
             const top = Math.min(panelSelectStart.y, yImg);
             const bottom = Math.max(panelSelectStart.y, yImg);
 
-            primaryRegion = { left_px: left, right_px: right, track_indices: [] };
+            // Panel selection defines a full box in image pixels. We store both
+            // horizontal and vertical extents on primaryRegion so cropping can
+            // use the exact box, but we do NOT overwrite the depth inputs.
+            primaryRegion = {
+                left_px: left,
+                right_px: right,
+                top_px: top,
+                bottom_px: bottom,
+                track_indices: []
+            };
 
-            // Have the box control depth pixels as well
-            const topPxInput = document.getElementById('topPx');
-            const bottomPxInput = document.getElementById('bottomPx');
-            if (topPxInput && bottomPxInput) {
-                topPxInput.value = top;
-                bottomPxInput.value = bottom;
-            }
-
-            renderDepthOverlays();
             renderPrimaryRegionOverlay();
             updateSelectionSummary();
         });
@@ -1017,18 +1306,14 @@
                     return;
                 }
 
-                // For vertical, approximate from panelSelectStart and depth inputs if present.
-                const topPxInput = document.getElementById('topPx');
-                const bottomPxInput = document.getElementById('bottomPx');
+                // For vertical, use the marquee's own top/bottom if available;
+                // otherwise fall back to the full image height. Depth inputs are
+                // not touched here so the user can configure them after crop.
                 let topPx = 0;
                 let bottomPx = imageHeight - 1;
-                if (topPxInput && bottomPxInput) {
-                    const t = parseFloat(topPxInput.value);
-                    const b = parseFloat(bottomPxInput.value);
-                    if (Number.isFinite(t) && Number.isFinite(b) && b > t) {
-                        topPx = t;
-                        bottomPx = b;
-                    }
+                if (primaryRegion && Number.isFinite(primaryRegion.top_px) && Number.isFinite(primaryRegion.bottom_px) && primaryRegion.bottom_px > primaryRegion.top_px) {
+                    topPx = Math.max(0, Number(primaryRegion.top_px));
+                    bottomPx = Math.min(imageHeight - 1, Number(primaryRegion.bottom_px));
                 }
 
                 // Filter tracks within horizontal band
@@ -1041,12 +1326,6 @@
                         if (cx >= left && cx <= right) selected.push(t);
                     }
                     detectedTracks = selected;
-                }
-
-                // Update depth pixels from current vertical extent (or keep previous if user prefers)
-                if (topPxInput && bottomPxInput) {
-                    topPxInput.value = topPx;
-                    bottomPxInput.value = bottomPx;
                 }
 
                 panelSelectMode = false;
@@ -1096,72 +1375,18 @@
             primaryRegionDrag.edge = null;
         });
 
-        imagePreview.addEventListener('mouseleave', () => {
+        if (imageHitTarget) imageHitTarget.addEventListener('mouseleave', () => {
             if (mousePixelReadout) {
                 mousePixelReadout.textContent = 'Mouse pixel: (move over image)';
             }
+            const tooltip = document.getElementById('mouseTooltip');
+            if (tooltip) {
+                tooltip.style.display = 'none';
+            }
         });
 
-        imagePreview.addEventListener('click', (event) => {
-            if (!imageWidth || !imageHeight) return;
-
-            const rect = imagePreview.getBoundingClientRect();
-            if (!rect.width || !rect.height) return;
-
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
-            const xNorm = x / rect.width;
-            const yNorm = y / rect.height;
-            const xImg = Math.round(xNorm * (imageWidth - 1));
-            const yImg = Math.round(yNorm * (imageHeight - 1));
-
-            // If we're in panelSelectMode, the click is ignored here because marquee uses mousedown/mouseup.
-            if (panelSelectMode) {
-                return;
-            }
-
-            if (!depthAnchorMode) return;
-
-            const snapped = snapDepthToLabels(yImg);
-            // Use the exact clicked pixel for depth anchors so overlays align
-            const usedY = yImg;
-            const snappedDepth = snapped ? snapped.depth : null;
-
-            if (depthAnchorMode === 'top') {
-                const topPxInput = document.getElementById('topPx');
-                const topDepthInput = document.getElementById('topDepth');
-                topPxInput.value = usedY;
-                const existing = topDepthInput.value;
-                if (snappedDepth != null && Number.isFinite(snappedDepth)) {
-                    if (!existing) {
-                        topDepthInput.value = snappedDepth;
-                    }
-                } else if (!existing) {
-                    const depthVal = window.prompt('Enter top depth value for this point (same unit as selected):');
-                    if (depthVal !== null && depthVal !== '') {
-                        topDepthInput.value = depthVal;
-                    }
-                }
-            } else if (depthAnchorMode === 'bottom') {
-                const bottomPxInput = document.getElementById('bottomPx');
-                const bottomDepthInput = document.getElementById('bottomDepth');
-                bottomPxInput.value = usedY;
-                const existing = bottomDepthInput.value;
-                if (snappedDepth != null && Number.isFinite(snappedDepth)) {
-                    if (!existing) {
-                        bottomDepthInput.value = snappedDepth;
-                    }
-                } else if (!existing) {
-                    const depthVal = window.prompt('Enter bottom depth value for this point (same unit as selected):');
-                    if (depthVal !== null && depthVal !== '') {
-                        bottomDepthInput.value = depthVal;
-                    }
-                }
-            }
-
-            depthAnchorMode = null;
-            renderDepthOverlays();
-        });
+        // Clicks on the image are now used only for panel selection and phrase
+        // highlighting; depth configuration is controlled by numeric inputs.
 
         async function handleFile(file) {
             // Check file size (100MB limit)
@@ -1190,9 +1415,10 @@
                     imageHeight = data.height;
                     allTracks = data.all_tracks || data.tracks || [];
                     detectedTracks = data.tracks || [];
-                    primaryRegion = null;
-                    ocrSuggestions = {};
-                    detectedText = null;
+                    primaryRegion = data.primary_region || null;
+                    // Carry through any lightweight OCR hints from the backend
+                    ocrSuggestions = data.ocr_suggestions || data.ocrSuggestions || {};
+                    detectedText = data.detected_text || data.detectedText || null;
 
                     // Show preview
                     const imgEl = document.getElementById('imagePreview');
@@ -1200,15 +1426,20 @@
                         imageWidth = imgEl.naturalWidth;
                         imageHeight = imgEl.naturalHeight;
                         renderDepthOverlays();
+                        applyZoom();
                     };
                     imgEl.src = data.image;
                     document.getElementById('imageDims').textContent = `${imageWidth} × ${imageHeight} pixels`;
-                    document.getElementById('previewStep').classList.remove('hidden');
-                    document.getElementById('configStep').classList.remove('hidden');
-                    const floating = document.getElementById('floatingControls');
-                    if (floating) {
-                        floating.classList.remove('hidden');
-                    }
+                    const previewStep = document.getElementById('previewStep');
+                    const configStep = document.getElementById('configStep');
+                    const workspace = document.getElementById('workspace');
+                    const uploadStep = document.getElementById('uploadStep');
+                    if (previewStep) previewStep.classList.remove('hidden');
+                    if (configStep) configStep.classList.remove('hidden');
+                    if (workspace) workspace.classList.remove('hidden');
+                    if (uploadStep) uploadStep.classList.add('hidden');
+                    // Show Steps 2 & 3 tab by default once the image is loaded
+                    setCalibrationTab('calibPanel-main');
                     
                     // Pre-fill with defaults then apply AI suggestions
                     document.getElementById('topPx').value = 0;
@@ -1504,6 +1735,137 @@
             } catch (err) {
                 showStatus(`AI track detection request failed: ${err.message}`, 'error');
                 clearTrackOverlays();
+            }
+        }
+
+        async function cropToWorkingPanel() {
+            if (!uploadedImage || !imageWidth || !imageHeight) {
+                showStatus('Please upload an image first.', 'info');
+                return;
+            }
+
+            // Cropping now uses the panel selection box (primaryRegion) for
+            // both horizontal and vertical extents. Depth pixels are a
+            // post-crop concern only.
+
+            let leftPx = 0;
+            let rightPx = imageWidth;
+            let topPx = 0;
+            let bottomPx = imageHeight - 1;
+
+            if (primaryRegion &&
+                Number.isFinite(primaryRegion.left_px) &&
+                Number.isFinite(primaryRegion.right_px) &&
+                primaryRegion.right_px > primaryRegion.left_px) {
+                leftPx = Math.max(0, Number(primaryRegion.left_px));
+                rightPx = Math.min(imageWidth, Number(primaryRegion.right_px));
+            }
+
+            if (primaryRegion &&
+                Number.isFinite(primaryRegion.top_px) &&
+                Number.isFinite(primaryRegion.bottom_px) &&
+                primaryRegion.bottom_px > primaryRegion.top_px) {
+                topPx = Math.max(0, Number(primaryRegion.top_px));
+                bottomPx = Math.min(imageHeight - 1, Number(primaryRegion.bottom_px));
+            }
+
+            showStatus('✂️ Cropping to working panel...', 'info');
+
+            try {
+                const resp = await fetch('/crop_to_panel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        image: uploadedImage,
+                        region: {
+                            left_px: leftPx,
+                            right_px: rightPx,
+                            top_px: topPx,
+                            bottom_px: bottomPx,
+                        },
+                    }),
+                });
+
+                const data = await resp.json();
+                if (!data.success) {
+                    showStatus(`Crop failed: ${data.error || 'unknown error'}`, 'error');
+                    return;
+                }
+
+                // Apply the cropped image as the new working TIFF
+                uploadedImage = data.image;
+                imageWidth = data.width;
+                imageHeight = data.height;
+
+                const imgEl = document.getElementById('imagePreview');
+                if (imgEl) {
+                    imgEl.onload = () => {
+                        imageWidth = imgEl.naturalWidth || imageWidth;
+                        imageHeight = imgEl.naturalHeight || imageHeight;
+                        renderDepthOverlays();
+                        renderPrimaryRegionOverlay();
+                        applyZoom();
+                    };
+                    imgEl.src = uploadedImage;
+                }
+
+                const dimsEl = document.getElementById('imageDims');
+                if (dimsEl) {
+                    dimsEl.textContent = `${imageWidth} × ${imageHeight} pixels`;
+                }
+
+                // New panel is the full width and height of the cropped image
+                primaryRegion = {
+                    left_px: 0,
+                    right_px: imageWidth,
+                    top_px: 0,
+                    bottom_px: imageHeight - 1,
+                    track_indices: primaryRegion && primaryRegion.track_indices ? primaryRegion.track_indices : null,
+                };
+
+                // Reset depth pixels to span the full cropped height; the
+                // user will refine depth mapping on this cropped image.
+                const topPxInput = document.getElementById('topPx');
+                const bottomPxInput = document.getElementById('bottomPx');
+                if (topPxInput && bottomPxInput) {
+                    topPxInput.value = 0;
+                    bottomPxInput.value = imageHeight - 1;
+                }
+
+                // Adjust curve left/right pixel inputs to the new horizontal origin
+                const offsetX = leftPx;
+                const numCurvesInput = document.getElementById('numCurves');
+                const numCurves = numCurvesInput ? (parseInt(numCurvesInput.value) || 0) : 0;
+                for (let i = 0; i < numCurves; i++) {
+                    const leftEl = document.getElementById(`leftPx${i}`);
+                    const rightEl = document.getElementById(`rightPx${i}`);
+                    if (leftEl) {
+                        const v = parseFloat(leftEl.value);
+                        if (Number.isFinite(v)) {
+                            leftEl.value = Math.max(0, v - offsetX);
+                        }
+                    }
+                    if (rightEl) {
+                        const v = parseFloat(rightEl.value);
+                        if (Number.isFinite(v)) {
+                            rightEl.value = Math.max(0, v - offsetX);
+                        }
+                    }
+                }
+
+                // Clear OCR-based overlays tied to the old coordinates
+                ocrSuggestions = null;
+                detectedText = null;
+                clearTrackOverlays();
+                clearLabelOverlays();
+                clearPhraseHighlight();
+                renderDepthOverlays();
+                renderPrimaryRegionOverlay();
+                updateSelectionSummary();
+
+                showStatus('✂️ Cropped to working panel. All work now uses this shorter TIFF.', 'success');
+            } catch (err) {
+                showStatus(`Crop failed: ${err.message}`, 'error');
             }
         }
 
@@ -1817,7 +2179,30 @@
                 const typeEl = document.getElementById(`type${i}`);
                 const leftValEl = document.getElementById(`leftVal${i}`);
                 const rightValEl = document.getElementById(`rightVal${i}`);
-                
+                const modeEl = document.getElementById(`mode${i}`);
+
+                if (modeEl) {
+                    const applyCardTheme = () => {
+                        const val = (modeEl.value || '').toLowerCase();
+                        let bg = 'rgba(15, 23, 42, 0.015)';
+                        let border = '#e5e7eb';
+                        if (val === 'green') {
+                            bg = 'rgba(22, 163, 74, 0.06)';
+                            border = '#bbf7d0';
+                        } else if (val === 'blue') {
+                            bg = 'rgba(37, 99, 235, 0.06)';
+                            border = '#bfdbfe';
+                        } else if (val === 'red') {
+                            bg = 'rgba(220, 38, 38, 0.06)';
+                            border = '#fecaca';
+                        }
+                        curveDiv.style.backgroundColor = bg;
+                        curveDiv.style.borderColor = border;
+                    };
+                    applyCardTheme();
+                    modeEl.addEventListener('change', applyCardTheme);
+                }
+
                 // #1: Auto-sync type changes to LAS mnemonic/unit
                 if (typeEl) {
                     typeEl.addEventListener('change', () => {
@@ -1842,40 +2227,67 @@
             setTimeout(() => generateValidationReport(), 100);
         }
 
-        function applyOcrSuggestions() {
+        function applyOcrSuggestions(options) {
             if (!ocrSuggestions) {
                 return false;
             }
 
+            const allowDepth = !options || options.allowDepth !== false;
+            const allowCurves = !options || options.allowCurves !== false;
+
             let applied = false;
             const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-            if (ocrSuggestions.depth) {
+            if (allowDepth && ocrSuggestions.depth) {
                 const depthHint = ocrSuggestions.depth;
                 const topPxInput = document.getElementById('topPx');
                 const bottomPxInput = document.getElementById('bottomPx');
                 const topDepthInput = document.getElementById('topDepth');
                 const bottomDepthInput = document.getElementById('bottomDepth');
 
-                if (topPxInput && Number.isFinite(depthHint.top_px)) {
-                    topPxInput.value = Math.round(clamp(depthHint.top_px, 0, imageHeight - 1));
-                    applied = true;
-                }
-                if (bottomPxInput && Number.isFinite(depthHint.bottom_px)) {
-                    bottomPxInput.value = Math.round(clamp(depthHint.bottom_px, 0, imageHeight - 1));
-                    applied = true;
-                }
-                if (topDepthInput && Number.isFinite(depthHint.top_depth)) {
-                    topDepthInput.value = depthHint.top_depth;
-                    applied = true;
-                }
-                if (bottomDepthInput && Number.isFinite(depthHint.bottom_depth)) {
-                    bottomDepthInput.value = depthHint.bottom_depth;
-                    applied = true;
+                if (topPxInput && bottomPxInput && topDepthInput && bottomDepthInput) {
+                    const topPxCurrent = topPxInput.value === '' ? NaN : parseFloat(topPxInput.value);
+                    const bottomPxCurrent = bottomPxInput.value === '' ? NaN : parseFloat(bottomPxInput.value);
+                    const topDepthCurrent = topDepthInput.value === '' ? NaN : parseFloat(topDepthInput.value);
+                    const bottomDepthCurrent = bottomDepthInput.value === '' ? NaN : parseFloat(bottomDepthInput.value);
+
+                    const topPxDefault = 0;
+                    const bottomPxDefault = imageHeight ? imageHeight - 1 : null;
+                    const topDepthDefault = 1000;
+                    const bottomDepthDefault = 2000;
+
+                    const depthLooksUserSet = (
+                        (Number.isFinite(topDepthCurrent) && topDepthCurrent !== topDepthDefault) ||
+                        (Number.isFinite(bottomDepthCurrent) && bottomDepthCurrent !== bottomDepthDefault) ||
+                        (Number.isFinite(topPxCurrent) && topPxCurrent !== topPxDefault) ||
+                        (Number.isFinite(bottomPxCurrent) && bottomPxDefault !== null && bottomPxCurrent !== bottomPxDefault)
+                    );
+
+                    // Only apply depth hints if the user hasn't already configured
+                    // a custom depth window. This ensures AI never overwrites
+                    // a manual or session-restored depth setup.
+                    if (!depthLooksUserSet) {
+                        if (Number.isFinite(depthHint.top_px)) {
+                            topPxInput.value = Math.round(clamp(depthHint.top_px, 0, imageHeight - 1));
+                            applied = true;
+                        }
+                        if (Number.isFinite(depthHint.bottom_px)) {
+                            bottomPxInput.value = Math.round(clamp(depthHint.bottom_px, 0, imageHeight - 1));
+                            applied = true;
+                        }
+                        if (Number.isFinite(depthHint.top_depth)) {
+                            topDepthInput.value = depthHint.top_depth;
+                            applied = true;
+                        }
+                        if (Number.isFinite(depthHint.bottom_depth)) {
+                            bottomDepthInput.value = depthHint.bottom_depth;
+                            applied = true;
+                        }
+                    }
                 }
             }
 
-            if (ocrSuggestions.curves && ocrSuggestions.curves.length) {
+            if (allowCurves && ocrSuggestions.curves && ocrSuggestions.curves.length) {
                 const maxCurves = Math.min(6, ocrSuggestions.curves.length);
                 for (let i = 0; i < maxCurves; i++) {
                     const hint = ocrSuggestions.curves[i];
@@ -1983,25 +2395,18 @@
             const xDomRight = (rightPx / denomX) * rect.width;
             const widthDom = xDomRight - xDom;
 
-            // Vertical placement follows the same mapping as renderDepthOverlays
+            // Vertical placement follows the marquee panel selection. If the
+            // user has dragged a box with top/bottom pixels, use those; otherwise
+            // fall back to the full image height. Depth configuration is
+            // independent and handled by depth overlays.
             let topDom = 0;
             let heightDom = rect.height;
-            const cfg = typeof getDepthConfigFromInputs === 'function' ? getDepthConfigFromInputs() : null;
-            if (cfg && Number.isFinite(cfg.top_px) && Number.isFinite(cfg.bottom_px) && cfg.bottom_px > cfg.top_px) {
+            if (primaryRegion && Number.isFinite(primaryRegion.top_px) && Number.isFinite(primaryRegion.bottom_px) && primaryRegion.bottom_px > primaryRegion.top_px) {
                 const scaleY = rect.height / imageHeight;
-                topDom = cfg.top_px * scaleY;
-                heightDom = (cfg.bottom_px - cfg.top_px) * scaleY;
-            }
-
-            // Nudge the top edge down slightly in screen space so the visible
-            // border does not appear above the graph, while keeping the
-            // bottom edge fixed. Use a small constant fudge tuned for the
-            // preview size so the top border sits just above the grid without
-            // cutting off too much.
-            const topFudgePx = 20; // set to 20px as requested
-            if (heightDom > topFudgePx) {
-                topDom += topFudgePx;
-                heightDom -= topFudgePx;
+                const topPx = Number(primaryRegion.top_px);
+                const bottomPx = Number(primaryRegion.bottom_px);
+                topDom = topPx * scaleY;
+                heightDom = (bottomPx - topPx) * scaleY;
             }
 
             const box = document.createElement('div');
@@ -2056,7 +2461,8 @@
             }
             const denomX = Math.max(1, imageWidth - 1);
 
-            // Vertical band follows current depth config, using same mapping as renderDepthOverlays
+            // Vertical band follows current depth config, using same mapping as
+            // renderDepthOverlays with no extra buffer.
             let topDom = 0;
             let heightDom = rect.height;
             const cfg = typeof getDepthConfigFromInputs === 'function' ? getDepthConfigFromInputs() : null;
@@ -2064,14 +2470,6 @@
                 const scaleY = rect.height / imageHeight;
                 topDom = cfg.top_px * scaleY;
                 heightDom = (cfg.bottom_px - cfg.top_px) * scaleY;
-            }
-
-            // Apply the same top-edge fudge as the primary region so
-            // orange AI track boxes visually align with the blue panel box.
-            const topFudgePx = 20;
-            if (heightDom > topFudgePx) {
-                topDom += topFudgePx;
-                heightDom -= topFudgePx;
             }
 
             clearTrackOverlays();
@@ -2359,59 +2757,82 @@
             }
         }
 
+        // Keep depth overlays in sync when the user edits depth/pixel fields
+        function attachDepthFieldListeners() {
+            const ids = ['topPx', 'bottomPx', 'topDepth', 'bottomDepth', 'depthUnit'];
+            ids.forEach((id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const handler = () => {
+                    renderDepthOverlays();
+                    updateSelectionSummary();
+                };
+                el.addEventListener('input', handler);
+                el.addEventListener('change', handler);
+            });
+        }
+
+        attachDepthFieldListeners();
+
         async function runDigitization() {
             const btn = document.getElementById('digitizeBtn');
             btn.disabled = true;
             showStatus('🔄 Processing...', 'info');
 
-            // Build config
-            const config = {
-                depth: {
-                    top_px: parseInt(document.getElementById('topPx').value),
-                    bottom_px: parseInt(document.getElementById('bottomPx').value),
-                    top_depth: parseFloat(document.getElementById('topDepth').value),
-                    bottom_depth: parseFloat(document.getElementById('bottomDepth').value),
-                    unit: document.getElementById('depthUnit').value
-                },
-                global_options: {
-                    downsample: 1,
-                    blur: 3,
-                    min_run: 2,
-                    smooth_window: 5,
-                    null: -999.25
-                },
-                curves: []
-            };
-
-            const numCurves = parseInt(document.getElementById('numCurves').value);
-            for (let i = 0; i < numCurves; i++) {
-                const type = document.getElementById(`type${i}`).value;
-                const displayName = document.getElementById(`name${i}`).value;
-                const displayUnit = document.getElementById(`unit${i}`).value;
-                const lasMnemonicInput = document.getElementById(`lasMnemonic${i}`).value.trim();
-                const lasUnitInput = document.getElementById(`lasUnit${i}`).value.trim();
-
-                const defaults = curveTypeDefaults[type] || {};
-                const lasMnemonic = lasMnemonicInput || (defaults.mnemonic || (displayName ? displayName.toUpperCase() : `CURVE${i + 1}`));
-                const lasUnit = lasUnitInput || (defaults.unit || displayUnit);
-
-                config.curves.push({
-                    type: type,
-                    display_name: displayName,
-                    display_unit: displayUnit,
-                    name: lasMnemonic,
-                    unit: lasUnit,
-                    las_mnemonic: lasMnemonic,
-                    las_unit: lasUnit,
-                    left_px: parseInt(document.getElementById(`leftPx${i}`).value),
-                    right_px: parseInt(document.getElementById(`rightPx${i}`).value),
-                    left_value: parseFloat(document.getElementById(`leftVal${i}`).value),
-                    right_value: parseFloat(document.getElementById(`rightVal${i}`).value),
-                    mode: document.getElementById(`mode${i}`).value
-                });
-            }
-
             try {
+                const depthCfg = getDepthConfigFromInputs();
+                if (!depthCfg) {
+                    showStatus('Please enter valid top/bottom pixels and depth values before digitizing.', 'error');
+                    btn.disabled = false;
+                    return;
+                }
+
+                const config = {
+                    depth: {
+                        top_px: depthCfg.top_px,
+                        bottom_px: depthCfg.bottom_px,
+                        top_depth: depthCfg.top_depth,
+                        bottom_depth: depthCfg.bottom_depth,
+                        unit: depthCfg.unit,
+                    },
+                    global_options: {
+                        downsample: 1,
+                        blur: 3,
+                        min_run: 2,
+                        smooth_window: 5,
+                        null: -999.25,
+                    },
+                    curves: [],
+                };
+
+                const numCurves = parseInt(document.getElementById('numCurves').value);
+                for (let i = 0; i < numCurves; i++) {
+                    const type = document.getElementById(`type${i}`).value;
+                    const displayName = document.getElementById(`name${i}`).value;
+                    const displayUnit = document.getElementById(`unit${i}`).value;
+                    const lasMnemonicInput = document.getElementById(`lasMnemonic${i}`).value.trim();
+                    const lasUnitInput = document.getElementById(`lasUnit${i}`).value.trim();
+
+                    const defaults = curveTypeDefaults[type] || {};
+                    const lasMnemonic = lasMnemonicInput || (defaults.mnemonic || (displayName ? displayName.toUpperCase() : `CURVE${i + 1}`));
+                    const lasUnit = lasUnitInput || (defaults.unit || displayUnit);
+
+                    config.curves.push({
+                        type: type,
+                        display_name: displayName,
+                        display_unit: displayUnit,
+                        name: lasMnemonic,
+                        unit: lasUnit,
+                        las_mnemonic: lasMnemonic,
+                        las_unit: lasUnit,
+                        left_px: parseInt(document.getElementById(`leftPx${i}`).value),
+                        right_px: parseInt(document.getElementById(`rightPx${i}`).value),
+                        left_value: parseFloat(document.getElementById(`leftVal${i}`).value),
+                        right_value: parseFloat(document.getElementById(`rightVal${i}`).value),
+                        mode: document.getElementById(`mode${i}`).value,
+                    });
+                }
+
                 saveDepthConfigToSession();
                 renderDepthOverlays();
                 const response = await fetch('/digitize', {
@@ -2420,8 +2841,8 @@
                     body: JSON.stringify({
                         image: uploadedImage,
                         config: config,
-                        detected_text: detectedText || null
-                    })
+                        detected_text: detectedText || null,
+                    }),
                 });
 
                 const data = await response.json();
@@ -2511,132 +2932,6 @@
             window.scrollTo({
                 top: document.body.scrollHeight,
                 behavior: 'smooth'
-            });
-        }
-
-        function jumpToOcrMatch(index) {
-            if (!ocrSearchMatches || !ocrSearchMatches.length) return;
-            if (index < 0 || index >= ocrSearchMatches.length) return;
-
-            const match = ocrSearchMatches[index];
-            const vertices = match.vertices;
-
-            const img = document.getElementById('imagePreview');
-            const overlay = document.getElementById('overlay');
-
-            if (!img || !overlay || !imageWidth || !imageHeight) {
-                showStatus('Image preview not available.', 'info');
-                return;
-            }
-
-            const centerX = vertices.reduce((sum, v) => sum + (v.x || 0), 0) / vertices.length;
-            const centerY = vertices.reduce((sum, v) => sum + (v.y || 0), 0) / vertices.length;
-
-            const scaleX = img.clientWidth / imageWidth;
-            const scaleY = img.clientHeight / imageHeight;
-
-            const imgRect = img.getBoundingClientRect();
-            const scrollX = imgRect.left + (centerX * scaleX) - window.innerWidth / 2;
-            const scrollY = imgRect.top + (centerY * scaleY) - window.innerHeight / 2;
-
-            window.scrollTo({
-                left: scrollX + window.scrollX,
-                top: scrollY + window.scrollY,
-                behavior: 'smooth'
-            });
-
-            const existingHighlight = document.getElementById('ocrHighlight');
-            if (existingHighlight) {
-                existingHighlight.remove();
-            }
-
-            const highlight = document.createElement('div');
-            highlight.id = 'ocrHighlight';
-            highlight.style.position = 'absolute';
-            highlight.style.border = '3px solid yellow';
-            highlight.style.backgroundColor = 'rgba(255, 255, 0, 0.2)';
-            highlight.style.pointerEvents = 'none';
-            highlight.style.zIndex = '1000';
-
-            const minX = Math.min(...vertices.map(v => v.x || 0));
-            const minY = Math.min(...vertices.map(v => v.y || 0));
-            const maxX = Math.max(...vertices.map(v => v.x || 0));
-            const maxY = Math.max(...vertices.map(v => v.y || 0));
-
-            highlight.style.left = `${minX * scaleX}px`;
-            highlight.style.top = `${minY * scaleY}px`;
-            highlight.style.width = `${(maxX - minX) * scaleX}px`;
-            highlight.style.height = `${(maxY - minY) * scaleY}px`;
-
-            overlay.appendChild(highlight);
-
-            // Remove highlight after 3 seconds
-            setTimeout(() => {
-                if (highlight.parentNode) {
-                    highlight.remove();
-                }
-            }, 3000);
-
-            const labelText = match.text || '';
-            showStatus(`Found "${labelText}" (${index + 1} of ${ocrSearchMatches.length}) at pixel (${Math.round(centerX)}, ${Math.round(centerY)})`, 'success');
-        }
-
-        function handlePhraseSearch() {
-            const input = document.getElementById('phraseSearch');
-            if (!input) return;
-            
-            const phrase = input.value.trim().toLowerCase();
-            if (!phrase) {
-                showStatus('Please enter a label to search for.', 'info');
-                return;
-            }
-
-            if (!detectedText || !detectedText.raw || detectedText.raw.length === 0) {
-                showStatus('⚠️ OCR not available. Google Vision API credentials need to be configured on the server.', 'info');
-                return;
-            }
-
-            const matches = [];
-            for (const annotation of detectedText.raw) {
-                if (!annotation.text || !annotation.vertices) {
-                    continue;
-                }
-                const text = annotation.text.toLowerCase();
-
-                if (text.includes(phrase) || phrase.includes(text)) {
-                    matches.push(annotation);
-                }
-            }
-
-            if (!matches.length) {
-                ocrSearchMatches = [];
-                ocrSearchIndex = -1;
-                ocrSearchPhrase = phrase;
-                showStatus(`Label "${phrase}" not found in OCR text.`, 'info');
-                return;
-            }
-
-            ocrSearchMatches = matches;
-            ocrSearchPhrase = phrase;
-            ocrSearchIndex = 0;
-            jumpToOcrMatch(ocrSearchIndex);
-        }
-
-        const phraseSearchInput = document.getElementById('phraseSearch');
-        if (phraseSearchInput) {
-            phraseSearchInput.addEventListener('keydown', function (event) {
-                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                    if (!ocrSearchMatches || !ocrSearchMatches.length) {
-                        return;
-                    }
-                    event.preventDefault();
-                    if (event.key === 'ArrowDown') {
-                        ocrSearchIndex = (ocrSearchIndex + 1) % ocrSearchMatches.length;
-                    } else {
-                        ocrSearchIndex = (ocrSearchIndex - 1 + ocrSearchMatches.length) % ocrSearchMatches.length;
-                    }
-                    jumpToOcrMatch(ocrSearchIndex);
-                }
             });
         }
 
