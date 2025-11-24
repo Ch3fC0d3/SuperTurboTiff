@@ -157,6 +157,29 @@
             font-size: 0.85rem;
             padding: 6px 8px;
         }
+        .curve-list-wrapper {
+            margin-top: 4px;
+            overflow-x: auto;
+        }
+        .curve-list-summary {
+            font-size: 0.8rem;
+        }
+        .curve-list-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+        }
+        .curve-list-table th,
+        .curve-list-table td {
+            padding: 4px 6px;
+            border-bottom: 1px solid #e5e7eb;
+            text-align: left;
+            white-space: nowrap;
+        }
+        .curve-list-table th {
+            background: #f3f4f6;
+            font-weight: 600;
+        }
         .status {
             padding: 15px;
             border-radius: 6px;
@@ -369,6 +392,13 @@
             pointer-events: none;
             z-index: 20;
         }
+        .header-region-overlay {
+            position: absolute;
+            border: 3px dashed #22c55e; /* green */
+            background: rgba(34, 197, 94, 0.12);
+            pointer-events: none;
+            z-index: 25;
+        }
         .ai-track-overlay {
             position: absolute;
             border: 2px dashed #f97316; /* orange */
@@ -540,7 +570,7 @@
                 <div id="imageInfo" class="hidden"></div>
             </div>
 
-            <!-- Main workspace: left viewer, right configuration -->
+            <!-- Main workspace: left.  viewer, right configuration -->
             <div id="workspace" class="workspace hidden">
                 <!-- Left: log viewer -->
                 <div class="viewer-pane">
@@ -583,6 +613,15 @@
                                     <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="adjustZoom(0.25)">+</button>
                                     <span id="zoomLabel" class="hint-text" style="margin-left: 4px;">100%</span>
                                 </div>
+                            </div>
+                            <div class="form-group" style="margin-top: 8px; max-width: 420px;">
+                                <label>Header / key (optional)</label>
+                                <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px;">
+                                    <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="beginHeaderSelection()">Capture header/key from image</button>
+                                    <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="clearHeaderSelection()">Clear header/key</button>
+                                </div>
+                                <div class="hint-text" id="headerSelectionSummary">No header captured. Curve config will use defaults.</div>
+                                <div class="hint-text">Click and drag a box over the header strip (scale labels + colored lines) to auto-fill Step 4 curve config.</div>
                             </div>
                             <div class="form-group" style="margin-top: 8px; max-width: 420px;">
                                 <label>Depth values</label>
@@ -667,6 +706,12 @@
 
                                 <div id="curvesContainer"></div>
                                 <div id="curveScaleSummary" class="hint-text" style="margin-top: 8px;"></div>
+                                <div class="form-group" style="margin-top: 8px;">
+                                    <label>Curve summary (list view)</label>
+                                    <div class="curve-list-wrapper">
+                                        <div id="curveListView" class="curve-list-summary hint-text"></div>
+                                    </div>
+                                </div>
 
                                 <button class="btn" onclick="runDigitization()" id="digitizeBtn" style="margin-top: 20px;">
                                     🚀 Digitize & Download LAS
@@ -715,6 +760,11 @@
         let panelSelectStart = null; // { x, y } first corner of panel selection
         let primaryRegionDrag = { active: false, edge: null };
         let curveEdgePick = null;  // { curveIndex, edge: 'left' | 'right' } when clicking to set curve edges
+        let headerSelectMode = false;
+        let headerRegionStart = null; // { x, y } first corner of header selection
+        let headerRegionDrag = false;
+        let headerRegion = null; // { left_px, right_px, top_px, bottom_px }
+        let headerTracks = null; // array of tracks from header capture
         let lastDigitizedDepth = null;   // array of depths from last /digitize
         let lastDigitizedCurves = null;  // { curveId: { unit, values[] } }
         let zoomLevel = 1.0;             // zoom factor for the overlay/image
@@ -790,6 +840,7 @@
         }
 
         function beginPanelSelection() {
+            headerSelectMode = false;
             panelSelectMode = true;
             panelSelectStart = null;
             primaryRegionDrag.active = false;
@@ -828,6 +879,31 @@
             renderAiInsights();
             updateSelectionSummary();
             showStatus('Cleared panel selection: using full image width and depth.', 'info');
+        }
+
+        function beginHeaderSelection() {
+            headerSelectMode = true;
+            headerRegionStart = null;
+            headerRegionDrag = false;
+            showStatus('Click and drag on the image to draw a box around the header/key strip.', 'info');
+            const summaryEl = document.getElementById('headerSelectionSummary');
+            if (summaryEl) {
+                summaryEl.textContent = 'Ready to capture header. Draw a box over the header strip.';
+            }
+        }
+
+        function clearHeaderSelection() {
+            headerSelectMode = false;
+            headerRegionStart = null;
+            headerRegionDrag = false;
+            headerRegion = null;
+            headerTracks = null;
+            clearHeaderRegionOverlay();
+            const summaryEl = document.getElementById('headerSelectionSummary');
+            if (summaryEl) {
+                summaryEl.textContent = 'No header captured. Curve config will use defaults.';
+            }
+            showStatus('Cleared header/key selection.', 'info');
         }
 
         function updateSelectionSummary() {
@@ -1271,6 +1347,16 @@
                 return;
             }
 
+            if (headerSelectMode) {
+                // Start a new header selection
+                headerRegionStart = { x: xImg, y: yImg };
+                headerRegion = null;
+                clearHeaderRegionOverlay();
+                headerRegionDrag = true;
+                event.preventDefault();
+                return;
+            }
+
             if (panelSelectMode) {
                 // Start a new marquee selection
                 panelSelectStart = { x: xImg, y: yImg };
@@ -1287,6 +1373,35 @@
 
         // Track marquee drag while mouse is down
         document.addEventListener('mousemove', (event) => {
+            // Handle header selection drag
+            if (headerRegionDrag && headerSelectMode && headerRegionStart && imageWidth && imageHeight) {
+                const rect = imagePreview.getBoundingClientRect();
+                if (!rect.width || !rect.height) return;
+
+                const x = event.clientX - rect.left;
+                const y = event.clientY - rect.top;
+                const xNorm = Math.max(0, Math.min(1, x / rect.width));
+                const yNorm = Math.max(0, Math.min(1, y / rect.height));
+                const xImg = Math.round(xNorm * (imageWidth - 1));
+                const yImg = Math.round(yNorm * (imageHeight - 1));
+
+                const left = Math.min(headerRegionStart.x, xImg);
+                const right = Math.max(headerRegionStart.x, xImg);
+                const top = Math.min(headerRegionStart.y, yImg);
+                const bottom = Math.max(headerRegionStart.y, yImg);
+
+                headerRegion = {
+                    left_px: left,
+                    right_px: right,
+                    top_px: top,
+                    bottom_px: bottom
+                };
+
+                renderHeaderRegionOverlay();
+                return;
+            }
+
+            // Handle panel selection drag
             if (!primaryRegionDrag.active || primaryRegionDrag.edge !== 'marquee') return;
             if (!panelSelectMode || !panelSelectStart || !imageWidth || !imageHeight) return;
 
@@ -1321,6 +1436,23 @@
         });
 
         document.addEventListener('mouseup', async () => {
+            // Handle header selection completion
+            if (headerRegionDrag && headerSelectMode && headerRegion) {
+                headerRegionDrag = false;
+                headerSelectMode = false;
+                
+                const summaryEl = document.getElementById('headerSelectionSummary');
+                if (summaryEl) {
+                    const w = headerRegion.right_px - headerRegion.left_px;
+                    const h = headerRegion.bottom_px - headerRegion.top_px;
+                    summaryEl.textContent = `Header/key region: X=${headerRegion.left_px}-${headerRegion.right_px}, Y=${headerRegion.top_px}-${headerRegion.bottom_px}. Analyzing...`;
+                }
+                
+                // Call backend to analyze header region
+                await aiCaptureHeaderFromRegion();
+                return;
+            }
+
             if (!primaryRegionDrag.active) return;
 
             // Finish marquee selection if that was in progress
@@ -1674,6 +1806,82 @@
                 showStatus(`✅ AI calibration applied: ${tracks.length} tracks proposed. Review and adjust as needed.`, 'success');
             } catch (err) {
                 showStatus(`AI calibration request failed: ${err.message}`, 'error');
+            }
+        }
+
+        async function aiCaptureHeaderFromRegion() {
+            if (!uploadedImage || !imageWidth || !imageHeight || !headerRegion) {
+                showStatus('No header region selected.', 'error');
+                return;
+            }
+
+            const left = Number(headerRegion.left_px);
+            const right = Number(headerRegion.right_px);
+            const top = Number(headerRegion.top_px);
+            const bottom = Number(headerRegion.bottom_px);
+
+            if (!Number.isFinite(left) || !Number.isFinite(right) || !Number.isFinite(top) || !Number.isFinite(bottom) ||
+                right <= left || bottom <= top) {
+                showStatus('Invalid header region coordinates.', 'error');
+                return;
+            }
+
+            showStatus('⏳ Analyzing header/key region with AI...', 'info');
+
+            try {
+                const resp = await fetch('/api/auto_layout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        image: uploadedImage,
+                        region: {
+                            left_px: left,
+                            right_px: right,
+                            top_px: top,
+                            bottom_px: bottom
+                        },
+                        treat_region_as_header: true
+                    })
+                });
+
+                const data = await resp.json();
+                if (!data.success) {
+                    showStatus(`Header analysis failed: ${data.error || 'Unknown error'}`, 'error');
+                    const summaryEl = document.getElementById('headerSelectionSummary');
+                    if (summaryEl) {
+                        summaryEl.textContent = 'Header capture failed. Try again with a clearer selection.';
+                    }
+                    return;
+                }
+
+                const tracks = data.tracks || [];
+                if (!tracks.length) {
+                    showStatus('No tracks detected in header region. Try selecting a larger area.', 'warning');
+                    const summaryEl = document.getElementById('headerSelectionSummary');
+                    if (summaryEl) {
+                        summaryEl.textContent = 'No tracks found in header. Try again.';
+                    }
+                    return;
+                }
+
+                // Store the detected header tracks
+                headerTracks = tracks;
+
+                // Update summary
+                const summaryEl = document.getElementById('headerSelectionSummary');
+                if (summaryEl) {
+                    const names = tracks.map(t => t.name || '?').join(', ');
+                    summaryEl.textContent = `Header captured: ${tracks.length} track(s) — ${names}. These will pre-fill Step 4 curves.`;
+                }
+
+                showStatus(`✓ Header captured: ${tracks.length} track(s) detected.`, 'success');
+            } catch (e) {
+                console.error('Header capture error:', e);
+                showStatus('Header capture failed due to network error.', 'error');
+                const summaryEl = document.getElementById('headerSelectionSummary');
+                if (summaryEl) {
+                    summaryEl.textContent = 'Header capture failed. Try again.';
+                }
             }
         }
 
@@ -2321,18 +2529,32 @@
             for (let i = 0; i < numCurves; i++) {
                 const track = (tracks && tracks[i]) || (detectedTracks && detectedTracks[i]) || null;
                 const hint = (ocrSuggestions && ocrSuggestions.curves && ocrSuggestions.curves[i]) || null;
-                const leftPx = track ? track[0] : hint ? Math.round(hint.left_px) : Math.floor(imageWidth * (0.1 + i * 0.8 / numCurves));
-                const rightPx = track ? track[1] : hint ? Math.round(hint.right_px) : Math.floor(imageWidth * (0.1 + (i + 1) * 0.8 / numCurves));
+                const headerTrack = Array.isArray(headerTracks) && headerTracks[i] ? headerTracks[i] : null;
 
-                // Use OCR label hint as the initial curve type when available
-                const hintedType = hint && hint.label_type ? hint.label_type : null;
+                // Base left/right pixels from panel/AI tracks or a simple fallback
+                let leftPx = track ? track[0] : hint ? Math.round(hint.left_px) : Math.floor(imageWidth * (0.1 + i * 0.8 / numCurves));
+                let rightPx = track ? track[1] : hint ? Math.round(hint.right_px) : Math.floor(imageWidth * (0.1 + (i + 1) * 0.8 / numCurves));
+
+                if (headerTrack && Number.isFinite(headerTrack.left_px) && Number.isFinite(headerTrack.right_px) && headerTrack.right_px > headerTrack.left_px) {
+                    leftPx = Math.round(headerTrack.left_px);
+                    rightPx = Math.round(headerTrack.right_px);
+                }
+
+                // Use header track name or OCR label hint as the initial curve type when available
+                let headerType = headerTrack && headerTrack.name ? String(headerTrack.name).toUpperCase() : null;
+                if (headerType === 'SPHI') {
+                    // Common vendor label that should behave like NPHI
+                    headerType = 'NPHI';
+                }
+                const hintedType = headerType || (hint && hint.label_type ? hint.label_type : null);
                 const defaultType = hintedType || curveTypes[i] || 'GR';
 
                 // Get OCR-detected display name independently (from label_text or label_mnemonic)
                 const ocrDisplayName = hint && (hint.label_text || hint.label_mnemonic) ? 
                     (hint.label_text || hint.label_mnemonic) : null;
 
-                // Build defaults for LAS mnemonic/unit: start from type defaults, then let OCR override
+                // Build defaults for LAS mnemonic/unit: start from type defaults,
+                // then let OCR/header overrides apply.
                 let defaults = curveTypeDefaults[defaultType] || { mnemonic: defaultType, unit: '' };
                 if (hint && hint.label_mnemonic) {
                     defaults = {
@@ -2340,12 +2562,23 @@
                         unit: hint.label_unit || defaults.unit || ''
                     };
                 }
+                if (headerTrack && headerTrack.unit) {
+                    defaults = {
+                        mnemonic: defaults.mnemonic,
+                        unit: headerTrack.unit || defaults.unit || ''
+                    };
+                }
 
                 // Decide default curve color:
-                //  1) Use image-based color hint if available (blue/green/red/dark).
-                //  2) Otherwise, fall back to a sensible guess from curve type
-                //     so key curves like GR/DT get green/blue by default.
-                let recommendedMode = hint && hint.color_recommended_mode ? hint.color_recommended_mode : null;
+                //  1) Use header-based color hint when available.
+                //  2) Otherwise, use image-based color hint if available.
+                //  3) Otherwise, fall back to a sensible guess from curve type.
+                let recommendedMode = null;
+                if (headerTrack && typeof headerTrack.color_hint === 'string' && headerTrack.color_hint) {
+                    recommendedMode = headerTrack.color_hint.toLowerCase();
+                } else if (hint && hint.color_recommended_mode) {
+                    recommendedMode = String(hint.color_recommended_mode).toLowerCase();
+                }
                 if (!recommendedMode) {
                     if (defaultType === 'DT') {
                         recommendedMode = 'blue';
@@ -2422,6 +2655,8 @@
                 container.appendChild(curveDiv);
 
                 const typeEl = document.getElementById(`type${i}`);
+                const nameEl = document.getElementById(`name${i}`);
+                const unitEl = document.getElementById(`unit${i}`);
                 const leftValEl = document.getElementById(`leftVal${i}`);
                 const rightValEl = document.getElementById(`rightVal${i}`);
                 const modeEl = document.getElementById(`mode${i}`);
@@ -2464,7 +2699,10 @@
                         curveDiv.style.borderColor = border;
                     };
                     applyCardTheme();
-                    modeEl.addEventListener('change', applyCardTheme);
+                    modeEl.addEventListener('change', () => {
+                        applyCardTheme();
+                        renderCurveListView();
+                    });
                 }
 
                 // #1: Auto-sync type changes to LAS mnemonic/unit
@@ -2472,14 +2710,28 @@
                     typeEl.addEventListener('change', () => {
                         syncCurveTypeToLabels(i);
                         updateCurveScaleHints();
+                        renderCurveListView();
                     });
                 }
-                
+
+                if (nameEl) {
+                    nameEl.addEventListener('input', renderCurveListView);
+                }
+                if (unitEl) {
+                    unitEl.addEventListener('input', renderCurveListView);
+                }
+
                 // #3: Re-infer type when scale changes
                 [leftValEl, rightValEl].forEach((el) => {
                     if (el) {
-                        el.addEventListener('change', updateCurveScaleHints);
-                        el.addEventListener('input', updateCurveScaleHints);
+                        el.addEventListener('change', () => {
+                            updateCurveScaleHints();
+                            renderCurveListView();
+                        });
+                        el.addEventListener('input', () => {
+                            updateCurveScaleHints();
+                            renderCurveListView();
+                        });
                     }
                 });
             }
@@ -2489,6 +2741,68 @@
             updateCurveScaleHints(true);
             // Generate validation report after curves are populated
             setTimeout(() => generateValidationReport(), 100);
+            // Refresh compact list view
+            renderCurveListView();
+        }
+
+        function renderCurveListView() {
+            const container = document.getElementById('curveListView');
+            const numCurvesInput = document.getElementById('numCurves');
+            if (!container || !numCurvesInput) return;
+
+            const numCurves = parseInt(numCurvesInput.value) || 0;
+            if (!numCurves) {
+                container.innerHTML = '';
+                return;
+            }
+
+            let rows = '';
+            for (let i = 0; i < numCurves; i++) {
+                const typeEl = document.getElementById(`type${i}`);
+                const nameEl = document.getElementById(`name${i}`);
+                const unitEl = document.getElementById(`unit${i}`);
+                const leftValEl = document.getElementById(`leftVal${i}`);
+                const rightValEl = document.getElementById(`rightVal${i}`);
+                const modeEl = document.getElementById(`mode${i}`);
+
+                const type = typeEl && typeEl.value ? String(typeEl.value).toUpperCase() : '';
+                const name = nameEl && nameEl.value ? nameEl.value : '';
+                const unit = unitEl && unitEl.value ? unitEl.value : '';
+                const leftVal = leftValEl && leftValEl.value !== '' ? leftValEl.value : '';
+                const rightVal = rightValEl && rightValEl.value !== '' ? rightValEl.value : '';
+                const mode = modeEl && modeEl.value ? modeEl.value : '';
+
+                rows += `
+                    <tr>
+                        <td>${i + 1}</td>
+                        <td>${type}</td>
+                        <td>${name}</td>
+                        <td>${unit}</td>
+                        <td>${leftVal}</td>
+                        <td>${rightVal}</td>
+                        <td>${mode}</td>
+                    </tr>
+                `;
+            }
+
+            container.innerHTML = `
+                <table class="curve-list-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Type</th>
+                            <th>Name</th>
+                            <th>Unit</th>
+                            <th>Left</th>
+                            <th>Right</th>
+                            <th>Color</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows}
+                    </tbody>
+                </table>
+            `;
         }
 
         function applyOcrSuggestions(options) {
@@ -2701,6 +3015,58 @@
             makeMask(0, topDom + heightDom, rect.width, rect.height - (topDom + heightDom));
             makeMask(0, topDom, xDom, heightDom);
             makeMask(xDom + widthDom, topDom, rect.width - (xDom + widthDom), heightDom);
+        }
+
+        function clearHeaderRegionOverlay() {
+            const overlay = document.getElementById('overlay');
+            if (!overlay) return;
+            const boxes = overlay.querySelectorAll('.header-region-overlay');
+            boxes.forEach((el) => el.remove());
+        }
+
+        function renderHeaderRegionOverlay() {
+            const overlay = document.getElementById('overlay');
+            const img = document.getElementById('imagePreview');
+            if (!overlay || !img || !headerRegion || !imageWidth || !imageHeight) {
+                clearHeaderRegionOverlay();
+                return;
+            }
+
+            const rect = img.getBoundingClientRect();
+            if (!rect.width || !rect.height) {
+                clearHeaderRegionOverlay();
+                return;
+            }
+
+            const leftPx = Number(headerRegion.left_px);
+            const rightPx = Number(headerRegion.right_px);
+            const topPx = Number(headerRegion.top_px);
+            const bottomPx = Number(headerRegion.bottom_px);
+
+            if (!Number.isFinite(leftPx) || !Number.isFinite(rightPx) || 
+                !Number.isFinite(topPx) || !Number.isFinite(bottomPx) ||
+                rightPx <= leftPx || bottomPx <= topPx) {
+                clearHeaderRegionOverlay();
+                return;
+            }
+
+            clearHeaderRegionOverlay();
+
+            const scaleX = rect.width / imageWidth;
+            const scaleY = rect.height / imageHeight;
+
+            const xDom = leftPx * scaleX;
+            const yDom = topPx * scaleY;
+            const widthDom = (rightPx - leftPx) * scaleX;
+            const heightDom = (bottomPx - topPx) * scaleY;
+
+            const box = document.createElement('div');
+            box.className = 'header-region-overlay';
+            box.style.left = `${xDom}px`;
+            box.style.top = `${yDom}px`;
+            box.style.width = `${widthDom}px`;
+            box.style.height = `${heightDom}px`;
+            overlay.appendChild(box);
         }
 
         function clearTrackOverlays() {

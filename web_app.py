@@ -1576,21 +1576,27 @@ def propose_calibration():
         }), 400
 
     # Build calibration payload for the LLM
-    # 1) Depth label candidates: left-side numeric entries
+    # 1) Depth label candidates: include left-side AND center-column numeric entries
+    # Many logs print depth in a center column, not just on the left edge.
     xs_all = [float(e['x']) for e in numeric_entries if 'x' in e]
     if xs_all:
         min_x = min(xs_all)
         max_x = max(xs_all)
         span_x = max(max_x - min_x, 1.0)
-        depth_x_threshold = min_x + 0.35 * span_x
+        # Expand threshold to 60% to catch center-column depth labels
+        depth_x_threshold = min_x + 0.60 * span_x
     else:
         depth_x_threshold = None
 
     depth_label_candidates = []
     for e in numeric_entries:
+        val = float(e['value'])
+        # Filter: depth values are typically in range 0-50000 ft, not tiny curve scales
+        if val < 0 or val > 50000:
+            continue
         if depth_x_threshold is not None and float(e['x']) <= depth_x_threshold:
             depth_label_candidates.append({
-                'value': float(e['value']),
+                'value': val,
                 'x_px': float(e['x']),
                 'y_px': float(e['y']),
             })
@@ -1649,8 +1655,14 @@ def propose_calibration():
     })
 
 
-@app.route('/api/auto_layout', methods=['POST'])
-def auto_layout_tracks():
+@app.route('/propose_curves', methods=['POST'])
+def propose_curves():
+    """Use Vision + LLM to propose curve tracks for a selected panel.
+
+    Expects JSON with:
+      - image: data URL string
+      - region: { left_px, right_px, top_px, bottom_px } in image pixel coords
+    """
     data = request.json or {}
     image_data = data.get('image')
     region = data.get('region') or {}
@@ -1684,10 +1696,196 @@ def auto_layout_tracks():
     panel = img[top:bottom, left:right]
     panel_h, panel_w, _ = panel.shape
     if panel_h < 2 or panel_w < 2:
+        return jsonify({'success': False, 'error': 'Panel too small for curve suggestion'}), 400
+
+    # Detect tracks within the panel using edge-based detector
+    local_tracks = auto_detect_tracks(panel) or []
+    tracks_out = []
+    for idx, (lx, rx) in enumerate(local_tracks):
+        try:
+            lx_f = float(lx)
+            rx_f = float(rx)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(lx_f) or not np.isfinite(rx_f) or rx_f <= lx_f:
+            continue
+        tracks_out.append({
+            'index': idx,
+            'left_px': lx_f,
+            'right_px': rx_f,
+        })
+
+    # Fallback: if we only found 0 or 1 track on a reasonably wide panel,
+    # synthesize several equal-width tracks so curves can cover the full width.
+    if len(tracks_out) <= 1 and panel_w >= 400:
+        synth_tracks = []
+        n_segments = 4
+        seg_w = float(panel_w) / float(n_segments)
+        for i in range(n_segments):
+            lx_f = i * seg_w
+            rx_f = (i + 1) * seg_w
+            synth_tracks.append({
+                'index': i,
+                'left_px': lx_f,
+                'right_px': rx_f,
+            })
+        if synth_tracks:
+            print(f"⚠️  auto_detect_tracks found {len(tracks_out)} track(s); using {len(synth_tracks)} synthetic tracks instead.")
+            tracks_out = synth_tracks
+
+    if not tracks_out:
+        return jsonify({'success': False, 'error': 'No tracks detected in panel for curve suggestion.'}), 400
+
+    # Run Vision OCR on the same panel to get numeric + label hints
+    ok, buf = cv2.imencode('.jpg', panel, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    if not ok:
+        return jsonify({'success': False, 'error': 'Failed to encode panel for OCR'}), 500
+
+    crop_bytes = buf.tobytes()
+    detected_text = detect_text_vision_api(crop_bytes)
+    ocr_suggestions = detected_text.get('suggestions', {}) or {}
+
+    # Attach color hints based on panel image content
+    try:
+        ocr_suggestions = attach_color_hints_to_ocr_curves(panel, ocr_suggestions)
+        detected_text['suggestions'] = ocr_suggestions
+    except Exception:
+        pass
+
+    curve_payload = build_curve_suggestion_payload(panel, tracks_out, ocr_suggestions, detected_text)
+    ai_result = call_ai_curve_suggestions(curve_payload)
+    if not ai_result or not isinstance(ai_result, dict):
+        return jsonify({'success': False, 'error': 'AI curve suggestion failed or returned no result.'}), 500
+
+    ai_curves = ai_result.get('curves') or []
+    print(f"🤖 AI returned {len(ai_curves)} curve suggestions for {len(tracks_out)} detected tracks")
+
+    curves_cfg = []
+    rejected_reasons = []
+    for idx, c in enumerate(ai_curves):
+        try:
+            track_index = int(c.get('track_index'))
+        except (TypeError, ValueError):
+            rejected_reasons.append(f"Curve {idx}: invalid track_index type")
+            continue
+        if track_index < 0 or track_index >= len(tracks_out):
+            rejected_reasons.append(f"Curve {idx}: track_index {track_index} out of range (0-{len(tracks_out)-1})")
+            continue
+
+        track = tracks_out[track_index]
+        abs_left = float(left) + float(track.get('left_px', 0.0))
+        abs_right = float(left) + float(track.get('right_px', 0.0))
+        if not np.isfinite(abs_left) or not np.isfinite(abs_right) or abs_right <= abs_left:
+            rejected_reasons.append(f"Curve {idx}: invalid pixel range")
+            continue
+
+        mnemonic = (c.get('mnemonic') or track.get('name') or '').strip()
+        if not mnemonic:
+            mnemonic = f"CURVE{len(curves_cfg) + 1}"
+
+        mode = (c.get('mode') or 'black').strip().lower()
+        if mode not in ('black', 'red', 'blue', 'green'):
+            mode = 'black'
+
+        preferred = bool(c.get('preferred', False))
+
+        curves_cfg.append({
+            'mnemonic': mnemonic,
+            'track_index': track_index,
+            'preferred': preferred,
+            'mode': mode,
+            'left_px': abs_left,
+            'right_px': abs_right,
+        })
+
+    if not curves_cfg:
+        print(f"❌ All {len(ai_curves)} AI curve suggestions rejected:")
+        for reason in rejected_reasons:
+            print(f"   - {reason}")
+
+        # Fallback: if we have detected tracks, synthesize simple curves so the UI can proceed
+        if tracks_out:
+            print("⚠️  Falling back to heuristic curves from detected tracks.")
+            for idx, t in enumerate(tracks_out[:6]):
+                try:
+                    abs_left = float(left) + float(t.get('left_px', 0.0))
+                    abs_right = float(left) + float(t.get('right_px', 0.0))
+                except Exception:
+                    continue
+                if not np.isfinite(abs_left) or not np.isfinite(abs_right) or abs_right <= abs_left:
+                    continue
+
+                mnemonic = (t.get('name') or f'CURVE{len(curves_cfg) + 1}').strip() or f'CURVE{len(curves_cfg) + 1}'
+
+                curves_cfg.append({
+                    'mnemonic': mnemonic,
+                    'track_index': idx,
+                    'preferred': idx == 0,
+                    'mode': 'black',
+                    'left_px': abs_left,
+                    'right_px': abs_right,
+                })
+
+        if not curves_cfg:
+            return jsonify({'success': False, 'error': 'AI returned no usable curve suggestions.'}), 400
+
+    print(f"✅ Accepted {len(curves_cfg)} curves, rejected {len(rejected_reasons)}")
+
+    return jsonify({
+        'success': True,
+        'curves': curves_cfg,
+        'raw_ai': ai_result,
+        'payload': curve_payload,
+    })
+
+
+@app.route('/api/auto_layout', methods=['POST'])
+def auto_layout_tracks():
+    data = request.json or {}
+    image_data = data.get('image')
+    region = data.get('region') or {}
+    treat_region_as_header = bool(data.get('treat_region_as_header'))
+
+    if not image_data or ',' not in image_data:
+        return jsonify({'success': False, 'error': 'Missing image data'}), 400
+
+    try:
+        img_payload = image_data.split(',', 1)[1]
+        img_bytes = base64.b64decode(img_payload)
+    except Exception:
+        return jsonify({'success': False, 'error': 'Invalid image data'}), 400
+
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({'success': False, 'error': 'Could not decode image'}), 400
+
+    H, W, _ = img.shape
+    try:
+        left = max(0, int(region.get('left_px', 0)))
+        right = min(W, int(region.get('right_px', W)))
+        top = max(0, int(region.get('top_px', 0)))
+        bottom = min(H, int(region.get('bottom_px', H)))
+    except Exception:
+        return jsonify({'success': False, 'error': 'Invalid region'}), 400
+
+    if right <= left or bottom <= top:
+        return jsonify({'success': False, 'error': 'Empty region'}), 400
+
+    panel = img[top:bottom, left:right]
+    panel_h, panel_w, _ = panel.shape
+    if panel_h < 2 or panel_w < 2:
         return jsonify({'success': False, 'error': 'Panel too small for layout detection'}), 400
 
-    header_h = max(10, int(panel_h * 0.15))
-    header = panel[0:header_h, :]
+    # For normal panel-based layout, only the top band is treated as the
+    # header. For explicit header/key capture, the entire region is the
+    # header strip, so skip the extra crop.
+    if treat_region_as_header:
+        header = panel
+        header_h = panel_h
+    else:
+        header_h = max(10, int(panel_h * 0.15))
+        header = panel[0:header_h, :]
 
     ok, buf = cv2.imencode('.jpg', header, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
@@ -1716,8 +1914,37 @@ def auto_layout_tracks():
             'y': y_center,
         })
 
+    # If no header text found, fall back to edge-based track detection
     if not items:
-        return jsonify({'success': False, 'error': 'No header text items found for layout detection.'}), 400
+        print("⚠️  No header text found; falling back to edge-based track detection")
+        local_tracks = auto_detect_tracks(panel)
+        tracks_out = []
+        for idx, (lx, rx) in enumerate(local_tracks or []):
+            try:
+                lx_f = float(lx)
+                rx_f = float(rx)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(lx_f) or not np.isfinite(rx_f) or rx_f <= lx_f:
+                continue
+            tracks_out.append({
+                'name': f'Track{idx+1}',
+                'left_px': float(left) + lx_f,
+                'right_px': float(left) + rx_f,
+                'scale_min': None,
+                'scale_max': None,
+                'unit': None,
+                'hot_side': None,
+            })
+        
+        if not tracks_out:
+            return jsonify({'success': False, 'error': 'No tracks detected (neither header text nor edge detection found tracks).'}), 400
+        
+        return jsonify({
+            'success': True,
+            'tracks': tracks_out,
+            'raw_layout': {'tracks': [], 'fallback': 'edge_detection'},
+        })
 
     layout_payload = {
         'image': {
@@ -1757,6 +1984,7 @@ def auto_layout_tracks():
             'scale_max': t.get('scale_max'),
             'unit': t.get('unit'),
             'hot_side': t.get('hot_side'),
+            'color_hint': t.get('color_hint'),
         }
         tracks_out.append(track_out)
 
@@ -1768,6 +1996,180 @@ def auto_layout_tracks():
         'tracks': tracks_out,
         'raw_layout': layout,
     })
+
+
+def build_curve_suggestion_payload(panel_image, tracks_out, ocr_suggestions, detected_text):
+    h, w = panel_image.shape[:2]
+
+    tracks = []
+    for idx, t in enumerate(tracks_out or []):
+        try:
+            left_px = float(t.get('left_px'))
+            right_px = float(t.get('right_px'))
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(left_px) or not np.isfinite(right_px) or right_px <= left_px:
+            continue
+        track = {
+            'index': idx,
+            'left_px': left_px,
+            'right_px': right_px,
+        }
+        name = t.get('name')
+        if isinstance(name, str) and name:
+            track['name'] = name
+        unit = t.get('unit')
+        if isinstance(unit, str) and unit:
+            track['unit'] = unit
+        smin = t.get('scale_min')
+        smax = t.get('scale_max')
+        if isinstance(smin, (int, float)) and np.isfinite(smin):
+            track['scale_min'] = float(smin)
+        if isinstance(smax, (int, float)) and np.isfinite(smax):
+            track['scale_max'] = float(smax)
+        tracks.append(track)
+
+    curves_hint = (ocr_suggestions or {}).get('curves') or []
+    header_labels = []
+    for c in curves_hint:
+        try:
+            lx = float(c.get('left_px'))
+            rx = float(c.get('right_px'))
+        except (TypeError, ValueError):
+            lx = None
+            rx = None
+        x_center = None
+        if lx is not None and rx is not None and np.isfinite(lx) and np.isfinite(rx):
+            x_center = 0.5 * (lx + rx)
+        label_text = c.get('label_text') or c.get('label_mnemonic') or c.get('type')
+        if not label_text:
+            continue
+        label = {'text': str(label_text)}
+        if x_center is not None:
+            label['x_px'] = x_center
+        label_type = c.get('label_type') or c.get('type')
+        if label_type:
+            label['curve_type'] = str(label_type)
+        header_labels.append(label)
+
+    full_text = ''
+    if isinstance(detected_text, dict):
+        raw_entries = detected_text.get('raw') or []
+        texts = []
+        for entry in raw_entries:
+            if isinstance(entry, dict):
+                t = entry.get('text')
+                if isinstance(t, str) and t.strip():
+                    texts.append(t.strip())
+        full_text = '\n'.join(texts)
+    elif isinstance(detected_text, str):
+        full_text = detected_text
+
+    return {
+        'image': {
+            'width_px': int(w),
+            'height_px': int(h),
+        },
+        'tracks': tracks,
+        'header_labels': header_labels,
+        'raw_text': full_text,
+    }
+
+
+def call_ai_curve_suggestions(curve_payload):
+    if not curve_payload:
+        return None
+
+    schema_hint = (
+        "You are helping digitize paper well logs into LAS. You receive a list of "
+        "tracks with x positions, rough names, and header labels. "
+        "Your job is to decide which tracks correspond to which curves and which "
+        "2-3 curves should be digitized by default. Always respond with JSON ONLY "
+        "using this schema:\n\n"
+        "{\n"
+        "  \"curves\": [\n"
+        "    {\n"
+        "      \"mnemonic\": string,\n"
+        "      \"track_index\": integer,\n"
+        "      \"preferred\": boolean,\n"
+        "      \"mode\": string\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Guidelines:\n"
+        "- Match header_labels to nearest track by x position when possible.\n"
+        "- Prefer GR, DT, RHOB, NPHI, RES when choosing preferred curves.\n"
+        "- Never invent track indices; only use those present in tracks[].\n"
+    )
+
+    payload_text = schema_hint + json.dumps(curve_payload, indent=2)
+
+    if GEMINI_API_KEY and GEMINI_MODEL_ID:
+        try:
+            model_name = GEMINI_MODEL_ID if GEMINI_MODEL_ID.startswith("models/") else f"models/{GEMINI_MODEL_ID}"
+            url = f"https://generativelanguage.googleapis.com/v1/{model_name}:generateContent?key={GEMINI_API_KEY}"
+            body = {"contents": [{"parts": [{"text": payload_text}]}]}
+            resp = requests.post(url, json=body, timeout=40)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    content = candidates[0].get("content", {})
+                    parts = content.get("parts", [])
+                    if parts:
+                        text = parts[0].get("text", "")
+                        curves = _extract_json_object(text)
+                        if isinstance(curves, dict):
+                            return curves
+        except Exception as exc:
+            print(f"Gemini API error (curve_suggestions): {exc}")
+
+    if OPENAI_API_KEY and OPENAI_MODEL_ID:
+        try:
+            openai.api_key = OPENAI_API_KEY
+            messages = [
+                {"role": "system", "content": "You output JSON only."},
+                {"role": "user", "content": payload_text},
+            ]
+            resp = openai.ChatCompletion.create(
+                model=OPENAI_MODEL_ID,
+                messages=messages,
+                max_tokens=512,
+                temperature=0.1,
+            )
+            choices = resp.get("choices") or []
+            if choices:
+                msg = choices[0].get("message") or {}
+                content = msg.get("content") or ""
+                curves = _extract_json_object(content)
+                if isinstance(curves, dict):
+                    return curves
+        except Exception as exc:
+            print(f"OpenAI API error (curve_suggestions): {exc}")
+
+    if not HF_API_TOKEN or not HF_MODEL_ID:
+        return None
+
+    try:
+        client = InferenceClient(provider="hf-inference", api_key=HF_API_TOKEN)
+    except Exception as exc:
+        print(f"HF InferenceClient init error (curve_suggestions): {exc}")
+        return None
+
+    try:
+        out = client.text_generation(
+            payload_text,
+            model=HF_MODEL_ID,
+            max_new_tokens=512,
+            temperature=0.1,
+        )
+        curves = _extract_json_object(out if isinstance(out, str) else str(out))
+        if isinstance(curves, dict):
+            return curves
+    except Exception as exc:
+        print(f"HF text_generation error (curve_suggestions): {exc}")
+
+    return None
 
 
 def build_ocr_suggestions(numeric_entries):
@@ -2287,23 +2689,31 @@ def compute_depth_warnings(depth_cfg, image_height):
 
 
 def auto_detect_tracks(image_array):
-    """Auto-detect track boundaries"""
+    """Auto-detect track boundaries by finding vertical edges, filtering out narrow depth columns"""
     gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
     vertical_sum = np.sum(edges, axis=0)
     
-    # Simple peak detection
+    # Peak detection for vertical edges
     threshold = np.max(vertical_sum) * 0.3
     peaks = []
     for i in range(1, len(vertical_sum)-1):
         if vertical_sum[i] > threshold and vertical_sum[i] > vertical_sum[i-1] and vertical_sum[i] > vertical_sum[i+1]:
             peaks.append(i)
     
-    # Group into tracks
+    # Group consecutive peaks into tracks
     if len(peaks) >= 2:
-        tracks = [(peaks[i], peaks[i+1]) for i in range(0, len(peaks)-1, 2)]
+        tracks = []
+        for i in range(len(peaks) - 1):
+            left = peaks[i]
+            right = peaks[i + 1]
+            width = right - left
+            # Filter out narrow regions (likely depth columns, not data tracks)
+            # Typical depth columns are 30-80px wide; data tracks are usually 80-300px
+            if width >= 30:
+                tracks.append((left, right))
     else:
-        # Fallback: divide into 3 equal sections
+        # Fallback: divide into equal sections
         w = image_array.shape[1]
         section_width = w // 3
         tracks = [(i*section_width, (i+1)*section_width) for i in range(3)]
