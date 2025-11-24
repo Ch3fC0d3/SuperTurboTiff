@@ -185,7 +185,7 @@
             display: flex;
             flex-direction: column;
             gap: 16px;
-            max-height: calc(100vh - 110px);
+            max-height: calc(100vh - 60px);
             overflow-y: auto;
         }
         .viewer-pane {
@@ -205,13 +205,13 @@
         }
         .viewer-scroll {
             flex: 0 0 auto;
-            height: calc(100vh - 110px);
+            height: calc(100vh - 60px);
             overflow: auto;
         }
         .curve-pane {
             display: flex;
             flex-direction: column;
-            max-height: calc(100vh - 110px);
+            max-height: calc(100vh - 60px);
             overflow-y: auto;
         }
         .curve-pane .step {
@@ -288,15 +288,22 @@
         .curve-actions {
             display: flex;
             flex-wrap: wrap;
-            gap: 6px;
+            gap: 8px;
             align-items: flex-start;
         }
         .curve-actions > label,
         .curve-actions > input {
             flex: 0 0 100%;
         }
-        .curve-actions .btn {
-            flex: 1 1 calc(50% - 6px);
+        .curve-action {
+            flex: 1 1 calc(50% - 8px);
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .curve-action .btn {
+            width: 100%;
         }
         .config-layout {
             display: flex;
@@ -566,7 +573,7 @@
                                 Mouse pixel: (move over image)
                             </p>
                             <p style="color: #666; font-size: 0.85em; margin-top: 6px;">
-                                Tip: Use the <strong>Top/Bottom depth</strong> and <strong>Top/Bottom pixel</strong> fields in Step 3 to align the depth guidelines with the printed scale; the mouse readout updates from those values.
+                                Tip: Use the <strong>Top/Bottom depth</strong> fields below and the <strong>Top/Bottom pixel</strong> fields in Step 3 to align the depth guidelines with the printed scale; the mouse readout updates from those values.
                             </p>
                             <div class="form-group" style="margin-top: 8px; max-width: 420px;">
                                 <label>Zoom</label>
@@ -575,6 +582,19 @@
                                     <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="resetZoom()">100%</button>
                                     <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="adjustZoom(0.25)">+</button>
                                     <span id="zoomLabel" class="hint-text" style="margin-left: 4px;">100%</span>
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin-top: 8px; max-width: 420px;">
+                                <label>Depth values</label>
+                                <div class="depth-row">
+                                    <div class="field">
+                                        <label for="topDepth">Top depth value</label>
+                                        <input type="number" id="topDepth" placeholder="Top depth value" step="0.1" required>
+                                    </div>
+                                    <div class="field">
+                                        <label for="bottomDepth">Bottom depth value</label>
+                                        <input type="number" id="bottomDepth" placeholder="Bottom depth value" step="0.1" required>
+                                    </div>
                                 </div>
                             </div>
                             <div class="form-group" style="margin-top: 8px; max-width: 420px;">
@@ -598,20 +618,12 @@
                                         <label for="topPx">Top pixel (Y)</label>
                                         <input type="number" id="topPx" placeholder="Top pixel (Y)">
                                     </div>
-                                    <div class="field">
-                                        <label for="topDepth">Top depth value</label>
-                                        <input type="number" id="topDepth" placeholder="Top depth value" step="0.1" required>
-                                    </div>
                                 </div>
 
                                 <div class="depth-row">
                                     <div class="field">
                                         <label for="bottomPx">Bottom pixel (Y)</label>
                                         <input type="number" id="bottomPx" placeholder="Bottom pixel (Y)">
-                                    </div>
-                                    <div class="field">
-                                        <label for="bottomDepth">Bottom depth value</label>
-                                        <input type="number" id="bottomDepth" placeholder="Bottom depth value" step="0.1" required>
                                     </div>
                                 </div>
 
@@ -644,13 +656,13 @@
                                     <div class="curve-actions">
                                         <label for="numCurves">Number of Curves (max 6)</label>
                                         <input type="number" id="numCurves" value="3" min="1" max="6">
-                                        <button class="btn" onclick="generateCurveInputs()">Generate Curve Fields</button>
-                                        <button class="btn" type="button" onclick="autoFillCurveTypes()">✨ Auto-fill curve types</button>
-                                        <button class="btn" type="button" onclick="aiCalibratePanel()">⭐ AI calibrate panel</button>
-                                        <button class="btn" type="button" onclick="aiDetectTracks()">🤖 AI detect tracks</button>
+                                        <div class="curve-action">
+                                            <button class="btn" type="button" onclick="aiAutoCurves()">✨ AI auto-setup curves</button>
+                                            <div class="hint-text">
+                                                Let the AI set up depth, tracks, and curves in one step; you can still review and edit before digitizing.
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div class="hint-text" style="margin-top: 4px;">Uses scale ranges (GR/RHOB/NPHI/DT) to guess curve types for each track; you can still edit them.</div>
-                                    <div class="hint-text" style="margin-top: 4px;">Uses Vision + LLM to propose depth axis and all track calibrations from the selected panel; you can still edit them.</div>
                                 </div>
 
                                 <div id="curvesContainer"></div>
@@ -702,6 +714,7 @@
         let panelSelectMode = false;
         let panelSelectStart = null; // { x, y } first corner of panel selection
         let primaryRegionDrag = { active: false, edge: null };
+        let curveEdgePick = null;  // { curveIndex, edge: 'left' | 'right' } when clicking to set curve edges
         let lastDigitizedDepth = null;   // array of depths from last /digitize
         let lastDigitizedCurves = null;  // { curveId: { unit, values[] } }
         let zoomLevel = 1.0;             // zoom factor for the overlay/image
@@ -1101,6 +1114,19 @@
             }
         });
 
+        const numCurvesInputEl = document.getElementById('numCurves');
+        if (numCurvesInputEl) {
+            const clampAndRegenerateCurves = () => {
+                let val = parseInt(numCurvesInputEl.value);
+                if (!Number.isFinite(val)) val = 1;
+                val = Math.max(1, Math.min(6, val));
+                numCurvesInputEl.value = val;
+                generateCurveInputs();
+            };
+            numCurvesInputEl.addEventListener('change', clampAndRegenerateCurves);
+            numCurvesInputEl.addEventListener('input', clampAndRegenerateCurves);
+        }
+
         // Depth anchor & panel/region interaction on image
         const imagePreview = document.getElementById('imagePreview');
         const imageHitTarget = document.getElementById('overlay') || imagePreview;
@@ -1215,7 +1241,7 @@
             }
         });
 
-        // Marquee-style panel selection (click-drag-release)
+        // Marquee-style panel selection (click-drag-release) and curve edge picking
         if (imageHitTarget) imageHitTarget.addEventListener('mousedown', (event) => {
             if (!imageWidth || !imageHeight || !imagePreview) return;
 
@@ -1224,23 +1250,39 @@
 
             const x = event.clientX - rect.left;
             const y = event.clientY - rect.top;
-            const xNorm = x / rect.width;
-            const yNorm = y / rect.height;
+            const xNorm = Math.max(0, Math.min(1, x / rect.width));
+            const yNorm = Math.max(0, Math.min(1, y / rect.height));
             const xImg = Math.round(xNorm * (imageWidth - 1));
             const yImg = Math.round(yNorm * (imageHeight - 1));
+
+            // If user is in "pick curve edge" mode, set that curve's left/right X and exit.
+            if (curveEdgePick && Number.isFinite(xImg)) {
+                const idx = curveEdgePick.curveIndex;
+                const edge = curveEdgePick.edge;
+                if (Number.isInteger(idx) && idx >= 0) {
+                    const inputId = edge === 'right' ? `rightPx${idx}` : `leftPx${idx}`;
+                    const inputEl = document.getElementById(inputId);
+                    if (inputEl) {
+                        inputEl.value = xImg;
+                    }
+                }
+                curveEdgePick = null;
+                event.preventDefault();
+                return;
+            }
 
             if (panelSelectMode) {
                 // Start a new marquee selection
                 panelSelectStart = { x: xImg, y: yImg };
                 primaryRegion = null;
                 clearPrimaryRegionOverlay();
-                primaryRegionDrag.active = true; // reuse flag simply as \"drag in progress\"
+                primaryRegionDrag.active = true; // reuse flag simply as "drag in progress"
                 primaryRegionDrag.edge = 'marquee';
                 event.preventDefault();
                 return;
             }
 
-            // If not in panelSelectMode, just let depth anchors handle click in the separate handler
+            // Otherwise, clicks are used by depth-anchor handlers elsewhere.
         });
 
         // Track marquee drag while mouse is down
@@ -1298,6 +1340,10 @@
                 // For robustness we clamp into image coordinates again.
                 const lastX = panelSelectStart.x;
                 const lastY = panelSelectStart.y;
+                if (!primaryRegion || !Number.isFinite(Number(primaryRegion.left_px)) || !Number.isFinite(Number(primaryRegion.right_px))) {
+                    primaryRegionDrag.edge = null;
+                    return;
+                }
                 const left = Number(primaryRegion.left_px);
                 const right = Number(primaryRegion.right_px);
 
@@ -1573,19 +1619,11 @@
                 const depthAxis = calib.depth_axis || {};
                 const tracks = calib.tracks || [];
 
-                // Apply depth_axis
-                if (Number.isFinite(depthAxis.top_pixel)) {
-                    topPxInput.value = Math.round(depthAxis.top_pixel);
-                }
-                if (Number.isFinite(depthAxis.bottom_pixel)) {
-                    bottomPxInput.value = Math.round(depthAxis.bottom_pixel);
-                }
-                if (Number.isFinite(depthAxis.top_depth)) {
-                    document.getElementById('topDepth').value = depthAxis.top_depth;
-                }
-                if (Number.isFinite(depthAxis.bottom_depth)) {
-                    document.getElementById('bottomDepth').value = depthAxis.bottom_depth;
-                }
+                // Apply depth_axis ONLY for pixel positions, NOT depth values.
+                // User-entered depth values (topDepth, bottomDepth) should not be overwritten.
+                // We ALSO intentionally avoid changing the top/bottom pixel inputs here so that
+                // the user-controlled vertical range (blue selection box) is never cropped by AI.
+                // Depth pixels remain exactly as the user configured them.
 
                 // Apply tracks
                 if (tracks.length > 0) {
@@ -1679,8 +1717,9 @@
 
                 const data = await resp.json();
                 if (!data.success) {
-                    showStatus(`AI track detection failed: ${data.error || 'unknown error'}`, 'error');
+                    console.warn('AI track detection failed:', data.error);
                     clearTrackOverlays();
+                    // Don't throw - let the caller decide if this is fatal
                     return;
                 }
 
@@ -1735,6 +1774,212 @@
             } catch (err) {
                 showStatus(`AI track detection request failed: ${err.message}`, 'error');
                 clearTrackOverlays();
+            }
+        }
+
+        async function aiProposeCurves() {
+            if (!uploadedImage || !imageWidth || !imageHeight) {
+                showStatus('Please upload an image first.', 'info');
+                return;
+            }
+
+            if (!primaryRegion || !Number.isFinite(primaryRegion.left_px) || !Number.isFinite(primaryRegion.right_px)) {
+                showStatus('Please select a panel first (click "Select panel from image" and drag a box).', 'info');
+                return;
+            }
+
+            const topPxInput = document.getElementById('topPx');
+            const bottomPxInput = document.getElementById('bottomPx');
+            const topPx = topPxInput ? parseFloat(topPxInput.value) : 0;
+            const bottomPx = bottomPxInput ? parseFloat(bottomPxInput.value) : imageHeight - 1;
+
+            if (!Number.isFinite(topPx) || !Number.isFinite(bottomPx) || bottomPx <= topPx) {
+                showStatus('Invalid depth pixel range; please select a panel first.', 'info');
+                return;
+            }
+
+            showStatus('🤔 Asking AI to propose curves from panel (Vision + LLM)...', 'info');
+
+            try {
+                const resp = await fetch('/propose_curves', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        image: uploadedImage,
+                        region: {
+                            left_px: primaryRegion.left_px,
+                            right_px: primaryRegion.right_px,
+                            top_px: topPx,
+                            bottom_px: bottomPx,
+                        }
+                    })
+                });
+
+                const data = await resp.json();
+                if (!data.success) {
+                    showStatus(`AI curve proposal failed: ${data.error || 'unknown error'}`, 'error');
+                    return;
+                }
+
+                let curves = data.curves || [];
+                if (!curves.length) {
+                    showStatus('AI curve proposal returned no curves.', 'info');
+                    return;
+                }
+
+                // Sort so preferred curves appear first
+                curves = curves.slice().sort((a, b) => Number(b.preferred || false) - Number(a.preferred || false));
+
+                // Update detectedTracks so generateCurveInputs uses these windows
+                detectedTracks = curves.slice(0, 6).map(c => [
+                    Math.round(c.left_px),
+                    Math.round(c.right_px),
+                ]);
+
+                const numCurvesInput = document.getElementById('numCurves');
+                numCurvesInput.value = Math.min(6, curves.length);
+                generateCurveInputs();
+
+                // Fill in curve types, names, modes, LAS mnemonics from AI mnemonics
+                const typeFromMnemonic = (mn) => {
+                    const m = (mn || '').toUpperCase();
+                    if (m === 'DTC' || m === 'DT' || m === 'DTCO') return 'DT';
+                    if (['GR', 'RHOB', 'NPHI', 'DT', 'CALI', 'SP'].includes(m)) return m;
+                    return 'OTHER';
+                };
+
+                // Preferred color mode by mnemonic, following common log conventions.
+                // This is used only when the AI did not already provide an explicit mode;
+                // user edits in the UI always win.
+                const modeFromMnemonic = (mn) => {
+                    const m = (mn || '').toUpperCase();
+
+                    // Gamma ray
+                    if (m === 'GR') return 'green';
+
+                    // Density / neutron pair
+                    if (m === 'RHOB') return 'red';
+                    if (m === 'NPHI') return 'blue';
+
+                    // Sonic (compressional)
+                    if (m === 'DT' || m === 'DTC' || m === 'DTCO') return 'blue';
+
+                    // Sonic (shear)
+                    if (m === 'DTSM' || m === 'DTS') return 'red';
+
+                    // SP
+                    if (m === 'SP') return 'black';
+
+                    // Resistivity family: deep vs shallow
+                    if (m.includes('RES') || ['RT', 'RT_HR', 'LLD', 'ILD'].includes(m)) {
+                        return 'red'; // deep resistivity
+                    }
+                    if (['LLS', 'ILM', 'MSFL'].includes(m)) {
+                        return 'blue'; // shallow/medium resistivity
+                    }
+
+                    return null;
+                };
+
+                for (let i = 0; i < Math.min(6, curves.length); i++) {
+                    const c = curves[i];
+                    const mnemonic = (c.mnemonic || '').toUpperCase();
+                    const typeVal = typeFromMnemonic(mnemonic);
+
+                    const typeEl = document.getElementById(`type${i}`);
+                    const nameEl = document.getElementById(`name${i}`);
+                    const lasMnemonicEl = document.getElementById(`lasMnemonic${i}`);
+                    const lasUnitEl = document.getElementById(`lasUnit${i}`);
+                    const modeEl = document.getElementById(`mode${i}`);
+                    const leftPxEl = document.getElementById(`leftPx${i}`);
+                    const rightPxEl = document.getElementById(`rightPx${i}`);
+
+                    if (leftPxEl && Number.isFinite(c.left_px)) {
+                        leftPxEl.value = Math.round(c.left_px);
+                    }
+                    if (rightPxEl && Number.isFinite(c.right_px)) {
+                        rightPxEl.value = Math.round(c.right_px);
+                    }
+
+                    if (typeEl) {
+                        typeEl.value = typeVal;
+                        syncCurveTypeToLabels(i);
+                    }
+
+                    if (nameEl && mnemonic) {
+                        nameEl.value = mnemonic;
+                    }
+
+                    if (lasMnemonicEl && mnemonic) {
+                        lasMnemonicEl.value = mnemonic;
+                    }
+
+                    // 1) Respect AI-provided mode if valid
+                    let appliedMode = null;
+                    if (modeEl && c.mode) {
+                        const mv = String(c.mode).toLowerCase();
+                        if (['black', 'red', 'blue', 'green'].includes(mv)) {
+                            modeEl.value = mv;
+                            appliedMode = mv;
+                        }
+                    }
+
+                    // 2) If AI did not specify a usable mode, derive one from mnemonic
+                    if (modeEl && !appliedMode) {
+                        const mapped = modeFromMnemonic(mnemonic);
+                        if (mapped && ['black', 'red', 'blue', 'green'].includes(mapped)) {
+                            modeEl.value = mapped;
+                        }
+                    }
+                }
+
+                renderDepthOverlays();
+                renderPrimaryRegionOverlay();
+                updateCurveScaleHints();
+                generateValidationReport();
+                showStatus(`✅ AI proposed ${curves.length} curve(s). Review and adjust as needed.`, 'success');
+            } catch (err) {
+                showStatus(`AI curve proposal request failed: ${err.message}`, 'error');
+            }
+        }
+
+        async function aiAutoCurves() {
+            if (!uploadedImage || !imageWidth || !imageHeight) {
+                showStatus('Please upload an image first.', 'info');
+                return;
+            }
+
+            if (!primaryRegion || !Number.isFinite(primaryRegion.left_px) || !Number.isFinite(primaryRegion.right_px)) {
+                showStatus('Please select a panel first (click "Select panel from image" and drag a box).', 'info');
+                return;
+            }
+
+            const topPxInput = document.getElementById('topPx');
+            const bottomPxInput = document.getElementById('bottomPx');
+            const topPx = topPxInput ? parseFloat(topPxInput.value) : 0;
+            const bottomPx = bottomPxInput ? parseFloat(bottomPxInput.value) : imageHeight - 1;
+
+            if (!Number.isFinite(topPx) || !Number.isFinite(bottomPx) || bottomPx <= topPx) {
+                showStatus('Invalid depth pixel range; please set Top/Bottom pixel values first.', 'info');
+                return;
+            }
+
+            showStatus('⏳ Running full AI setup: calibrate panel, detect tracks, and propose curves...', 'info');
+
+            try {
+                await aiCalibratePanel();
+                
+                // Try track detection, but don't fail the whole chain if it errors
+                try {
+                    await aiDetectTracks();
+                } catch (trackErr) {
+                    console.warn('AI track detection failed, continuing with curve proposal:', trackErr);
+                    showStatus('⚠️ AI track detection failed, trying curve proposal...', 'info');
+                }
+                
+                await aiProposeCurves();
+            } catch (err) {
+                showStatus(`AI auto-setup failed: ${err.message}`, 'error');
             }
         }
 
@@ -2180,6 +2425,25 @@
                 const leftValEl = document.getElementById(`leftVal${i}`);
                 const rightValEl = document.getElementById(`rightVal${i}`);
                 const modeEl = document.getElementById(`mode${i}`);
+                const leftPxEl = document.getElementById(`leftPx${i}`);
+                const rightPxEl = document.getElementById(`rightPx${i}`);
+
+                // When a Left/Right pixel input gains focus, arm a one-click
+                // picker so the next click on the log sets that edge for this
+                // specific curve. This only updates X pixels for that curve;
+                // depth values and other config are untouched.
+                if (leftPxEl) {
+                    leftPxEl.addEventListener('focus', () => {
+                        curveEdgePick = { curveIndex: i, edge: 'left' };
+                        showStatus(`Click on the log image to set LEFT edge for Curve ${i + 1}.`, 'info');
+                    });
+                }
+                if (rightPxEl) {
+                    rightPxEl.addEventListener('focus', () => {
+                        curveEdgePick = { curveIndex: i, edge: 'right' };
+                        showStatus(`Click on the log image to set RIGHT edge for Curve ${i + 1}.`, 'info');
+                    });
+                }
 
                 if (modeEl) {
                     const applyCardTheme = () => {
