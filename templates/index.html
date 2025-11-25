@@ -379,6 +379,52 @@
             font-size: 0.85em;
             color: #555;
         }
+        .header-ocr-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        .header-ocr-tag {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 6px;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            background: #f3f4f6;
+            color: #111827;
+            border: 1px solid #e5e7eb;
+        }
+        .header-ocr-tag-gr {
+            background: rgba(34, 197, 94, 0.12);
+            border-color: #22c55e;
+            color: #065f46;
+        }
+        .header-ocr-tag-rhob {
+            background: rgba(59, 130, 246, 0.12);
+            border-color: #3b82f6;
+            color: #1d4ed8;
+        }
+        .header-ocr-tag-nphi {
+            background: rgba(244, 114, 182, 0.15);
+            border-color: #ec4899;
+            color: #9d174d;
+        }
+        .header-ocr-tag-dt {
+            background: rgba(56, 189, 248, 0.12);
+            border-color: #06b6d4;
+            color: #0e7490;
+        }
+        .header-ocr-tag-res {
+            background: rgba(251, 191, 36, 0.15);
+            border-color: #f59e0b;
+            color: #92400e;
+        }
+        .header-ocr-tag-other {
+            background: rgba(148, 163, 184, 0.15);
+            border-color: #9ca3af;
+            color: #374151;
+        }
         .phrase-highlight {
             position: absolute;
             border: 2px solid #ef4444;
@@ -403,8 +449,31 @@
             position: absolute;
             border: 2px dashed #f97316; /* orange */
             background: rgba(249, 115, 22, 0.12);
-            pointer-events: none;
+            pointer-events: auto;
             z-index: 18;
+        }
+        .ai-track-overlay-red {
+            border-color: #dc2626;
+            background: rgba(248, 113, 113, 0.18);
+        }
+        .ai-track-overlay-blue {
+            border-color: #2563eb;
+            background: rgba(59, 130, 246, 0.18);
+        }
+        .ai-track-overlay-green {
+            border-color: #16a34a;
+            background: rgba(22, 163, 74, 0.18);
+        }
+        .ai-track-overlay-black {
+            border-color: #111827;
+            background: rgba(15, 23, 42, 0.18);
+        }
+        .track-fill-disabled .ai-track-overlay,
+        .track-fill-disabled .ai-track-overlay-red,
+        .track-fill-disabled .ai-track-overlay-blue,
+        .track-fill-disabled .ai-track-overlay-green,
+        .track-fill-disabled .ai-track-overlay-black {
+            background: transparent !important;
         }
         .panel-mask-overlay {
             position: absolute;
@@ -707,6 +776,12 @@
                                 <div id="curvesContainer"></div>
                                 <div id="curveScaleSummary" class="hint-text" style="margin-top: 8px;"></div>
                                 <div class="form-group" style="margin-top: 8px;">
+                                    <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem;">
+                                        <input type="checkbox" id="hideTrackFillToggle">
+                                        Hide colored track fill (show dashed edges only)
+                                    </label>
+                                </div>
+                                <div class="form-group" style="margin-top: 8px;">
                                     <label>Curve summary (list view)</label>
                                     <div class="curve-list-wrapper">
                                         <div id="curveListView" class="curve-list-summary hint-text"></div>
@@ -728,6 +803,7 @@
             <!-- Step 5: AI Insights -->
             <div class="step hidden" id="insightsStep">
                 <h2>Step 5: AI Insights</h2>
+                <div id="digitizationSummary" class="insight-card hidden"></div>
                 <div id="aiInsightContent" class="insight-card">
                     <p>Upload a log image to see Vision OCR suggestions here.</p>
                 </div>
@@ -760,6 +836,7 @@
         let panelSelectStart = null; // { x, y } first corner of panel selection
         let primaryRegionDrag = { active: false, edge: null };
         let curveEdgePick = null;  // { curveIndex, edge: 'left' | 'right' } when clicking to set curve edges
+        let trackOverlayDrag = null;
         let headerSelectMode = false;
         let headerRegionStart = null; // { x, y } first corner of header selection
         let headerRegionDrag = false;
@@ -1203,6 +1280,21 @@
             numCurvesInputEl.addEventListener('input', clampAndRegenerateCurves);
         }
 
+        const hideTrackFillToggle = document.getElementById('hideTrackFillToggle');
+        if (hideTrackFillToggle) {
+            const overlayRoot = document.getElementById('overlay');
+            const applyTrackFillToggle = () => {
+                if (!overlayRoot) return;
+                if (hideTrackFillToggle.checked) {
+                    overlayRoot.classList.add('track-fill-disabled');
+                } else {
+                    overlayRoot.classList.remove('track-fill-disabled');
+                }
+            };
+            hideTrackFillToggle.addEventListener('change', applyTrackFillToggle);
+            applyTrackFillToggle();
+        }
+
         // Depth anchor & panel/region interaction on image
         const imagePreview = document.getElementById('imagePreview');
         const imageHitTarget = document.getElementById('overlay') || imagePreview;
@@ -1373,6 +1465,24 @@
 
         // Track marquee drag while mouse is down
         document.addEventListener('mousemove', (event) => {
+            if (trackOverlayDrag && imageWidth && imageHeight && imagePreview) {
+                const rect = imagePreview.getBoundingClientRect();
+                if (!rect.width || !rect.height) return;
+                const x = event.clientX - rect.left;
+                const xNorm = Math.max(0, Math.min(1, x / rect.width));
+                const xImg = Math.round(xNorm * (imageWidth - 1));
+                const idx = trackOverlayDrag.curveIndex;
+                const edge = trackOverlayDrag.edge;
+                const inputId = edge === 'right' ? `rightPx${idx}` : `leftPx${idx}`;
+                const inputEl = document.getElementById(inputId);
+                if (inputEl) {
+                    inputEl.value = xImg;
+                    refreshTrackOverlaysFromCurves();
+                    renderCurveListView();
+                }
+                return;
+            }
+
             // Handle header selection drag
             if (headerRegionDrag && headerSelectMode && headerRegionStart && imageWidth && imageHeight) {
                 const rect = imagePreview.getBoundingClientRect();
@@ -1436,6 +1546,9 @@
         });
 
         document.addEventListener('mouseup', async () => {
+            if (trackOverlayDrag) {
+                trackOverlayDrag = null;
+            }
             // Handle header selection completion
             if (headerRegionDrag && headerSelectMode && headerRegion) {
                 headerRegionDrag = false;
@@ -1861,6 +1974,8 @@
                     if (summaryEl) {
                         summaryEl.textContent = 'No tracks found in header. Try again.';
                     }
+                    headerRegion = null;
+                    clearHeaderRegionOverlay();
                     return;
                 }
 
@@ -1875,6 +1990,8 @@
                 }
 
                 showStatus(`✓ Header captured: ${tracks.length} track(s) detected.`, 'success');
+                headerRegion = null;
+                clearHeaderRegionOverlay();
             } catch (e) {
                 console.error('Header capture error:', e);
                 showStatus('Header capture failed due to network error.', 'error');
@@ -1976,7 +2093,7 @@
 
                 renderDepthOverlays();
                 renderPrimaryRegionOverlay();
-                renderTrackOverlays(tracks);
+                refreshTrackOverlaysFromCurves();
                 updateCurveScaleHints();
                 showStatus(`✅ AI detected ${tracks.length} track(s). Review and adjust as needed.`, 'success');
             } catch (err) {
@@ -2257,6 +2374,7 @@
                         imageHeight = imgEl.naturalHeight || imageHeight;
                         renderDepthOverlays();
                         renderPrimaryRegionOverlay();
+                        refreshTrackOverlaysFromCurves();
                         applyZoom();
                     };
                     imgEl.src = uploadedImage;
@@ -2672,11 +2790,27 @@
                         curveEdgePick = { curveIndex: i, edge: 'left' };
                         showStatus(`Click on the log image to set LEFT edge for Curve ${i + 1}.`, 'info');
                     });
+                    leftPxEl.addEventListener('input', () => {
+                        refreshTrackOverlaysFromCurves();
+                        renderCurveListView();
+                    });
+                    leftPxEl.addEventListener('change', () => {
+                        refreshTrackOverlaysFromCurves();
+                        renderCurveListView();
+                    });
                 }
                 if (rightPxEl) {
                     rightPxEl.addEventListener('focus', () => {
                         curveEdgePick = { curveIndex: i, edge: 'right' };
                         showStatus(`Click on the log image to set RIGHT edge for Curve ${i + 1}.`, 'info');
+                    });
+                    rightPxEl.addEventListener('input', () => {
+                        refreshTrackOverlaysFromCurves();
+                        renderCurveListView();
+                    });
+                    rightPxEl.addEventListener('change', () => {
+                        refreshTrackOverlaysFromCurves();
+                        renderCurveListView();
                     });
                 }
 
@@ -2743,6 +2877,7 @@
             setTimeout(() => generateValidationReport(), 100);
             // Refresh compact list view
             renderCurveListView();
+            refreshTrackOverlaysFromCurves();
         }
 
         function renderCurveListView() {
@@ -3091,8 +3226,6 @@
             }
             const denomX = Math.max(1, imageWidth - 1);
 
-            // Vertical band follows current depth config, using same mapping as
-            // renderDepthOverlays with no extra buffer.
             let topDom = 0;
             let heightDom = rect.height;
             const cfg = typeof getDepthConfigFromInputs === 'function' ? getDepthConfigFromInputs() : null;
@@ -3104,7 +3237,7 @@
 
             clearTrackOverlays();
 
-            trackBoxes.forEach((t) => {
+            trackBoxes.forEach((t, idx) => {
                 const leftPx = Number(t.left_px);
                 const rightPx = Number(t.right_px);
                 if (!Number.isFinite(leftPx) || !Number.isFinite(rightPx) || rightPx <= leftPx) return;
@@ -3119,11 +3252,72 @@
                 box.style.top = `${topDom}px`;
                 box.style.width = `${widthDom}px`;
                 box.style.height = `${heightDom}px`;
+
+                const curveIndex = Number.isInteger(t.curve_index) ? t.curve_index : idx;
+                box.dataset.curveIndex = String(curveIndex);
+
+                let mode = '';
+                if (typeof t.mode === 'string') {
+                    mode = t.mode.toLowerCase();
+                } else {
+                    const modeEl = document.getElementById(`mode${curveIndex}`);
+                    if (modeEl && modeEl.value) {
+                        mode = String(modeEl.value).toLowerCase();
+                    }
+                }
+                if (mode === 'red') {
+                    box.classList.add('ai-track-overlay-red');
+                } else if (mode === 'blue') {
+                    box.classList.add('ai-track-overlay-blue');
+                } else if (mode === 'green') {
+                    box.classList.add('ai-track-overlay-green');
+                } else if (mode === 'black') {
+                    box.classList.add('ai-track-overlay-black');
+                }
+
                 if (t.name) {
                     box.title = `AI track: ${t.name}`;
                 }
+
+                box.addEventListener('mousedown', (event) => {
+                    const idxCur = parseInt(box.dataset.curveIndex || '', 10);
+                    if (!Number.isInteger(idxCur) || !imageWidth || !imageHeight || !imagePreview) return;
+                    const boxRect = box.getBoundingClientRect();
+                    const relX = event.clientX - boxRect.left;
+                    const frac = boxRect.width > 0 ? relX / boxRect.width : 0.5;
+                    const edge = frac <= 0.5 ? 'left' : 'right';
+                    trackOverlayDrag = { curveIndex: idxCur, edge: edge };
+                    event.preventDefault();
+                });
+
                 overlay.appendChild(box);
             });
+        }
+
+        function refreshTrackOverlaysFromCurves() {
+            const numCurvesInput = document.getElementById('numCurves');
+            if (!numCurvesInput) {
+                clearTrackOverlays();
+                return;
+            }
+            const numCurves = parseInt(numCurvesInput.value) || 0;
+            const boxes = [];
+            for (let i = 0; i < numCurves; i++) {
+                const leftPxEl = document.getElementById(`leftPx${i}`);
+                const rightPxEl = document.getElementById(`rightPx${i}`);
+                const modeEl = document.getElementById(`mode${i}`);
+                if (!leftPxEl || !rightPxEl) continue;
+                const leftPx = parseFloat(leftPxEl.value);
+                const rightPx = parseFloat(rightPxEl.value);
+                if (!Number.isFinite(leftPx) || !Number.isFinite(rightPx) || rightPx <= leftPx) continue;
+                const mode = modeEl && modeEl.value ? String(modeEl.value).toLowerCase() : '';
+                boxes.push({ left_px: leftPx, right_px: rightPx, curve_index: i, mode: mode });
+            }
+            if (!boxes.length) {
+                clearTrackOverlays();
+                return;
+            }
+            renderTrackOverlays(boxes);
         }
 
         function findPhraseRegionInOcr(phrase) {
@@ -3481,6 +3675,12 @@
                     // Store digitized data for cursor readout
                     lastDigitizedDepth = Array.isArray(data.digitized_depth) ? data.digitized_depth : null;
                     lastDigitizedCurves = data.digitized_curves || null;
+                    renderDigitizationSummary(
+                        depthCfg,
+                        lastDigitizedDepth,
+                        lastDigitizedCurves,
+                        (config.global_options && typeof config.global_options.null === 'number') ? config.global_options.null : null
+                    );
 
                     // Download LAS file
                     const blob = new Blob([data.las_content], { type: 'text/plain' });
@@ -3673,6 +3873,127 @@
             return { depth, depthName, curves };
         }
 
+        function renderDigitizationSummary(depthCfg, digitizedDepth, digitizedCurves, nullSentinel) {
+            const card = document.getElementById('digitizationSummary');
+            const step = document.getElementById('insightsStep');
+            if (!card || !step) return;
+
+            const hasDepth = Array.isArray(digitizedDepth) && digitizedDepth.length > 1;
+            const hasCurves = digitizedCurves && typeof digitizedCurves === 'object' && Object.keys(digitizedCurves).length > 0;
+            if (!hasDepth || !hasCurves) {
+                card.classList.add('hidden');
+                card.innerHTML = '';
+                return;
+            }
+
+            step.classList.remove('hidden');
+
+            const firstDepth = digitizedDepth[0];
+            const lastDepth = digitizedDepth[digitizedDepth.length - 1];
+            const dMin = Math.min(firstDepth, lastDepth);
+            const dMax = Math.max(firstDepth, lastDepth);
+            const unit = depthCfg && depthCfg.unit ? depthCfg.unit : '';
+
+            let stepApprox = null;
+            const diffs = [];
+            for (let i = 1; i < digitizedDepth.length; i++) {
+                const d0 = digitizedDepth[i - 1];
+                const d1 = digitizedDepth[i];
+                const diff = Math.abs(d1 - d0);
+                if (Number.isFinite(diff) && diff > 0) {
+                    diffs.push(diff);
+                }
+            }
+            if (diffs.length) {
+                diffs.sort((a, b) => a - b);
+                stepApprox = diffs[Math.floor(diffs.length / 2)];
+            }
+
+            const depthParts = [];
+            if (Number.isFinite(dMin) && Number.isFinite(dMax)) {
+                depthParts.push(`Depth ${dMin.toFixed(2)}–${dMax.toFixed(2)}${unit ? ' ' + unit : ''}`);
+            }
+            depthParts.push(`${digitizedDepth.length} depth samples`);
+            if (Number.isFinite(stepApprox) && stepApprox > 0) {
+                const stepStr = stepApprox >= 1 ? stepApprox.toFixed(1) : stepApprox.toFixed(3);
+                depthParts.push(`~${stepStr}${unit ? ' ' + unit : ''} sampling`);
+            }
+
+            const curveRows = [];
+            const curveKeys = Object.keys(digitizedCurves);
+            curveKeys.forEach((key) => {
+                const entry = digitizedCurves[key];
+                if (!entry || !Array.isArray(entry.values) || !entry.values.length) {
+                    curveRows.push(`<li>${key}: no samples</li>`);
+                    return;
+                }
+
+                const vals = entry.values;
+                let count = 0;
+                let nullCount = 0;
+                let minVal = null;
+                let maxVal = null;
+
+                for (let i = 0; i < vals.length; i++) {
+                    const v = vals[i];
+                    if (!Number.isFinite(v)) {
+                        continue;
+                    }
+                    count++;
+                    if (nullSentinel != null && v === nullSentinel) {
+                        nullCount++;
+                        continue;
+                    }
+                    if (minVal === null || v < minVal) minVal = v;
+                    if (maxVal === null || v > maxVal) maxVal = v;
+                }
+
+                if (!count) {
+                    curveRows.push(`<li>${key}: all null or invalid samples</li>`);
+                    return;
+                }
+
+                const goodCount = count - nullCount;
+                const nullFrac = count ? nullCount / count : 0;
+                let health = 'OK';
+                if (goodCount <= 0) {
+                    health = 'all null';
+                } else {
+                    const span = minVal != null && maxVal != null ? maxVal - minVal : 0;
+                    if (!Number.isFinite(span) || span === 0) {
+                        health = 'very flat';
+                    }
+                    if (nullFrac > 0.5) {
+                        health = nullFrac >= 0.9 ? 'mostly null' : 'many nulls';
+                    }
+                }
+
+                const parts = [];
+                parts.push(`${count} samples`);
+                if (goodCount > 0 && Number.isFinite(minVal) && Number.isFinite(maxVal)) {
+                    parts.push(`min ${minVal.toFixed(2)}, max ${maxVal.toFixed(2)}`);
+                }
+                if (nullCount > 0) {
+                    parts.push(`${Math.round(nullFrac * 100)}% null`);
+                }
+                if (health) {
+                    parts.push(health);
+                }
+
+                curveRows.push(`<li><strong>${key}</strong>: ${parts.join(' • ')}</li>`);
+            });
+
+            const curvesHtml = curveRows.join('');
+            card.innerHTML = `
+                <div class="insight-block">
+                    <h3>Digitization summary</h3>
+                    <p class="hint-text">${depthParts.join(' • ')}</p>
+                    <ul class="hint-text" style="margin-top: 4px; padding-left: 18px;">${curvesHtml}</ul>
+                </div>
+            `;
+            card.classList.remove('hidden');
+        }
+
         function renderAiInsights() {
             const insightsStep = document.getElementById('insightsStep');
             const panel = document.getElementById('aiInsightContent');
@@ -3736,6 +4057,85 @@
                         <ul>${list}</ul>
                     </div>
                 `);
+            }
+            if (detectedText && Array.isArray(detectedText.raw) && detectedText.raw.length) {
+                const raw = detectedText.raw;
+                const allYs = [];
+                for (const entry of raw) {
+                    const verts = entry.vertices || [];
+                    for (const v of verts) {
+                        if (v && typeof v.y === 'number') {
+                            allYs.push(v.y);
+                        }
+                    }
+                }
+
+                if (allYs.length) {
+                    const minY = Math.min(...allYs);
+                    const maxY = Math.max(...allYs);
+                    const headerThreshold = minY + 0.3 * (maxY - minY);
+
+                    const headerTexts = [];
+                    for (const entry of raw) {
+                        const text = (entry.text || '').trim();
+                        if (!text) continue;
+                        const verts = entry.vertices || [];
+                        const ys = verts
+                            .map((v) => (v && typeof v.y === 'number' ? v.y : null))
+                            .filter((y) => y !== null);
+                        if (!ys.length) continue;
+                        const yCenter = ys.reduce((a, b) => a + b, 0) / ys.length;
+                        if (yCenter > headerThreshold) continue;
+                        headerTexts.push(text);
+                    }
+
+                    const unique = [];
+                    const seen = new Set();
+                    const numericOnly = /^-?\d*\.?\d+$/;
+                    for (const t of headerTexts) {
+                        const norm = t.toUpperCase().replace(/\s+/g, ' ').trim();
+                        if (!norm || numericOnly.test(norm)) continue;
+                        if (seen.has(norm)) continue;
+                        seen.add(norm);
+                        unique.push(t);
+                        if (unique.length >= 24) break;
+                    }
+
+                    if (unique.length) {
+                        const chips = unique.map((t) => {
+                            const upper = t.toUpperCase();
+                            let cls = 'header-ocr-tag-other';
+                            if (upper.includes('GAMMA') || /\bGR\b/.test(upper)) {
+                                cls = 'header-ocr-tag-gr';
+                            } else if (upper.includes('RHOB') || upper.includes('RHO') || upper.includes('DENS')) {
+                                cls = 'header-ocr-tag-rhob';
+                            } else if (upper.includes('NPHI') || upper.includes('NEUTRON')) {
+                                cls = 'header-ocr-tag-nphi';
+                            } else if (upper.includes('SONIC') || upper.includes('DTC') || /\bDT\b/.test(upper)) {
+                                cls = 'header-ocr-tag-dt';
+                            } else if (upper.includes('RESIST') || /\bRES\b/.test(upper) || upper.includes('ILD') || upper.includes('LLD')) {
+                                cls = 'header-ocr-tag-res';
+                            }
+                            return `<span class="header-ocr-tag ${cls}">${t}</span>`;
+                        }).join('');
+
+                        parts.push(`
+                            <div class="insight-block">
+                                <h3>Header OCR (key items)</h3>
+                                <div class="header-ocr-grid">${chips}</div>
+                                <div class="hint-text" style="margin-top: 4px;">
+                                    Legend:
+                                    <span class="header-ocr-tag header-ocr-tag-gr">GR / Gamma Ray</span>
+                                    <span class="header-ocr-tag header-ocr-tag-rhob">RHOB / Density</span>
+                                    <span class="header-ocr-tag header-ocr-tag-nphi">NPHI / Neutron</span>
+                                    <span class="header-ocr-tag header-ocr-tag-dt">DT / Sonic</span>
+                                    <span class="header-ocr-tag header-ocr-tag-res">RES / Resistivity</span>
+                                    <span class="header-ocr-tag header-ocr-tag-other">Other header text</span>
+                                </div>
+                            </div>
+                        `);
+                    }
+                }
             }
 
             panel.innerHTML = parts.join('');
