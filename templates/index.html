@@ -193,22 +193,6 @@
             position: relative;
             display: inline-block;
         }
-        .zoom-slider-overlay {
-            position: absolute;
-            left: 50%;
-            bottom: 10px;
-            transform: translateX(-50%);
-            background: rgba(15, 23, 42, 0.8);
-            padding: 4px 8px;
-            border-radius: 999px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            z-index: 40;
-        }
-        .zoom-slider-overlay input[type="range"] {
-            width: 140px;
-        }
         .overlay-scroll {
             max-height: none;
             overflow-y: auto;
@@ -664,9 +648,6 @@
                         <div class="overlay-scroll viewer-scroll">
                             <div id="overlay">
                                 <img id="imagePreview" alt="Log preview">
-                                <div class="zoom-slider-overlay">
-                                    <input type="range" id="zoomSlider" min="50" max="200" value="100" step="5" oninput="setZoom(this.value / 100)" />
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -700,6 +681,7 @@
                                     <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(0.5)">50%</button>
                                     <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="setZoom(1.0)">100%</button>
                                     <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(2.0)">200%</button>
+                                    <input type="range" id="zoomSlider" min="50" max="200" value="100" step="5" oninput="setZoom(this.value / 100)" style="width: 150px;" />
                                     <span id="zoomLabel" class="hint-text" style="margin-left: 4px;">100%</span>
                                 </div>
                             </div>
@@ -808,9 +790,14 @@
                                     </div>
                                 </div>
 
-                                <button class="btn" onclick="runDigitization()" id="digitizeBtn" style="margin-top: 20px;">
-                                    🚀 Digitize & Download LAS
-                                </button>
+                                <div style="margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px;">
+                                    <button class="btn" type="button" onclick="runDigitization()" id="digitizeBtn">
+                                        🚀 Digitize
+                                    </button>
+                                    <button class="btn" type="button" onclick="downloadLastLas()" id="downloadLasBtn" disabled>
+                                        💾 Download LAS
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -864,6 +851,8 @@
         let headerTracks = null; // array of tracks from header capture
         let lastDigitizedDepth = null;   // array of depths from last /digitize
         let lastDigitizedCurves = null;  // { curveId: { unit, values[] } }
+        let lastLasContent = null;       // LAS text from last digitization
+        let lastLasFilename = null;      // LAS filename from last digitization
         let zoomLevel = 1.0;             // zoom factor for the overlay/image
 
         const DEPTH_SESSION_KEY = 'tifflas_depth_config_v1';
@@ -2689,6 +2678,35 @@
             summaryEl.textContent = swapMessage;
         }
 
+        function applyHeaderScaleForCurve(index) {
+            const leftValEl = document.getElementById(`leftVal${index}`);
+            const rightValEl = document.getElementById(`rightVal${index}`);
+            if (!leftValEl || !rightValEl) {
+                return;
+            }
+
+            const headerTrack = Array.isArray(headerTracks) && headerTracks[index] ? headerTracks[index] : null;
+            if (headerTrack && Number.isFinite(headerTrack.scale_min) && Number.isFinite(headerTrack.scale_max)) {
+                let sMin = Number(headerTrack.scale_min);
+                let sMax = Number(headerTrack.scale_max);
+                if (Number.isFinite(sMin) && Number.isFinite(sMax)) {
+                    if (sMax < sMin) {
+                        const tmp = sMin;
+                        sMin = sMax;
+                        sMax = tmp;
+                    }
+                    leftValEl.value = sMin;
+                    rightValEl.value = sMax;
+                    updateCurveScaleHints();
+                    renderCurveListView();
+                    showStatus(`Applied header key scale to Curve ${index + 1}.`, 'success');
+                    return;
+                }
+            }
+
+            showStatus(`No header key scale found for Curve ${index + 1}.`, 'info');
+        }
+
         function generateCurveInputs(tracks = null) {
             const numCurves = parseInt(document.getElementById('numCurves').value);
             const container = document.getElementById('curvesContainer');
@@ -2852,6 +2870,7 @@
                         <div class="field">
                             <label>Scale check</label>
                             <div class="hint-text" id="curveHint${i}"></div>
+                            <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em; margin-top: 4px;" onclick="applyHeaderScaleForCurve(${i})">Use header key scale</button>
                         </div>
                     </div>
                 `;
@@ -3218,6 +3237,10 @@
 
             const dragging = primaryRegionDrag && primaryRegionDrag.active && primaryRegionDrag.edge === 'marquee' && panelSelectMode;
             if (dragging) {
+                return;
+            }
+
+            if (!panelSelectMode) {
                 return;
             }
 
@@ -3699,14 +3722,16 @@
 
         async function runDigitization() {
             const btn = document.getElementById('digitizeBtn');
-            btn.disabled = true;
+            const downloadBtn = document.getElementById('downloadLasBtn');
+            if (btn) btn.disabled = true;
+            if (downloadBtn) downloadBtn.disabled = true;
             showStatus('🔄 Processing...', 'info');
 
             try {
                 const depthCfg = getDepthConfigFromInputs();
                 if (!depthCfg) {
                     showStatus('Please enter valid top/bottom pixels and depth values before digitizing.', 'error');
-                    btn.disabled = false;
+                    if (btn) btn.disabled = false;
                     return;
                 }
 
@@ -3771,9 +3796,11 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    // Store digitized data for cursor readout
+                    // Store digitized data for cursor readout and later download
                     lastDigitizedDepth = Array.isArray(data.digitized_depth) ? data.digitized_depth : null;
                     lastDigitizedCurves = data.digitized_curves || null;
+                    lastLasContent = data.las_content || null;
+                    lastLasFilename = data.filename || 'digitized_log.las';
                     renderDigitizationSummary(
                         depthCfg,
                         lastDigitizedDepth,
@@ -3781,24 +3808,15 @@
                         (config.global_options && typeof config.global_options.null === 'number') ? config.global_options.null : null
                     );
 
-                    // Download LAS file
-                    const blob = new Blob([data.las_content], { type: 'text/plain' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = data.filename;
-                    a.click();
-                    URL.revokeObjectURL(url);
-
                     let statusType = 'success';
                     let message;
                     if (data.validation && data.validation.passed) {
-                        message = `✅ LAS file downloaded. ${data.validation.message}`;
+                        message = `✅ Digitization complete. LAS is ready to download. ${data.validation.message}`;
                     } else if (data.validation) {
                         statusType = 'info';
-                        message = `⚠️ LAS saved, but validation reported: ${data.validation.message}`;
+                        message = `⚠️ Digitization complete, but validation reported: ${data.validation.message}`;
                     } else {
-                        message = '✅ Success! LAS file downloaded.';
+                        message = '✅ Success! Digitization complete. Use "Download LAS" to save the file.';
                     }
 
                     if (data.depth_warnings && data.depth_warnings.length) {
@@ -3875,8 +3893,27 @@
             } catch (error) {
                 showStatus('❌ Error: ' + error.message, 'error');
             } finally {
-                btn.disabled = false;
+                if (btn) btn.disabled = false;
+                const downloadBtn = document.getElementById('downloadLasBtn');
+                if (downloadBtn && lastLasContent) {
+                    downloadBtn.disabled = false;
+                }
             }
+        }
+
+        function downloadLastLas() {
+            if (!lastLasContent) {
+                showStatus('No LAS file to download yet. Run Digitize first.', 'info');
+                return;
+            }
+
+            const blob = new Blob([lastLasContent], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = lastLasFilename || 'digitized_log.las';
+            a.click();
+            URL.revokeObjectURL(url);
         }
 
         function showStatus(message, type) {

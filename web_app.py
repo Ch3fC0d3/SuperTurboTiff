@@ -1144,10 +1144,15 @@ def compute_prob_map(roi_bgr, mode="black"):
     color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel, 1)
     color_score = color_mask.astype(np.float32) / 255.0
 
-    # 2) Edge score (helps when color is weak)
+    # 2) Edge score (helps when color is weak). For explicit color modes
+    #    (green/red/blue), we also gate edges by the color mask so that
+    #    vertical grid lines and black curves that do not share the color
+    #    are strongly suppressed.
     edges = cv2.Canny(gray, 40, 120)
     edges_blur = cv2.GaussianBlur(edges, (5, 5), 0)
     edge_score = edges_blur.astype(np.float32) / 255.0
+    if mode in {"green", "red", "blue"}:
+        edge_score *= color_score
 
     # 3) Suppress vertical "rails" (grid / borders)
     if h >= 4 and w >= 2:
@@ -1157,8 +1162,15 @@ def compute_prob_map(roi_bgr, mode="black"):
             color_score[:, rail_cols] *= 0.05
             edge_score[:, rail_cols] *= 0.05
 
-    # 4) Centerline boost via distance transform
-    bin_for_dt = (color_score > 0.1).astype(np.uint8)
+    # 4) Centerline boost via distance transform, focused on ink (curve
+    #    strokes) rather than the entire filled panel background. We define
+    #    "ink" as pixels that are both strongly colored and edge-like.
+    ink_mask = (color_score > 0.35) & (edge_score > 0.15)
+    if not np.any(ink_mask):
+        # Fallback for faint curves: relax thresholds slightly.
+        ink_mask = (color_score > 0.2) & (edge_score > 0.05)
+
+    bin_for_dt = ink_mask.astype(np.uint8)
     if np.any(bin_for_dt):
         dist = cv2.distanceTransform(bin_for_dt, cv2.DIST_L2, 5)
         center_score = dist.astype(np.float32)
@@ -1168,8 +1180,30 @@ def compute_prob_map(roi_bgr, mode="black"):
     else:
         center_score = np.zeros_like(color_score, dtype=np.float32)
 
-    # 5) Combine into probability map and rescale to 0–255 uint8
-    prob = 0.6 * color_score + 0.3 * edge_score + 0.1 * center_score
+    # 5) Combine into probability map and rescale to 0–255 uint8. For color
+    #    modes, put more emphasis directly on the color mask plus ink
+    #    centerline so the DP path hugs the colored curve as tightly as
+    #    possible; for "black"/fallback, keep a more edge-driven balance.
+    if mode in {"green", "red", "blue"}:
+        prob = 0.5 * color_score + 0.2 * edge_score + 0.3 * center_score
+    else:
+        prob = 0.3 * color_score + 0.4 * edge_score + 0.3 * center_score
+
+    # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
+    #    as a gating mask. This aggressively down-weights columns/rows that
+    #    look like grid or track borders, while preserving the wiggly curve
+    #    strokes.
+    try:
+        cleaned_binary = preprocess_curve_track(roi_bgr, mode=mode)
+        if cleaned_binary is not None and cleaned_binary.size == prob.size:
+            cleaned_score = cleaned_binary.astype(np.float32) / 255.0
+            # Where cleaned_score == 0 (likely grid/border), push probability
+            # almost to zero; where == 1, keep prob as-is.
+            gate = 0.05 + 0.95 * cleaned_score
+            prob *= gate
+    except Exception:
+        # If preprocessing fails for any reason, fall back to the ungated map.
+        pass
     maxp = float(prob.max())
     if maxp > 0:
         prob = prob / maxp
@@ -3139,13 +3173,23 @@ def digitize():
 
         # NEW: Use DP-based smooth path tracing with plausibility checks
         curve_type = c.get('type', 'GR')  # Get curve type for plausibility
+
+        # For explicit color modes, allow more left-right wiggle (lower
+        # smoothness penalty) and use a smaller 1D smoothing window so the
+        # traced path can hug the colored curve more tightly.
+        colored_modes = {"green", "red", "blue"}
+        curve_smooth_window = smooth_window
+        if mode in colored_modes:
+            curve_smooth_window = max(1, min(3, curve_smooth_window))
+        dp_smooth_lambda = 0.2 if mode in colored_modes else 0.5
+
         xs, confidence = trace_curve_with_dp(
-            mask, 
-            scale_min=left_value, 
+            mask,
+            scale_min=left_value,
             scale_max=right_value,
             curve_type=curve_type,
             max_step=3,
-            smooth_lambda=0.5
+            smooth_lambda=dp_smooth_lambda,
         )
         
         # NEW: Snap the DP path toward obvious local maxima in the prob mask
@@ -3153,7 +3197,7 @@ def digitize():
         xs = refine_trace_with_local_maxima(mask, xs)
 
         # NEW: Remove outliers and smooth
-        xs = remove_outliers_and_smooth(xs, window=smooth_window, outlier_threshold=3.0)
+        xs = remove_outliers_and_smooth(xs, window=curve_smooth_window, outlier_threshold=3.0)
 
         width_px = mask.shape[1]
 
@@ -3170,7 +3214,7 @@ def digitize():
                 # the mask, then smooth it. This tends to follow the center of
                 # the colored curve even when DP is too conservative.
                 xs_fallback = pick_curve_x_per_row(mask, min_run=min_run)
-                xs_fallback = smooth_nanmedian(xs_fallback, window=smooth_window)
+                xs_fallback = smooth_nanmedian(xs_fallback, window=curve_smooth_window)
                 xs = xs_fallback
                 xs_valid = xs[~np.isnan(xs)]
 
