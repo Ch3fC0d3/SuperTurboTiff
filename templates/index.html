@@ -193,6 +193,22 @@
             position: relative;
             display: inline-block;
         }
+        .zoom-slider-overlay {
+            position: absolute;
+            left: 50%;
+            bottom: 10px;
+            transform: translateX(-50%);
+            background: rgba(15, 23, 42, 0.8);
+            padding: 4px 8px;
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            z-index: 40;
+        }
+        .zoom-slider-overlay input[type="range"] {
+            width: 140px;
+        }
         .overlay-scroll {
             max-height: none;
             overflow-y: auto;
@@ -570,11 +586,12 @@
         }
         .curve-trace-dot {
             position: absolute;
-            width: 3px;
-            height: 3px;
+            width: 2px;
+            height: 2px;
             border-radius: 50%;
-            background: rgba(56, 189, 248, 0.9); /* cyan */
+            background: rgba(56, 189, 248, 0.95); /* cyan */
             pointer-events: none;
+            z-index: 30;
         }
         .mouse-tooltip {
             position: absolute;
@@ -647,6 +664,9 @@
                         <div class="overlay-scroll viewer-scroll">
                             <div id="overlay">
                                 <img id="imagePreview" alt="Log preview">
+                                <div class="zoom-slider-overlay">
+                                    <input type="range" id="zoomSlider" min="50" max="200" value="100" step="5" oninput="setZoom(this.value / 100)" />
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -676,10 +696,10 @@
                             </p>
                             <div class="form-group" style="margin-top: 8px; max-width: 420px;">
                                 <label>Zoom</label>
-                                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-                                    <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="adjustZoom(-0.25)">−</button>
-                                    <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="resetZoom()">100%</button>
-                                    <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="adjustZoom(0.25)">+</button>
+                                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px;">
+                                    <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(0.5)">50%</button>
+                                    <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="setZoom(1.0)">100%</button>
+                                    <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(2.0)">200%</button>
                                     <span id="zoomLabel" class="hint-text" style="margin-left: 4px;">100%</span>
                                 </div>
                             </div>
@@ -852,12 +872,16 @@
         function applyZoom() {
             const overlay = document.getElementById('overlay');
             const label = document.getElementById('zoomLabel');
+            const slider = document.getElementById('zoomSlider');
             if (overlay) {
                 overlay.style.transformOrigin = 'top left';
                 overlay.style.transform = `scale(${zoomLevel})`;
             }
             if (label) {
                 label.textContent = `${Math.round(zoomLevel * 100)}%`;
+            }
+            if (slider) {
+                slider.value = String(Math.round(zoomLevel * 100));
             }
         }
 
@@ -1686,9 +1710,42 @@
                 showStatus(`❌ File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Please use an image smaller than 100MB.`, 'error');
                 return;
             }
-            
+
+            primaryRegion = null;
+            panelSelectMode = false;
+            panelSelectStart = null;
+            primaryRegionDrag = { active: false, edge: null };
+            headerSelectMode = false;
+            headerRegionStart = null;
+            headerRegionDrag = false;
+            headerRegion = null;
+            headerTracks = null;
+            detectedTracks = [];
+            allTracks = [];
+            ocrSuggestions = null;
+            detectedText = null;
+            curveEdgePick = null;
+            trackOverlayDrag = null;
+            lastDigitizedDepth = null;
+            lastDigitizedCurves = null;
+
+            clearPrimaryRegionOverlay();
+            clearHeaderRegionOverlay();
+            clearTrackOverlays();
+            clearCurveTraceOverlays();
+            clearLabelOverlays();
+            clearPhraseHighlight();
+            clearDepthOverlays();
+
+            const curvesContainer = document.getElementById('curvesContainer');
+            if (curvesContainer) {
+                curvesContainer.innerHTML = '';
+            }
+            renderCurveListView();
+            updateSelectionSummary();
+
             showStatus('Uploading...', 'info');
-            
+
             const formData = new FormData();
             formData.append('file', file);
 
@@ -2373,7 +2430,7 @@
                         imageWidth = imgEl.naturalWidth || imageWidth;
                         imageHeight = imgEl.naturalHeight || imageHeight;
                         renderDepthOverlays();
-                        renderPrimaryRegionOverlay();
+                        clearPrimaryRegionOverlay();
                         refreshTrackOverlaysFromCurves();
                         applyZoom();
                     };
@@ -2385,14 +2442,11 @@
                     dimsEl.textContent = `${imageWidth} × ${imageHeight} pixels`;
                 }
 
-                // New panel is the full width and height of the cropped image
-                primaryRegion = {
-                    left_px: 0,
-                    right_px: imageWidth,
-                    top_px: 0,
-                    bottom_px: imageHeight - 1,
-                    track_indices: primaryRegion && primaryRegion.track_indices ? primaryRegion.track_indices : null,
-                };
+                // After cropping, treat the entire cropped image as the working
+                // panel without a separate blue/gray highlight. The user can
+                // still select a new panel later if needed.
+                primaryRegion = null;
+                clearPrimaryRegionOverlay();
 
                 // Reset depth pixels to span the full cropped height; the
                 // user will refine depth mapping on this cropped image.
@@ -2687,6 +2741,37 @@
                     };
                 }
 
+                // Decide initial scale values (left/right) for this curve.
+                // Prefer explicit header track scale_min/scale_max when present,
+                // otherwise fall back to the standard GR/RHOB/NPHI defaults.
+                let leftScaleDefault;
+                let rightScaleDefault;
+                if (headerTrack && Number.isFinite(headerTrack.scale_min) && Number.isFinite(headerTrack.scale_max)) {
+                    let sMin = Number(headerTrack.scale_min);
+                    let sMax = Number(headerTrack.scale_max);
+                    if (Number.isFinite(sMin) && Number.isFinite(sMax)) {
+                        if (sMax < sMin) {
+                            const tmp = sMin;
+                            sMin = sMax;
+                            sMax = tmp;
+                        }
+                        leftScaleDefault = sMin;
+                        rightScaleDefault = sMax;
+                    }
+                }
+                if (leftScaleDefault === undefined || rightScaleDefault === undefined) {
+                    if (i === 0) {
+                        leftScaleDefault = 0;
+                        rightScaleDefault = 150;
+                    } else if (i === 1) {
+                        leftScaleDefault = 1.95;
+                        rightScaleDefault = 2.95;
+                    } else {
+                        leftScaleDefault = 0.45;
+                        rightScaleDefault = -0.15;
+                    }
+                }
+
                 // Decide default curve color:
                 //  1) Use header-based color hint when available.
                 //  2) Otherwise, use image-based color hint if available.
@@ -2742,11 +2827,11 @@
                         </div>
                         <div class="field">
                             <label for="leftVal${i}">Left scale value</label>
-                            <input type="number" id="leftVal${i}" placeholder="Left value" step="0.01" value="${i === 0 ? 0 : i === 1 ? 1.95 : 0.45}">
+                            <input type="number" id="leftVal${i}" placeholder="Left value" step="0.01" value="${leftScaleDefault}">
                         </div>
                         <div class="field">
                             <label for="rightVal${i}">Right scale value</label>
-                            <input type="number" id="rightVal${i}" placeholder="Right value" step="0.01" value="${i === 0 ? 150 : i === 1 ? 2.95 : -0.15}">
+                            <input type="number" id="rightVal${i}" placeholder="Right value" step="0.01" value="${rightScaleDefault}">
                         </div>
                         <div class="field">
                             <label for="mode${i}">Curve color / mode</label>
@@ -2835,6 +2920,7 @@
                     applyCardTheme();
                     modeEl.addEventListener('change', () => {
                         applyCardTheme();
+                        refreshTrackOverlaysFromCurves();
                         renderCurveListView();
                     });
                 }
@@ -3418,7 +3504,7 @@
         function renderCurveTraceOverlays(curveTraces) {
             const overlay = document.getElementById('overlay');
             const img = document.getElementById('imagePreview');
-            if (!overlay || !img || !curveTraces || !imageWidth || !imageHeight) {
+            if (!overlay || !img || !curveTraces) {
                 clearCurveTraceOverlays();
                 return;
             }
@@ -3429,8 +3515,21 @@
                 return;
             }
 
-            const scaleX = rect.width / imageWidth;
-            const scaleY = rect.height / imageHeight;
+            // Prefer global imageWidth/Height, but fall back to the actual
+            // image elem so dots still render even if globals weren't set.
+            let w = imageWidth || img.naturalWidth || img.width;
+            let h = imageHeight || img.naturalHeight || img.height;
+            if (!w || !h) {
+                clearCurveTraceOverlays();
+                return;
+            }
+            if (!imageWidth || !imageHeight) {
+                imageWidth = w;
+                imageHeight = h;
+            }
+
+            const scaleX = rect.width / w;
+            const scaleY = rect.height / h;
 
             clearCurveTraceOverlays();
 
@@ -3718,10 +3817,37 @@
                         }
                     }
 
-                    if (data.curve_traces) {
-                        renderCurveTraceOverlays(data.curve_traces);
+                    if (data.curve_traces && typeof data.curve_traces === 'object') {
+                        const traces = data.curve_traces;
+                        const emptyTraceCurves = [];
+
+                        if (config && Array.isArray(config.curves)) {
+                            for (const c of config.curves) {
+                                const key = (c.las_mnemonic || c.name || '').toString();
+                                if (!key) continue;
+                                const pts = traces[key];
+                                if (!pts || !Array.isArray(pts) || pts.length === 0) {
+                                    const label = c.display_name || key;
+                                    emptyTraceCurves.push(label);
+                                }
+                            }
+                        }
+
+                        if (emptyTraceCurves.length) {
+                            const listStr = emptyTraceCurves.join(', ');
+                            message += ` ⚠️ No visible trace found for: ${listStr}. Try adjusting curve color mode or track band edges.`;
+                            if (statusType === 'success') {
+                                statusType = 'info';
+                            }
+                        }
+
+                        renderCurveTraceOverlays(traces);
                     } else {
                         clearCurveTraceOverlays();
+                        message += ' ⚠️ No trace overlay points were generated; check curve colors and track ranges.';
+                        if (statusType === 'success') {
+                            statusType = 'info';
+                        }
                     }
 
                     if (data.ai_payload) {

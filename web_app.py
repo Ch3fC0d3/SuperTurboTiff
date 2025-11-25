@@ -1058,8 +1058,124 @@ def preprocess_curve_track(roi, mode="black"):
     # Step 4: Slight blur to fill 1-pixel gaps
     blurred = cv2.GaussianBlur(curve_mask, (3, 3), 0)
     _, cleaned = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
+
+    # Step 5: Remove near-solid vertical "spines" that look like grid/border lines.
+    # These are typically track borders or grid lines, not the actual log curve,
+    # and they can cause the DP tracer to hug the wrong column.
+    if h >= 40 and w >= 4:
+        col_fraction = np.mean(cleaned > 0, axis=0)  # fraction of rows that are "on" per column
+        edge_margin = max(1, int(0.15 * w))
+        edge_mask = np.zeros_like(col_fraction, dtype=bool)
+        edge_mask[:edge_margin] = True
+        edge_mask[-edge_margin:] = True
+
+        # Strong spines near the left/right edges (likely track borders)
+        edge_spines = (col_fraction > 0.5) & edge_mask
+
+        # Very strong vertical spines anywhere inside the band. Requiring a
+        # higher occupancy threshold here helps avoid deleting the true curve,
+        # which rarely stays in exactly one column for most of the depth.
+        interior_spines = (col_fraction > 0.7) & ~edge_mask
+
+        spine_cols = edge_spines | interior_spines
+        if np.any(spine_cols):
+            cleaned[:, spine_cols] = 0
+
     return cleaned
+
+
+def compute_prob_map(roi_bgr, mode="black"):
+    """Build a soft probability map for the curve in a track ROI.
+
+    Returns an 8-bit image (0–255) where higher values mean higher likelihood
+    of belonging to the curve. This can be fed directly to the existing
+    DP tracer, which internally rescales to [0, 1].
+    """
+    if roi_bgr is None or roi_bgr.size == 0:
+        return np.zeros((1, 1), dtype=np.uint8)
+
+    h, w = roi_bgr.shape[:2]
+    if h < 2 or w < 2:
+        return np.zeros((h, w), dtype=np.uint8)
+
+    hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+
+    # 1) Base color/intensity mask
+    if mode == "green":
+        lower = np.array([35, 40, 40], dtype=np.uint8)
+        upper = np.array([90, 255, 255], dtype=np.uint8)
+        color_mask = cv2.inRange(hsv, lower, upper)
+
+        # In green mode, actively suppress pixels that look clearly red/orange
+        # so we don't accidentally trace a reddish neighbor curve.
+        b, g, r = cv2.split(roi_bgr)
+        r16 = r.astype(np.int16)
+        g16 = g.astype(np.int16)
+        b16 = b.astype(np.int16)
+        red_dominant = (r16 > g16 + 10) & (r16 > b16 + 10)
+        color_mask[red_dominant] = 0
+
+    elif mode == "red":
+        lower1 = np.array([0, 70, 40], dtype=np.uint8)
+        upper1 = np.array([15, 255, 255], dtype=np.uint8)
+        lower2 = np.array([160, 70, 40], dtype=np.uint8)
+        upper2 = np.array([180, 255, 255], dtype=np.uint8)
+        m1 = cv2.inRange(hsv, lower1, upper1)
+        m2 = cv2.inRange(hsv, lower2, upper2)
+        color_mask = cv2.bitwise_or(m1, m2)
+    elif mode == "blue":
+        lower = np.array([90, 40, 40], dtype=np.uint8)
+        upper = np.array([140, 255, 255], dtype=np.uint8)
+        color_mask = cv2.inRange(hsv, lower, upper)
+    else:
+        # "black" or fallback: dark pixels relative to local background
+        color_mask = cv2.adaptiveThreshold(
+            gray,
+            255,
+            cv2.ADAPTIVE_THRESH_MEAN_C,
+            cv2.THRESH_BINARY_INV,
+            21,
+            10,
+        )
+
+    kernel = np.ones((3, 3), np.uint8)
+    color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel, 1)
+    color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel, 1)
+    color_score = color_mask.astype(np.float32) / 255.0
+
+    # 2) Edge score (helps when color is weak)
+    edges = cv2.Canny(gray, 40, 120)
+    edges_blur = cv2.GaussianBlur(edges, (5, 5), 0)
+    edge_score = edges_blur.astype(np.float32) / 255.0
+
+    # 3) Suppress vertical "rails" (grid / borders)
+    if h >= 4 and w >= 2:
+        col_on_frac = (color_score > 0).mean(axis=0)
+        rail_cols = col_on_frac > 0.60
+        if np.any(rail_cols):
+            color_score[:, rail_cols] *= 0.05
+            edge_score[:, rail_cols] *= 0.05
+
+    # 4) Centerline boost via distance transform
+    bin_for_dt = (color_score > 0.1).astype(np.uint8)
+    if np.any(bin_for_dt):
+        dist = cv2.distanceTransform(bin_for_dt, cv2.DIST_L2, 5)
+        center_score = dist.astype(np.float32)
+        maxd = float(center_score.max())
+        if maxd > 0:
+            center_score /= maxd
+    else:
+        center_score = np.zeros_like(color_score, dtype=np.float32)
+
+    # 5) Combine into probability map and rescale to 0–255 uint8
+    prob = 0.6 * color_score + 0.3 * edge_score + 0.1 * center_score
+    maxp = float(prob.max())
+    if maxp > 0:
+        prob = prob / maxp
+    prob = np.clip(prob, 1e-4, 1.0).astype(np.float32)
+
+    return (prob * 255.0).astype(np.uint8)
 
 
 def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.5):
@@ -1094,9 +1210,25 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
         'SP': (-200, 100),
     }
     
-    # Convert mask to probability (0-1)
+    # Convert mask to probability (0-1) and build a log-based data cost.
+    # This matches the pattern prob = preprocess_curve_track(...);
+    # trace_curve_with_dp(prob, ...) where high prob → low cost.
     prob = curve_mask.astype(np.float32) / 255.0
-    cost = 1.0 - prob  # 0 where curve is strong, 1 where nothing
+    eps = 1e-6
+    cost = -np.log(prob + eps)
+
+    # Penalize columns that behave like vertical "rails" (on for many rows).
+    # True log curves wiggle left/right, so their per-column average is
+    # typically modest. Continuous vertical gridlines, in contrast, have a
+    # very high column mean and should be discouraged.
+    if h >= 40 and w >= 4:
+        col_mean = prob.mean(axis=0)
+        # No penalty for weak columns; ramp up once a column is on for more
+        # than ~25% of rows. This adds a constant cost to those columns in all
+        # rows, pushing the DP path toward more wiggly structure.
+        rail_penalty = 2.0 * np.maximum(0.0, col_mean - 0.25)
+        if np.any(rail_penalty > 0):
+            cost += rail_penalty[np.newaxis, :]
     
     # Add plausibility penalty (reduced from 10.0 to 2.0 to be less aggressive)
     if curve_type.upper() in plausible_ranges:
@@ -1193,6 +1325,55 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
     xs[xs < 0] = np.nan
     
     return xs, confidence
+
+
+def refine_trace_with_local_maxima(mask, xs, max_shift=6, dominance_ratio=1.1, min_prob=0.2):
+    """Nudge the DP path toward obvious local maxima in the prob mask.
+
+    For each row, if there is a nearby column with significantly higher
+    probability than the current DP x, and the shift is within max_shift
+    pixels, snap the x coordinate to that column. This helps pull the
+    trace onto the strongest colored curve inside the band.
+    """
+    if mask is None or xs is None:
+        return xs
+    if not hasattr(xs, "size") or xs.size == 0:
+        return xs
+
+    h, w = mask.shape[:2]
+    if h < 1 or w < 1:
+        return xs
+
+    prob = mask.astype(np.float32) / 255.0
+    xs_ref = xs.copy()
+
+    n_rows = min(h, xs_ref.size)
+    for y in range(n_rows):
+        x = xs_ref[y]
+        if not np.isfinite(x):
+            continue
+
+        row = prob[y]
+        max_p = float(row.max())
+        if max_p < min_prob:
+            continue
+
+        x_peak = int(np.argmax(row))
+        if abs(x_peak - x) > max_shift:
+            continue
+
+        p_peak = float(row[x_peak])
+        x_idx = int(round(float(x)))
+        if x_idx < 0 or x_idx >= w:
+            continue
+        p_dp = float(row[x_idx])
+        if p_dp <= 0:
+            p_dp = 1e-6
+
+        if p_peak >= dominance_ratio * p_dp:
+            xs_ref[y] = float(x_peak)
+
+    return xs_ref
 
 
 def remove_outliers_and_smooth(xs, window=5, outlier_threshold=3.0):
@@ -2951,9 +3132,11 @@ def digitize():
             bb = blur + 1 if blur % 2 == 0 else blur
             roi = cv2.GaussianBlur(roi, (bb, bb), 0)
         
-        # NEW: Use advanced preprocessing to clean the curve track
-        mask = preprocess_curve_track(roi, mode=mode)
-        
+        # NEW: Build a soft probability mask for the curve using color/edges
+        # plus vertical-rail suppression. This returns an 8-bit image where
+        # higher values mean higher likelihood of curve pixels.
+        mask = compute_prob_map(roi, mode=mode)
+
         # NEW: Use DP-based smooth path tracing with plausibility checks
         curve_type = c.get('type', 'GR')  # Get curve type for plausibility
         xs, confidence = trace_curve_with_dp(
@@ -2965,10 +3148,41 @@ def digitize():
             smooth_lambda=0.5
         )
         
+        # NEW: Snap the DP path toward obvious local maxima in the prob mask
+        # (strong colored pixels) before doing 1D smoothing.
+        xs = refine_trace_with_local_maxima(mask, xs)
+
         # NEW: Remove outliers and smooth
         xs = remove_outliers_and_smooth(xs, window=smooth_window, outlier_threshold=3.0)
 
         width_px = mask.shape[1]
+
+        # If the DP-traced path barely moves horizontally across the entire
+        # depth window, it is probably not following the wiggly log curve but
+        # instead a residual vertical artifact. In that case, fall back to a
+        # simpler per-row median trace before giving up entirely.
+        xs_valid = xs[~np.isnan(xs)]
+        if xs_valid.size > 0:
+            dyn_range = float(np.nanmax(xs_valid) - np.nanmin(xs_valid))
+            min_dyn = max(4.0, 0.02 * float(width_px))
+            if dyn_range < min_dyn:
+                # Fallback: compute a simple median-based trace directly from
+                # the mask, then smooth it. This tends to follow the center of
+                # the colored curve even when DP is too conservative.
+                xs_fallback = pick_curve_x_per_row(mask, min_run=min_run)
+                xs_fallback = smooth_nanmedian(xs_fallback, window=smooth_window)
+                xs = xs_fallback
+                xs_valid = xs[~np.isnan(xs)]
+
+        # As a last resort, if the (possibly fallback) path is still almost
+        # perfectly vertical (very little horizontal variation), treat it as
+        # invalid so we don't display a clearly wrong line anywhere in the
+        # track band. It's better to show "no trace" than a misleading rail.
+        if xs_valid.size > 0:
+            std_x = float(np.nanstd(xs_valid))
+            if std_x < max(1.5, 0.03 * float(width_px)):
+                xs[:] = np.nan
+
         vals = np.full(xs.shape, np.nan, dtype=np.float32)
         valid = ~np.isnan(xs)
         vals[valid] = left_value + (xs[valid] / max(1, width_px-1)) * (right_value - left_value)
@@ -2979,15 +3193,21 @@ def digitize():
         # Build a sparse set of trace points in original image coordinates for UI overlay
         trace_points = []
         if xs.size > 0:
-            # Sample at most ~600 points per curve to keep payload small
-            step = max(1, int(np.ceil(xs.size / 600)))
-            for row_idx in range(0, xs.size, step):
-                x_val = xs[row_idx]
-                if np.isnan(x_val):
-                    continue
-                x_img = int(left_px + x_val)
-                y_img = int(top + row_idx)
-                trace_points.append([x_img, y_img])
+            # Only sample from rows where the DP tracer produced a valid X.
+            # This avoids the corner-case where all sampled indices land on
+            # NaNs even though some rows are valid, which would yield an
+            # empty trace and no cyan dots in the UI.
+            valid_rows = np.where(~np.isnan(xs))[0]
+            if valid_rows.size > 0:
+                # Sample at most ~4000 points per curve so the overlay looks
+                # very continuous while keeping the JSON payload modest.
+                target_points = 4000
+                step = max(1, int(np.ceil(valid_rows.size / float(target_points))))
+                for row_idx in valid_rows[::step]:
+                    x_val = xs[row_idx]
+                    x_img = int(left_px + x_val)
+                    y_img = int(top + row_idx)
+                    trace_points.append([x_img, y_img])
 
         curve_traces[name] = trace_points
     
