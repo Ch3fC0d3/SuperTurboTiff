@@ -3433,23 +3433,30 @@ def digitize():
                 elif have_dc:
                     xs_refined[y] = float(x_dc)
             
-            # STAGE 3: Light Savitzky-Golay smoothing to remove jitter
-            from scipy.signal import savgol_filter
-            
+            # STAGE 3: Light smoothing to remove jitter.
+            # Prefer Savitzky-Golay from SciPy if available, but do not make
+            # SciPy a hard dependency – fall back to a simple filled series
+            # when the import is missing.
+
+            try:
+                from scipy.signal import savgol_filter  # type: ignore
+                have_savgol = True
+            except ImportError:
+                have_savgol = False
+
             s = pd.Series(xs_refined)
             # Fill any remaining NaN
             xs_filled = s.interpolate(method='linear', limit_direction='both')
             if xs_filled.isna().any():
                 xs_filled = xs_filled.fillna(method='ffill').fillna(method='bfill')
-            
-            # Apply light Savitzky-Golay (window=5, order=2)
-            try:
-                if len(xs_filled) >= 5:
-                    xs = savgol_filter(xs_filled, window_length=5, polyorder=2, mode='nearest')
-                    xs = xs.astype(np.float32)
-                else:
+
+            if have_savgol and len(xs_filled) >= 5:
+                try:
+                    xs_smoothed = savgol_filter(xs_filled, window_length=5, polyorder=2, mode='nearest')
+                    xs = np.asarray(xs_smoothed, dtype=np.float32)
+                except Exception:
                     xs = xs_filled.to_numpy(dtype=np.float32)
-            except Exception:
+            else:
                 xs = xs_filled.to_numpy(dtype=np.float32)
 
             # RAIL-HUGGING RESCUE: if over a substantial vertical interval the

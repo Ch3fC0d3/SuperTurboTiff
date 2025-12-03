@@ -652,6 +652,15 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Zoom controls below image - always visible -->
+                    <div class="zoom-controls" style="padding: 8px 12px; background: #f5f5f5; border-top: 1px solid #ddd; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        <label style="font-weight: 600; font-size: 0.85em; margin-right: 4px;">Zoom:</label>
+                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(0.5)">50%</button>
+                        <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="setZoom(1.0)">100%</button>
+                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(2.0)">200%</button>
+                        <input type="range" id="zoomSlider" min="50" max="300" value="100" step="5" oninput="setZoom(this.value / 100)" style="width: 120px;" />
+                        <span id="zoomLabel" class="hint-text" style="font-size: 0.85em;">100%</span>
+                    </div>
                 </div>
 
                 <!-- Right: calibration tabs -->
@@ -676,16 +685,6 @@
                             <p style="color: #666; font-size: 0.85em; margin-top: 6px;">
                                 Tip: Use the <strong>Top/Bottom depth</strong> fields below and the <strong>Top/Bottom pixel</strong> fields in Step 3 to align the depth guidelines with the printed scale; the mouse readout updates from those values.
                             </p>
-                            <div class="form-group" style="margin-top: 8px; max-width: 420px;">
-                                <label>Zoom</label>
-                                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px;">
-                                    <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(0.5)">50%</button>
-                                    <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="setZoom(1.0)">100%</button>
-                                    <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(2.0)">200%</button>
-                                    <input type="range" id="zoomSlider" min="50" max="200" value="100" step="5" oninput="setZoom(this.value / 100)" style="width: 150px;" />
-                                    <span id="zoomLabel" class="hint-text" style="margin-left: 4px;">100%</span>
-                                </div>
-                            </div>
                             <div class="form-group" style="margin-top: 8px; max-width: 420px;">
                                 <label>Header / key (optional)</label>
                                 <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px;">
@@ -811,8 +810,14 @@
                                         </button>
                                         <span id="editModeStatus" class="hint-text" style="font-size: 0.8em;">Edit mode off</span>
                                     </div>
+                                    <div style="display: flex; gap: 12px; align-items: center; margin-top: 6px;">
+                                        <label style="font-size: 0.8em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                            <input type="checkbox" id="snapToCurveToggle" checked>
+                                            <span>Snap to curve (AI assist)</span>
+                                        </label>
+                                    </div>
                                     <div class="hint-text" style="font-size: 0.8em; margin-top: 4px;">
-                                        When edit mode is on, click on the image inside the selected track to nudge that curve's digitized value at the nearest depth. Edits are applied to the LAS values you download.
+                                        Drag points to adjust. Snap-to-curve helps find the nearest colored line. Ctrl+Z to undo.
                                     </div>
                                 </div>
                             </div>
@@ -878,6 +883,7 @@
         let editCurveDataKey = null;     // actual key in lastDigitizedCurves used for LAS data
         let editDragState = null;        // { curveId, curveKey, pointIndex, depthIndex, yImg }
         let lastCurveTraces = null;      // last curve_traces overlay returned from backend
+        let editUndoStack = [];          // stack of { curveKey, idx, oldValue, oldTraceX } for Ctrl+Z
 
         const DEPTH_SESSION_KEY = 'tifflas_depth_config_v1';
         const INTRO_SESSION_KEY = 'tifflas_intro_seen_v1';
@@ -900,7 +906,7 @@
 
         function setZoom(value) {
             const minZoom = 0.5;
-            const maxZoom = 3.0;
+            const maxZoom = 3.0;  // 300%
             zoomLevel = Math.max(minZoom, Math.min(maxZoom, value));
             applyZoom();
         }
@@ -1407,21 +1413,36 @@
             const entry = lastDigitizedCurves[curveKey];
             if (!entry || !Array.isArray(entry.values) || idx >= entry.values.length) return;
 
+            // Save old value for undo
+            const oldValue = entry.values[idx];
+            let oldTraceX = null;
+            const pts = lastCurveTraces && lastCurveTraces[editCurveId];
+            if (Array.isArray(pts) && pts.length) {
+                let bestIdxPt = 0;
+                let bestDy = Math.abs(pts[0][1] - yImg);
+                for (let i = 1; i < pts.length; i++) {
+                    const dy = Math.abs(pts[i][1] - yImg);
+                    if (dy < bestDy) { bestDy = dy; bestIdxPt = i; }
+                }
+                if (bestDy <= 10) oldTraceX = pts[bestIdxPt][0];
+            }
+            editUndoStack.push({ curveKey, curveId: editCurveId, idx, oldValue, oldTraceX, yImg });
+
             entry.values[idx] = newValue;
 
             if (!lastCurveTraces) {
                 lastCurveTraces = {};
             }
-            let pts = lastCurveTraces[editCurveId];
-            if (!Array.isArray(pts)) {
-                pts = [];
+            let pts2 = lastCurveTraces[editCurveId];
+            if (!Array.isArray(pts2)) {
+                pts2 = [];
             }
 
-            if (pts.length) {
+            if (pts2.length) {
                 let bestIdxPt = 0;
-                let bestDy = Math.abs(pts[0][1] - yImg);
-                for (let i = 1; i < pts.length; i++) {
-                    const dy = Math.abs(pts[i][1] - yImg);
+                let bestDy = Math.abs(pts2[0][1] - yImg);
+                for (let i = 1; i < pts2.length; i++) {
+                    const dy = Math.abs(pts2[i][1] - yImg);
                     if (dy < bestDy) {
                         bestDy = dy;
                         bestIdxPt = i;
@@ -1429,16 +1450,55 @@
                 }
 
                 if (bestDy <= 10) {
-                    pts[bestIdxPt][0] = xImg;
+                    pts2[bestIdxPt][0] = xImg;
                 } else {
-                    pts.push([xImg, yImg]);
+                    pts2.push([xImg, yImg]);
                 }
             } else {
-                pts.push([xImg, yImg]);
+                pts2.push([xImg, yImg]);
             }
 
-            lastCurveTraces[editCurveId] = pts;
+            lastCurveTraces[editCurveId] = pts2;
             renderCurveTraceOverlays(lastCurveTraces);
+        }
+
+        function undoLastCurveEdit() {
+            if (!editUndoStack.length) {
+                showStatus('Nothing to undo.', 'info');
+                return;
+            }
+            const last = editUndoStack.pop();
+            const { curveKey, curveId, idx, oldValue, oldTraceX, yImg } = last;
+
+            // Restore the LAS value
+            if (lastDigitizedCurves && lastDigitizedCurves[curveKey] && Array.isArray(lastDigitizedCurves[curveKey].values)) {
+                lastDigitizedCurves[curveKey].values[idx] = oldValue;
+            }
+
+            // Restore the trace point X (or remove point if it was newly added)
+            if (lastCurveTraces && lastCurveTraces[curveId]) {
+                const pts = lastCurveTraces[curveId];
+                if (Array.isArray(pts) && pts.length) {
+                    // Find the point at yImg
+                    let bestIdxPt = -1;
+                    let bestDy = Infinity;
+                    for (let i = 0; i < pts.length; i++) {
+                        const dy = Math.abs(pts[i][1] - yImg);
+                        if (dy < bestDy) { bestDy = dy; bestIdxPt = i; }
+                    }
+                    if (bestIdxPt >= 0 && bestDy <= 10) {
+                        if (oldTraceX !== null) {
+                            // Restore old X
+                            pts[bestIdxPt][0] = oldTraceX;
+                        } else {
+                            // Point was newly added, remove it
+                            pts.splice(bestIdxPt, 1);
+                        }
+                    }
+                }
+                renderCurveTraceOverlays(lastCurveTraces);
+            }
+            showStatus(`Undo: restored depth index ${idx} to ${oldValue !== null && oldValue !== undefined ? oldValue.toFixed(2) : 'null'}`, 'info');
         }
 
         function beginCurveEditInteraction(xImg, yImg) {
@@ -1453,9 +1513,10 @@
             if (!Array.isArray(pts) || !Array.isArray(entry.values)) return false;
             let nearestIndex = -1;
             let nearestDist2 = Infinity;
-            const maxDist = 10;
+            const maxDist = 20;  // Increased click radius for easier selection
             const maxDist2 = maxDist * maxDist;
 
+            // Find the closest point to where user clicked
             if (pts.length) {
                 for (let i = 0; i < pts.length; i++) {
                     const pt = pts[i];
@@ -1469,6 +1530,8 @@
                     }
                 }
             }
+            
+            console.log(`Edit click at (${xImg}, ${yImg}), nearest point index: ${nearestIndex}, dist: ${Math.sqrt(nearestDist2).toFixed(1)}px`);
 
             // If close to an existing point, start a drag anchored to that depth
             if (nearestIndex >= 0 && nearestDist2 <= maxDist2) {
@@ -1485,10 +1548,11 @@
 
                 const neighbors = [];
                 const seenDepthIdx = new Set();
-                const radius = 4;
+                const radius = 3;  // Small radius for tighter control
                 for (let offset = -radius; offset <= radius; offset++) {
                     const pIdx = nearestIndex + offset;
                     if (pIdx < 0 || pIdx >= pts.length) continue;
+                    const xN = pts[pIdx][0];
                     const yN = pts[pIdx][1];
                     const depthN = pixelToDepthFromConfig(yN, depthCfg);
                     if (!Number.isFinite(depthN)) continue;
@@ -1496,15 +1560,34 @@
                     if (dIdx < 0 || dIdx >= entry.values.length) continue;
                     if (seenDepthIdx.has(dIdx)) continue;
                     seenDepthIdx.add(dIdx);
+                    const origVal = entry.values[dIdx];
+                    // Skip points with null/invalid values
+                    if (!Number.isFinite(origVal)) continue;
                     neighbors.push({
                         pointIndex: pIdx,
                         depthIndex: dIdx,
-                        originalValue: entry.values[dIdx],
+                        originalValue: origVal,
+                        originalPixelX: xN,  // Store original pixel X for direct manipulation
+                        originalPixelY: yN,  // Store original Y for limited vertical movement
                     });
                 }
 
                 if (!neighbors.length) {
                     return false;
+                }
+
+                // Push undo entries for all neighbors before starting drag
+                for (const n of neighbors) {
+                    const oldTraceX = (pts[n.pointIndex] && pts[n.pointIndex][0]) || null;
+                    const yImgN = (pts[n.pointIndex] && pts[n.pointIndex][1]) || centerY;
+                    editUndoStack.push({
+                        curveKey: curveKey,
+                        curveId: editCurveId,
+                        idx: n.depthIndex,
+                        oldValue: n.originalValue,
+                        oldTraceX: oldTraceX,
+                        yImg: yImgN,
+                    });
                 }
 
                 editDragState = {
@@ -1523,62 +1606,174 @@
             return true;
         }
 
+        let _dragUpdatePending = false;
         function handleCurveEditDragMove(xImg, yImg) {
+            if (!editMode || !editDragState) return;
+            
+            // Throttle: skip if an update is already pending
+            if (_dragUpdatePending) return;
+            _dragUpdatePending = true;
+            
+            requestAnimationFrame(() => {
+                _dragUpdatePending = false;
+                _doDragUpdate(xImg, yImg);
+            });
+        }
+        
+        function _doDragUpdate(xImg, yImg) {
             if (!editMode || !editDragState) return;
             const state = editDragState;
             const curveKey = state.curveKey || state.curveId;
             if (!curveKey || !lastDigitizedCurves || !lastDigitizedCurves[curveKey]) return;
 
+            // Use the curve's assigned track
             const tracks = getTrackCalibrationsSnapshot();
             if (!tracks || !tracks.length) return;
-            const targetTrack = tracks.find(t => xImg >= t.leftX && xImg <= t.rightX);
+            const targetTrack = tracks.find(t => t.id === state.curveId);
             if (!targetTrack) return;
+
+            // Clamp mouse X to track bounds
+            const clampedX = Math.max(targetTrack.leftX, Math.min(targetTrack.rightX, xImg));
 
             const entry = lastDigitizedCurves[curveKey];
             const neighbors = state.neighbors || [];
             if (!entry || !Array.isArray(entry.values) || !Array.isArray(neighbors) || !neighbors.length) return;
 
-            const centerDepthIndex = state.centerDepthIndex;
-            const centerNeighbor = neighbors.reduce((best, n) => {
-                return (n.depthIndex === centerDepthIndex) ? n : best;
-            }, neighbors[0]);
+            const centerPointIndex = state.centerPointIndex;
+            const centerNeighbor = neighbors.find(n => n.pointIndex === centerPointIndex) || neighbors[0];
             if (!centerNeighbor) return;
 
-            const newCenterValue = pixelToTrackValue(xImg, targetTrack);
-            if (!Number.isFinite(newCenterValue)) return;
-
-            const originalCenter = centerNeighbor.originalValue;
-            if (!Number.isFinite(originalCenter)) return;
-
-            const maxIndexDist = neighbors.reduce((m, n) => {
-                const d = Math.abs(n.depthIndex - centerDepthIndex);
-                return d > m ? d : m;
-            }, 0) || 1;
+            // Calculate X and Y deltas - full movement allowed
+            const originalCenterPixelX = centerNeighbor.originalPixelX;
+            const originalCenterPixelY = centerNeighbor.originalPixelY;
+            if (!Number.isFinite(originalCenterPixelX)) return;
+            
+            const pixelDeltaX = clampedX - originalCenterPixelX;
+            const pixelDeltaY = Number.isFinite(originalCenterPixelY) ? (yImg - originalCenterPixelY) : 0;
 
             if (!lastCurveTraces || !lastCurveTraces[state.curveId]) return;
             const pts = lastCurveTraces[state.curveId];
 
-            neighbors.forEach((n) => {
-                const dist = Math.abs(n.depthIndex - centerDepthIndex);
-                const weight = Math.max(0, 1 - dist / (maxIndexDist + 1));
-                const delta = newCenterValue - originalCenter;
-                const newVal = n.originalValue + delta * weight;
+            // Only move the center point directly - no neighbor falloff for simplicity
+            const n = centerNeighbor;
+            let newPixelX = clampedX;
+            let newPixelY = Number.isFinite(n.originalPixelY) ? n.originalPixelY + pixelDeltaY : yImg;
+            
+            // Convert pixel to track value
+            const newVal = pixelToTrackValue(newPixelX, targetTrack);
+            if (!Number.isFinite(newVal)) return;
 
-                if (n.depthIndex >= 0 && n.depthIndex < entry.values.length) {
-                    entry.values[n.depthIndex] = newVal;
-                }
+            if (n.depthIndex >= 0 && n.depthIndex < entry.values.length) {
+                entry.values[n.depthIndex] = newVal;
+            }
 
-                if (Array.isArray(pts) && n.pointIndex >= 0 && n.pointIndex < pts.length) {
-                    const xPix = trackValueToPixelX(newVal, targetTrack);
-                    if (Number.isFinite(xPix)) {
-                        const yPix = pts[n.pointIndex][1];
-                        pts[n.pointIndex][0] = xPix;
-                        pts[n.pointIndex][1] = yPix;
+            if (Array.isArray(pts) && n.pointIndex >= 0 && n.pointIndex < pts.length) {
+                pts[n.pointIndex][0] = newPixelX;
+                pts[n.pointIndex][1] = newPixelY;
+            }
+
+            // Fast update: move existing DOM dots without full re-render
+            updateCurveTracePositions(state.curveId);
+        }
+
+        // Snap-to-curve: find the curve color in a small region around the point
+        function snapToCurveColor(xImg, yImg, trackLeftX, trackRightX) {
+            const img = document.getElementById('imagePreview');
+            if (!img) return { x: xImg, y: yImg };
+            
+            // Create a temporary canvas to sample pixels
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            ctx.drawImage(img, 0, 0);
+            
+            // Search in a small box around the point for curve-like colors
+            const searchRadius = 15;
+            const minX = Math.max(0, Math.floor(xImg - searchRadius));
+            const maxX = Math.min(canvas.width - 1, Math.ceil(xImg + searchRadius));
+            const minY = Math.max(0, Math.floor(yImg - searchRadius));
+            const maxY = Math.min(canvas.height - 1, Math.ceil(yImg + searchRadius));
+            
+            let bestX = xImg, bestY = yImg;
+            let bestScore = -Infinity;
+            
+            // Look for saturated colors (curves are usually colored lines)
+            for (let y = minY; y <= maxY; y++) {
+                for (let x = minX; x <= maxX; x++) {
+                    if (x < trackLeftX || x > trackRightX) continue;
+                    
+                    const pixel = ctx.getImageData(x, y, 1, 1).data;
+                    const r = pixel[0], g = pixel[1], b = pixel[2];
+                    
+                    // Calculate saturation and darkness (curves are colored, not white/gray)
+                    const max = Math.max(r, g, b);
+                    const min = Math.min(r, g, b);
+                    const saturation = max > 0 ? (max - min) / max : 0;
+                    const brightness = max / 255;
+                    
+                    // Score: prefer saturated, moderately bright pixels close to original position
+                    const distFromOriginal = Math.sqrt((x - xImg) ** 2 + (y - yImg) ** 2);
+                    const proximityBonus = 1 - distFromOriginal / (searchRadius * 1.5);
+                    const score = saturation * 2 + (1 - brightness) * 0.5 + proximityBonus;
+                    
+                    if (saturation > 0.3 && brightness < 0.9 && score > bestScore) {
+                        bestScore = score;
+                        bestX = x;
+                        bestY = y;
                     }
                 }
-            });
+            }
+            
+            return { x: bestX, y: bestY };
+        }
 
-            renderCurveTraceOverlays(lastCurveTraces);
+        // Apply snap-to-curve to all neighbors after drag ends
+        function applySnapToCurve(state) {
+            if (!state || !state.curveId) return;
+            
+            const tracks = getTrackCalibrationsSnapshot();
+            if (!tracks || !tracks.length) return;
+            const targetTrack = tracks.find(t => t.id === state.curveId);
+            if (!targetTrack) return;
+            
+            const curveKey = state.curveKey || state.curveId;
+            if (!lastDigitizedCurves || !lastDigitizedCurves[curveKey]) return;
+            const entry = lastDigitizedCurves[curveKey];
+            
+            if (!lastCurveTraces || !lastCurveTraces[state.curveId]) return;
+            const pts = lastCurveTraces[state.curveId];
+            
+            const neighbors = state.neighbors || [];
+            if (!neighbors.length) return;
+            
+            // Only snap the center point (the one being dragged)
+            const centerNeighbor = neighbors.find(n => n.pointIndex === state.centerPointIndex);
+            if (!centerNeighbor) return;
+            
+            const pIdx = centerNeighbor.pointIndex;
+            if (pIdx < 0 || pIdx >= pts.length) return;
+            
+            const currentX = pts[pIdx][0];
+            const currentY = pts[pIdx][1];
+            
+            // Find nearest curve color
+            const snapped = snapToCurveColor(currentX, currentY, targetTrack.leftX, targetTrack.rightX);
+            
+            // Update if snap found a better position
+            if (snapped.x !== currentX || snapped.y !== currentY) {
+                pts[pIdx][0] = snapped.x;
+                pts[pIdx][1] = snapped.y;
+                
+                // Update the LAS value
+                const newVal = pixelToTrackValue(snapped.x, targetTrack);
+                if (Number.isFinite(newVal) && centerNeighbor.depthIndex >= 0 && centerNeighbor.depthIndex < entry.values.length) {
+                    entry.values[centerNeighbor.depthIndex] = newVal;
+                }
+                
+                // Re-render to show snapped position
+                renderCurveTraceOverlays(lastCurveTraces);
+            }
         }
 
         function saveDepthConfigToSession() {
@@ -1830,6 +2025,10 @@
 
             const x = event.clientX - rect.left;
             const y = event.clientY - rect.top;
+            // Account for zoom: rect includes zoom scaling, so divide by zoom to get base size
+            const z = zoomLevel || 1.0;
+            const baseWidth = rect.width / z;
+            const baseHeight = rect.height / z;
             const xNorm = Math.max(0, Math.min(1, x / rect.width));
             const yNorm = Math.max(0, Math.min(1, y / rect.height));
             const xImg = Math.round(xNorm * (imageWidth - 1));
@@ -1838,11 +2037,13 @@
             // When edit mode is enabled, clicks/drag adjust the selected curve
             // instead of starting new selections.
             if (editMode && editCurveId) {
-                const handled = beginCurveEditInteraction(xImg, yImg);
-                if (handled) {
-                    event.preventDefault();
-                    return;
-                }
+                // For edit mode, use zoom-corrected coordinates
+                const xImgEdit = Math.round((x / baseWidth) * (imageWidth - 1));
+                const yImgEdit = Math.round((y / baseHeight) * (imageHeight - 1));
+                const handled = beginCurveEditInteraction(xImgEdit, yImgEdit);
+                // Always block selection starts when edit mode is on
+                event.preventDefault();
+                return;
             }
 
             // If user is in "pick curve edge" mode, set that curve's left/right X and exit.
@@ -1892,10 +2093,12 @@
                 if (!rect.width || !rect.height) return;
                 const x = event.clientX - rect.left;
                 const y = event.clientY - rect.top;
-                const xNorm = Math.max(0, Math.min(1, x / rect.width));
-                const yNorm = Math.max(0, Math.min(1, y / rect.height));
-                const xImg = Math.round(xNorm * (imageWidth - 1));
-                const yImg = Math.round(yNorm * (imageHeight - 1));
+                // Account for zoom when calculating image coordinates
+                const z = zoomLevel || 1.0;
+                const baseWidth = rect.width / z;
+                const baseHeight = rect.height / z;
+                const xImg = Math.round((x / baseWidth) * (imageWidth - 1));
+                const yImg = Math.round((y / baseHeight) * (imageHeight - 1));
                 handleCurveEditDragMove(xImg, yImg);
                 event.preventDefault();
                 return;
@@ -1981,8 +2184,23 @@
             updateSelectionSummary();
         });
 
+        // Ctrl+Z to undo last curve edit
+        document.addEventListener('keydown', (event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
+                if (editMode && editUndoStack.length) {
+                    event.preventDefault();
+                    undoLastCurveEdit();
+                }
+            }
+        });
+
         document.addEventListener('mouseup', async () => {
             if (editDragState) {
+                // Apply snap-to-curve on drag end if enabled
+                const snapToggle = document.getElementById('snapToCurveToggle');
+                if (snapToggle && snapToggle.checked && editDragState.curveId) {
+                    applySnapToCurve(editDragState);
+                }
                 editDragState = null;
             }
 
@@ -3957,6 +4175,55 @@
             chains.forEach((el) => el.remove());
         }
 
+        // Fast update: only reposition existing dots and update SVG path (no DOM recreation)
+        function updateCurveTracePositions(curveId) {
+            if (!lastCurveTraces || !lastCurveTraces[curveId]) return;
+            
+            const overlay = document.getElementById('overlay');
+            const img = document.getElementById('imagePreview');
+            if (!overlay || !img) return;
+            
+            const rect = img.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+            
+            const w = imageWidth || img.naturalWidth || 1;
+            const h = imageHeight || img.naturalHeight || 1;
+            const z = zoomLevel || 1.0;
+            const scaleX = (rect.width / z) / w;
+            const scaleY = (rect.height / z) / h;
+            
+            const points = lastCurveTraces[curveId] || [];
+            const dots = overlay.querySelectorAll('.curve-trace-dot');
+            const chain = overlay.querySelector('.curve-trace-chain path');
+            
+            // Sort points by Y for chain
+            const sortedPoints = points
+                .filter(pt => Array.isArray(pt) && pt.length >= 2)
+                .slice()
+                .sort((a, b) => a[1] - b[1]);
+            
+            // Update dots positions (dots are in sorted order)
+            sortedPoints.forEach((pt, idx) => {
+                if (idx < dots.length) {
+                    const xDom = pt[0] * scaleX;
+                    const yDom = pt[1] * scaleY;
+                    dots[idx].style.left = `${xDom - 1}px`;
+                    dots[idx].style.top = `${yDom - 1}px`;
+                }
+            });
+            
+            // Update SVG path
+            if (chain && sortedPoints.length >= 2) {
+                let d = '';
+                sortedPoints.forEach((pt, idx) => {
+                    const xDom = pt[0] * scaleX;
+                    const yDom = pt[1] * scaleY;
+                    d += (idx === 0 ? 'M ' : ' L ') + xDom.toFixed(2) + ' ' + yDom.toFixed(2);
+                });
+                chain.setAttribute('d', d);
+            }
+        }
+
         function renderCurveTraceOverlays(curveTraces) {
             const overlay = document.getElementById('overlay');
             const img = document.getElementById('imagePreview');
@@ -3994,9 +4261,15 @@
 
             Object.keys(curveTraces).forEach((name) => {
                 const points = curveTraces[name] || [];
+                
+                // Sort points by Y (depth) so chain follows the curve properly
+                const sortedPoints = points
+                    .filter(pt => Array.isArray(pt) && pt.length >= 2)
+                    .slice()
+                    .sort((a, b) => a[1] - b[1]);
+                
                 const pathPoints = [];
-                for (const pt of points) {
-                    if (!Array.isArray(pt) || pt.length < 2) continue;
+                for (const pt of sortedPoints) {
                     const xImg = pt[0];
                     const yImg = pt[1];
                     const xDom = xImg * scaleX;
@@ -4030,7 +4303,7 @@
                     path.setAttribute('d', d);
                     path.setAttribute('fill', 'none');
                     path.setAttribute('stroke', '#00ffff');
-                    path.setAttribute('stroke-width', '1');
+                    path.setAttribute('stroke-width', '1.5');
 
                     svg.appendChild(path);
                     overlay.appendChild(svg);
@@ -4356,7 +4629,14 @@
                     populateEditCurveSelectFromConfig(config.curves);
                     editMode = false;
                     editCurveId = null;
+                    editUndoStack = [];  // Clear undo history for fresh digitization
                     setEditModeUI();
+
+                    // Turn off selection modes after digitization so green band doesn't interfere
+                    panelSelectMode = false;
+                    headerSelectMode = false;
+                    primaryRegionDrag.active = false;
+                    headerRegionDrag = false;
 
                     showStatus(message, statusType);
                 } else {
