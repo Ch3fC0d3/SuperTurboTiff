@@ -1084,6 +1084,91 @@ def preprocess_curve_track(roi, mode="black"):
     return cleaned
 
 
+def detect_dominant_curve_hue(roi_bgr, sample_fraction=0.3):
+    """Detect the dominant hue of the curve in a sample region.
+    
+    Samples the middle portion of the image (where the curve is likely to be)
+    and finds the most common saturated hue, excluding near-white/black pixels.
+    
+    Returns:
+        (hue_center, hue_range) or None if no dominant hue found
+    """
+    if roi_bgr is None or roi_bgr.size == 0:
+        return None
+    
+    h, w = roi_bgr.shape[:2]
+    if h < 10 or w < 10:
+        return None
+    
+    # Sample the middle portion of the image (where curve likely is)
+    x_start = int(w * (0.5 - sample_fraction / 2))
+    x_end = int(w * (0.5 + sample_fraction / 2))
+    sample_region = roi_bgr[:, x_start:x_end]
+    
+    hsv = cv2.cvtColor(sample_region, cv2.COLOR_BGR2HSV)
+    
+    # Filter for saturated, non-white, non-black pixels (likely curve pixels)
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    hue = hsv[:, :, 0]
+    
+    # Curve pixels: reasonably saturated and not too dark or bright
+    curve_mask = (saturation > 50) & (value > 40) & (value < 240)
+    
+    if np.sum(curve_mask) < 100:
+        return None
+    
+    # Get hues of curve pixels
+    curve_hues = hue[curve_mask]
+    
+    # Build histogram of hues (0-180 in OpenCV)
+    hist, bins = np.histogram(curve_hues, bins=36, range=(0, 180))
+    
+    # Find the dominant hue bin (excluding very low counts)
+    threshold = np.max(hist) * 0.3
+    dominant_bins = np.where(hist > threshold)[0]
+    
+    if len(dominant_bins) == 0:
+        return None
+    
+    # Use the bin with highest count
+    peak_bin = np.argmax(hist)
+    hue_center = (bins[peak_bin] + bins[peak_bin + 1]) / 2
+    
+    # Adaptive hue range based on how spread the hues are
+    hue_std = np.std(curve_hues)
+    hue_range = max(10, min(25, hue_std * 2))
+    
+    return (float(hue_center), float(hue_range))
+
+
+def apply_local_contrast_normalization(img_bgr):
+    """Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance
+    faded sections while preserving color information.
+    
+    This normalizes brightness in small windows so faded curve sections
+    don't get lost during detection.
+    """
+    if img_bgr is None or img_bgr.size == 0:
+        return img_bgr
+    
+    # Convert to LAB color space (L = lightness, A/B = color)
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    
+    # Apply CLAHE to the L (lightness) channel only
+    # clipLimit controls contrast amplification (lower = less noise amplification)
+    # tileGridSize controls the window size for local normalization
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_enhanced = clahe.apply(l_channel)
+    
+    # Merge back and convert to BGR
+    lab_enhanced = cv2.merge([l_enhanced, a_channel, b_channel])
+    enhanced_bgr = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+    
+    return enhanced_bgr
+
+
 def compute_prob_map(roi_bgr, mode="black"):
     """Build a soft probability map for the curve in a track ROI.
 
@@ -1098,17 +1183,45 @@ def compute_prob_map(roi_bgr, mode="black"):
     if h < 2 or w < 2:
         return np.zeros((h, w), dtype=np.uint8)
 
-    hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
-    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+    # Apply local contrast normalization to enhance faded sections
+    roi_enhanced = apply_local_contrast_normalization(roi_bgr)
+    
+    # Use enhanced image for HSV and grayscale conversion
+    hsv = cv2.cvtColor(roi_enhanced, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(roi_enhanced, cv2.COLOR_BGR2GRAY)
+    
+    # Also apply CLAHE directly to grayscale for edge detection
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
 
     # 1) Base color/intensity mask
+    # For colored modes, try to detect the actual curve hue for better tracking
+    # Use enhanced image for better hue detection in faded areas
+    detected_hue = None
+    if mode in ("green", "red", "blue", "auto"):
+        detected_hue = detect_dominant_curve_hue(roi_enhanced)
+    
     if mode == "green":
-        lower = np.array([35, 40, 40], dtype=np.uint8)
-        upper = np.array([90, 255, 255], dtype=np.uint8)
+        # Use detected hue if available, otherwise fall back to fixed green range
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            # Only use detected hue if it's in the green-ish range (30-100)
+            if 30 <= hue_center <= 100:
+                h_lo = max(0, int(hue_center - hue_range))
+                h_hi = min(180, int(hue_center + hue_range))
+                lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+                upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            else:
+                # Detected hue is outside green range, use default
+                lower = np.array([35, 40, 40], dtype=np.uint8)
+                upper = np.array([90, 255, 255], dtype=np.uint8)
+        else:
+            lower = np.array([35, 40, 40], dtype=np.uint8)
+            upper = np.array([90, 255, 255], dtype=np.uint8)
+        
         color_mask = cv2.inRange(hsv, lower, upper)
 
         # In green mode, actively suppress pixels that look clearly red/orange
-        # so we don't accidentally trace a reddish neighbor curve.
         b, g, r = cv2.split(roi_bgr)
         r16 = r.astype(np.int16)
         g16 = g.astype(np.int16)
@@ -1116,12 +1229,14 @@ def compute_prob_map(roi_bgr, mode="black"):
         red_dominant = (r16 > g16 + 10) & (r16 > b16 + 10)
         color_mask[red_dominant] = 0
 
+        # Refine with median hue from detected pixels for tighter tracking
         nonzero = np.nonzero(color_mask)
         if len(nonzero[0]) > 50:
             h_channel = hsv[:, :, 0]
             valid_h = h_channel[nonzero]
             med_h = float(np.median(valid_h))
-            band = 15.0
+            # Use tighter band for refined detection
+            band = 12.0 if detected_hue else 15.0
             h_lo = max(0, int(med_h - band))
             h_hi = min(180, int(med_h + band))
             dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
@@ -1129,25 +1244,127 @@ def compute_prob_map(roi_bgr, mode="black"):
             color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
             color_mask[red_dominant] = 0
 
-        # Require that the G channel be dominant (or at least not far below R)
-        # so that yellow/orange curves that still fall inside the hue band are
-        # suppressed. This keeps the green GR curve while down-weighting
-        # neighboring orange resistivity-style curves.
+        # Require G channel dominance to suppress yellow/orange curves
         g_dominant = (g16 >= r16 - 5) & (g16 >= b16 + 5)
         color_mask[~g_dominant] = 0
 
+    elif mode == "auto":
+        # Auto-detect the curve hue and track it
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            h_lo = max(0, int(hue_center - hue_range))
+            h_hi = min(180, int(hue_center + hue_range))
+            lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+            upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            color_mask = cv2.inRange(hsv, lower, upper)
+            
+            # Refine with median hue from detected pixels
+            nonzero = np.nonzero(color_mask)
+            if len(nonzero[0]) > 50:
+                h_channel = hsv[:, :, 0]
+                valid_h = h_channel[nonzero]
+                med_h = float(np.median(valid_h))
+                band = 12.0
+                h_lo = max(0, int(med_h - band))
+                h_hi = min(180, int(med_h + band))
+                dyn_lower = np.array([h_lo, 45, 45], dtype=np.uint8)
+                dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+                color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
+        else:
+            # Fallback to detecting any saturated colored pixels
+            saturation = hsv[:, :, 1]
+            value = hsv[:, :, 2]
+            color_mask = ((saturation > 50) & (value > 40) & (value < 240)).astype(np.uint8) * 255
+
     elif mode == "red":
-        lower1 = np.array([0, 70, 40], dtype=np.uint8)
-        upper1 = np.array([15, 255, 255], dtype=np.uint8)
-        lower2 = np.array([160, 70, 40], dtype=np.uint8)
-        upper2 = np.array([180, 255, 255], dtype=np.uint8)
-        m1 = cv2.inRange(hsv, lower1, upper1)
-        m2 = cv2.inRange(hsv, lower2, upper2)
-        color_mask = cv2.bitwise_or(m1, m2)
+        # Red wraps around hue 0/180, so handle both ends
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            # Only use detected hue if it's in the red-ish range (0-15 or 160-180)
+            if hue_center <= 20 or hue_center >= 155:
+                # Use detected hue with adaptive range
+                if hue_center <= 20:
+                    h_lo = max(0, int(hue_center - hue_range))
+                    h_hi = min(25, int(hue_center + hue_range))
+                    lower1 = np.array([h_lo, 60, 40], dtype=np.uint8)
+                    upper1 = np.array([h_hi, 255, 255], dtype=np.uint8)
+                    color_mask = cv2.inRange(hsv, lower1, upper1)
+                else:
+                    h_lo = max(150, int(hue_center - hue_range))
+                    h_hi = min(180, int(hue_center + hue_range))
+                    lower2 = np.array([h_lo, 60, 40], dtype=np.uint8)
+                    upper2 = np.array([h_hi, 255, 255], dtype=np.uint8)
+                    color_mask = cv2.inRange(hsv, lower2, upper2)
+            else:
+                # Detected hue outside red range, use default
+                lower1 = np.array([0, 70, 40], dtype=np.uint8)
+                upper1 = np.array([15, 255, 255], dtype=np.uint8)
+                lower2 = np.array([160, 70, 40], dtype=np.uint8)
+                upper2 = np.array([180, 255, 255], dtype=np.uint8)
+                m1 = cv2.inRange(hsv, lower1, upper1)
+                m2 = cv2.inRange(hsv, lower2, upper2)
+                color_mask = cv2.bitwise_or(m1, m2)
+        else:
+            lower1 = np.array([0, 70, 40], dtype=np.uint8)
+            upper1 = np.array([15, 255, 255], dtype=np.uint8)
+            lower2 = np.array([160, 70, 40], dtype=np.uint8)
+            upper2 = np.array([180, 255, 255], dtype=np.uint8)
+            m1 = cv2.inRange(hsv, lower1, upper1)
+            m2 = cv2.inRange(hsv, lower2, upper2)
+            color_mask = cv2.bitwise_or(m1, m2)
+        
+        # Refine with median hue from detected pixels
+        nonzero = np.nonzero(color_mask)
+        if len(nonzero[0]) > 50:
+            h_channel = hsv[:, :, 0]
+            valid_h = h_channel[nonzero]
+            med_h = float(np.median(valid_h))
+            band = 12.0
+            # Handle red's wrap-around at 0/180
+            if med_h <= 20:
+                h_lo = max(0, int(med_h - band))
+                h_hi = min(30, int(med_h + band))
+                dyn_lower = np.array([h_lo, 60, 40], dtype=np.uint8)
+                dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+                color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
+            elif med_h >= 160:
+                h_lo = max(150, int(med_h - band))
+                h_hi = min(180, int(med_h + band))
+                dyn_lower = np.array([h_lo, 60, 40], dtype=np.uint8)
+                dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+                color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
+
     elif mode == "blue":
-        lower = np.array([90, 40, 40], dtype=np.uint8)
-        upper = np.array([140, 255, 255], dtype=np.uint8)
+        # Use detected hue if available, otherwise fall back to fixed blue range
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            # Only use detected hue if it's in the blue-ish range (90-140)
+            if 85 <= hue_center <= 145:
+                h_lo = max(80, int(hue_center - hue_range))
+                h_hi = min(150, int(hue_center + hue_range))
+                lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+                upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            else:
+                lower = np.array([90, 40, 40], dtype=np.uint8)
+                upper = np.array([140, 255, 255], dtype=np.uint8)
+        else:
+            lower = np.array([90, 40, 40], dtype=np.uint8)
+            upper = np.array([140, 255, 255], dtype=np.uint8)
+        
         color_mask = cv2.inRange(hsv, lower, upper)
+        
+        # Refine with median hue from detected pixels
+        nonzero = np.nonzero(color_mask)
+        if len(nonzero[0]) > 50:
+            h_channel = hsv[:, :, 0]
+            valid_h = h_channel[nonzero]
+            med_h = float(np.median(valid_h))
+            band = 12.0
+            h_lo = max(80, int(med_h - band))
+            h_hi = min(150, int(med_h + band))
+            dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+            dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
     else:
         # "black" or fallback: dark pixels relative to local background
         color_mask = cv2.adaptiveThreshold(
@@ -1164,23 +1381,47 @@ def compute_prob_map(roi_bgr, mode="black"):
     color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel, 1)
     color_score = color_mask.astype(np.float32) / 255.0
 
-    # 2) Edge score (helps when color is weak). For explicit color modes
-    #    (green/red/blue), we also gate edges by the color mask so that
-    #    vertical grid lines and black curves that do not share the color
-    #    are strongly suppressed.
-    edges = cv2.Canny(gray, 40, 120)
-    edges_blur = cv2.GaussianBlur(edges, (5, 5), 0)
+    # 2) Enhanced edge detection using both Canny and Sobel.
+    #    Canny finds strong edges; Sobel emphasizes horizontal gradients
+    #    which helps track curves that move left/right.
+    edges_canny = cv2.Canny(gray, 40, 120)
+    
+    # Sobel for horizontal gradient (curve moving left/right)
+    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_x = np.abs(sobel_x)
+    sobel_x = (sobel_x / (sobel_x.max() + 1e-6) * 255).astype(np.uint8)
+    
+    # Combine Canny and Sobel - Canny for sharp edges, Sobel for gradients
+    edges_combined = cv2.addWeighted(edges_canny, 0.6, sobel_x, 0.4, 0)
+    edges_blur = cv2.GaussianBlur(edges_combined, (5, 5), 0)
     edge_score = edges_blur.astype(np.float32) / 255.0
+    
+    # For color modes, gate edges by color mask to suppress non-colored edges
     if mode in {"green", "red", "blue"}:
         edge_score *= color_score
 
-    # 3) Suppress vertical "rails" (grid / borders)
+    # 3) Suppress vertical "rails" (grid / borders) and track edges
     if h >= 4 and w >= 2:
         col_on_frac = (color_score > 0).mean(axis=0)
-        rail_cols = col_on_frac > 0.40  # Lower threshold to catch more grid lines
+        
+        # Detect rail-like columns (on for many rows)
+        rail_cols = col_on_frac > 0.35  # Threshold for grid line detection
         if np.any(rail_cols):
-            color_score[:, rail_cols] *= 0.01  # Almost eliminate vertical rails
-            edge_score[:, rail_cols] *= 0.01
+            color_score[:, rail_cols] *= 0.005  # Almost eliminate vertical rails
+            edge_score[:, rail_cols] *= 0.005
+        
+        # Also suppress the extreme edges of the track (likely borders)
+        edge_margin = max(2, int(w * 0.05))  # 5% margin on each side
+        # Left edge suppression (gradual)
+        for i in range(edge_margin):
+            factor = 0.1 + 0.9 * (i / edge_margin)  # Ramp from 0.1 to 1.0
+            color_score[:, i] *= factor
+            edge_score[:, i] *= factor
+        # Right edge suppression (gradual)
+        for i in range(edge_margin):
+            factor = 0.1 + 0.9 * (i / edge_margin)
+            color_score[:, w - 1 - i] *= factor
+            edge_score[:, w - 1 - i] *= factor
 
     # 4) Centerline boost via distance transform, focused on ink (curve
     #    strokes) rather than the entire filled panel background. We define
@@ -1200,15 +1441,15 @@ def compute_prob_map(roi_bgr, mode="black"):
     else:
         center_score = np.zeros_like(color_score, dtype=np.float32)
 
-    # 5) Combine into probability map. For color modes, strongly emphasize
-    #    the distance-transform centerline so the DP path locks onto the
-    #    true middle of the colored stroke.
+    # 5) Combine into probability map. For color modes, balance between
+    #    centerline (for smooth path) and edges (for accurate position).
     if mode in {"green", "red", "blue"}:
-        prob = 0.2 * color_score + 0.1 * edge_score + 0.7 * center_score
+        # Increased edge weight for better curve tracking
+        prob = 0.15 * color_score + 0.25 * edge_score + 0.6 * center_score
         # Sharpen the ridge so the centerline stands out from its shoulders
         prob = prob ** 2
     else:
-        prob = 0.3 * color_score + 0.4 * edge_score + 0.3 * center_score
+        prob = 0.25 * color_score + 0.45 * edge_score + 0.3 * center_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
@@ -1276,18 +1517,41 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
     # True log curves wiggle left/right, so their per-column average is
     # typically modest. Continuous vertical gridlines, in contrast, have a
     # very high column mean and should be discouraged.
-    if h >= 40 and w >= 4:
+    
+    # RAIL PENALTY PARAMETERS (tunable)
+    rail_threshold = 0.20          # Columns with >20% of rows lit are suspicious
+    rail_penalty_strength = 4.0    # Base penalty multiplier for rail-like columns
+    rail_shape_penalty_val = 4.0   # Extra penalty for low-variance (flat) columns
+    rail_std_threshold = 0.02      # Columns with std < this are considered flat
+    
+    # EDGE PENALTY PARAMETERS (tunable) - prevents hugging track edges
+    edge_margin_pct = 0.08         # Penalize outer 8% of track width on each side
+    edge_penalty_strength = 3.0    # Penalty for being at track edges
+    
+    if h >= 20 and w >= 4:
         col_mean = prob.mean(axis=0)
         col_std = prob.std(axis=0)
-        # No penalty for weak columns; ramp up once a column is on for more
-        # than ~25% of rows. This adds a constant cost to those columns in all
-        # rows, pushing the DP path toward more wiggly structure.
-        rail_penalty = 3.0 * np.maximum(0.0, col_mean - 0.25)
+        
+        # Rail penalty: ramps up for columns that are on for many rows
+        rail_penalty = rail_penalty_strength * np.maximum(0.0, col_mean - rail_threshold)
+        
+        # Extra penalty for flat columns (low variance = likely grid line)
         rail_shape_penalty = np.zeros_like(rail_penalty)
-        rail_mask = (col_mean > 0.25) & (col_std < 0.02)
+        rail_mask = (col_mean > rail_threshold) & (col_std < rail_std_threshold)
         if np.any(rail_mask):
-            rail_shape_penalty[rail_mask] = 3.0
-        total_rail_penalty = rail_penalty + rail_shape_penalty
+            rail_shape_penalty[rail_mask] = rail_shape_penalty_val
+        
+        # Edge penalty: discourage hugging the track borders
+        edge_margin = max(1, int(w * edge_margin_pct))
+        edge_penalty = np.zeros(w, dtype=np.float32)
+        # Left edge: ramp from edge_penalty_strength down to 0
+        for i in range(edge_margin):
+            edge_penalty[i] = edge_penalty_strength * (1.0 - i / edge_margin)
+        # Right edge: ramp from 0 up to edge_penalty_strength
+        for i in range(edge_margin):
+            edge_penalty[w - 1 - i] = edge_penalty_strength * (1.0 - i / edge_margin)
+        
+        total_rail_penalty = rail_penalty + rail_shape_penalty + edge_penalty
         if np.any(total_rail_penalty > 0):
             cost += total_rail_penalty[np.newaxis, :]
     
@@ -1397,6 +1661,103 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
     xs[xs < 0] = np.nan
     
     return xs, confidence
+
+
+def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.5, hot_side=None):
+    """
+    Multi-scale curve tracing: run DP at multiple resolutions and merge.
+    
+    This improves detection by:
+    - Coarse scales capture the overall trend and avoid local noise.
+    - Fine scale captures detail.
+    - Merging favors the path with higher local probability at each row.
+    
+    Scales used: 1.0 (full), 0.5 (half), 0.25 (quarter)
+    """
+    if curve_mask is None or curve_mask.size == 0:
+        return np.array([]), np.array([])
+    
+    h, w = curve_mask.shape
+    if h < 4 or w < 4:
+        # Too small for multi-scale, just use single scale
+        return trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type, max_step, smooth_lambda, hot_side)
+    
+    scales = [1.0, 0.5, 0.25]
+    all_xs = []
+    
+    for scale in scales:
+        if scale == 1.0:
+            mask_scaled = curve_mask
+            h_s, w_s = h, w
+        else:
+            h_s = max(4, int(h * scale))
+            w_s = max(4, int(w * scale))
+            mask_scaled = cv2.resize(curve_mask, (w_s, h_s), interpolation=cv2.INTER_AREA)
+        
+        # Adjust max_step for scale
+        max_step_scaled = max(1, int(max_step * scale))
+        
+        # Run DP at this scale
+        xs_scaled, _ = trace_curve_with_dp(
+            mask_scaled,
+            scale_min=scale_min,
+            scale_max=scale_max,
+            curve_type=curve_type,
+            max_step=max_step_scaled,
+            smooth_lambda=smooth_lambda,
+            hot_side=hot_side,
+        )
+        
+        # Upsample back to full resolution
+        if scale != 1.0 and xs_scaled.size > 0:
+            # Scale x coordinates back
+            xs_full = np.full(h, np.nan, dtype=np.float32)
+            for y_full in range(h):
+                y_scaled = int(y_full * scale)
+                if 0 <= y_scaled < xs_scaled.size and np.isfinite(xs_scaled[y_scaled]):
+                    xs_full[y_full] = xs_scaled[y_scaled] / scale
+            xs_scaled = xs_full
+        
+        all_xs.append(xs_scaled)
+    
+    # Merge: for each row, pick the x with highest probability in the original mask
+    prob = curve_mask.astype(np.float32) / 255.0
+    xs_merged = np.full(h, np.nan, dtype=np.float32)
+    confidence = np.zeros(h, dtype=np.float32)
+    
+    for y in range(h):
+        best_x = np.nan
+        best_prob = -1.0
+        
+        for xs in all_xs:
+            if xs is None or y >= xs.size:
+                continue
+            x_cand = xs[y]
+            if not np.isfinite(x_cand):
+                continue
+            x_int = int(round(x_cand))
+            if 0 <= x_int < w:
+                p = prob[y, x_int]
+                if p > best_prob:
+                    best_prob = p
+                    best_x = x_cand
+        
+        xs_merged[y] = best_x
+        confidence[y] = best_prob
+    
+    # Light smoothing to reduce scale-switching jitter
+    try:
+        from scipy.ndimage import uniform_filter1d
+        valid_mask = np.isfinite(xs_merged)
+        if np.sum(valid_mask) > 5:
+            xs_temp = xs_merged.copy()
+            xs_temp[~valid_mask] = np.nanmean(xs_merged)
+            xs_smooth = uniform_filter1d(xs_temp, size=3, mode='nearest')
+            xs_merged[valid_mask] = xs_smooth[valid_mask]
+    except ImportError:
+        pass
+    
+    return xs_merged, confidence
 
 
 def refine_trace_with_local_maxima(mask, xs, max_shift=6, dominance_ratio=1.1, min_prob=0.2):
@@ -3333,8 +3694,8 @@ def digitize():
             bb = blur + 1 if blur % 2 == 0 else blur
             roi = cv2.GaussianBlur(roi, (bb, bb), 0)
         
-        # Define colored modes set
-        colored_modes = {"green", "red", "blue"}
+        # Define colored modes set (including auto which detects hue automatically)
+        colored_modes = {"green", "red", "blue", "auto"}
         
         # NEW: Build a soft probability mask for the curve using color/edges
         # plus vertical-rail suppression. This returns an 8-bit image where
@@ -3877,6 +4238,117 @@ def ask_ai():
     
     # If answer contains error message from AI API, still return success but show the error
     return jsonify({'success': True, 'answer': answer})
+
+
+@app.route('/refine_edit', methods=['POST'])
+def refine_edit():
+    """
+    Refine a curve edit using multi-scale tracing on a local segment.
+    
+    Takes a small vertical window around the edited point and runs
+    the improved line detection to find the best x-position.
+    
+    Request JSON:
+        image: base64 encoded image
+        track: {leftX, rightX, leftValue, rightValue}
+        editY: pixel Y coordinate of the edit
+        editX: current pixel X coordinate (user's drag position)
+        windowSize: vertical window size in pixels (default 50)
+        curveType: curve type (GR, RHOB, etc.)
+        mode: detection mode (green, black, etc.)
+    
+    Returns:
+        refinedX: the best x-position from multi-scale detection
+        confidence: detection confidence
+    """
+    try:
+        data = request.json
+        
+        # Decode image
+        img_data = data['image'].split(',')[1] if ',' in data['image'] else data['image']
+        img_bytes = base64.b64decode(img_data)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return jsonify({'success': False, 'error': 'Failed to decode image'})
+        
+        h_img, w_img = img.shape[:2]
+        
+        # Get parameters
+        track = data.get('track', {})
+        left_x = int(track.get('leftX', 0))
+        right_x = int(track.get('rightX', w_img))
+        left_value = float(track.get('leftValue', 0))
+        right_value = float(track.get('rightValue', 100))
+        
+        edit_y = int(data.get('editY', h_img // 2))
+        edit_x = float(data.get('editX', (left_x + right_x) // 2))
+        window_size = int(data.get('windowSize', 50))
+        curve_type = data.get('curveType', 'GR').upper()
+        mode = data.get('mode', 'green').lower()
+        
+        # Extract the track region
+        left_x = max(0, min(left_x, w_img - 1))
+        right_x = max(left_x + 1, min(right_x, w_img))
+        
+        # Extract vertical window around edit point
+        y_start = max(0, edit_y - window_size // 2)
+        y_end = min(h_img, edit_y + window_size // 2)
+        
+        track_crop = img[y_start:y_end, left_x:right_x]
+        
+        if track_crop.size == 0:
+            return jsonify({'success': False, 'error': 'Empty track region'})
+        
+        # Build probability map for this segment
+        colored_modes = {'green', 'red', 'blue', 'auto', 'cyan', 'magenta', 'yellow', 'orange', 'purple'}
+        
+        if mode in colored_modes:
+            mask = compute_prob_map(track_crop, mode)
+        else:
+            # Black curve detection
+            gray = cv2.cvtColor(track_crop, cv2.COLOR_BGR2GRAY) if len(track_crop.shape) == 3 else track_crop
+            mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+        
+        # Run multi-scale tracing on this segment
+        xs_refined, confidence = trace_curve_multiscale(
+            mask,
+            scale_min=left_value,
+            scale_max=right_value,
+            curve_type=curve_type,
+            max_step=12,
+            smooth_lambda=0.001,
+            hot_side=None,
+        )
+        
+        # Find the x at the edit row (relative to window)
+        edit_row_in_window = edit_y - y_start
+        
+        if 0 <= edit_row_in_window < len(xs_refined) and np.isfinite(xs_refined[edit_row_in_window]):
+            refined_x_local = xs_refined[edit_row_in_window]
+            refined_x = left_x + refined_x_local  # Convert back to full image coordinates
+            conf = float(confidence[edit_row_in_window]) if edit_row_in_window < len(confidence) else 0.5
+        else:
+            # Fallback: return the user's edit position
+            refined_x = edit_x
+            conf = 0.0
+        
+        return jsonify({
+            'success': True,
+            'refinedX': float(refined_x),
+            'confidence': conf,
+            'originalX': float(edit_x),
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
+
 
 if __name__ == '__main__':
     # Create templates folder if it doesn't exist
