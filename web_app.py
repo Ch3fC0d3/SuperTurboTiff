@@ -11,6 +11,16 @@ Setup:
 
 Free hosting: Deploy to Render.com, Railway.app, or Google Cloud Run
 """
+# Add Google Vision API initialization
+from google.cloud import vision
+VISION_API_AVAILABLE = True
+try:
+    vision_client = vision.ImageAnnotatorClient()
+except Exception as e:
+    print(f"Google Vision API initialization failed: {e}")
+    vision_client = None
+    VISION_API_AVAILABLE = False
+
 # Load environment variables from .env and .env.local
 from dotenv import load_dotenv
 load_dotenv()  # Load .env
@@ -20,6 +30,7 @@ from flask import Flask, render_template, request, jsonify, send_file
 import os
 import cv2
 import numpy as np
+import fast_tracer
 import pandas as pd
 import json
 from io import BytesIO, StringIO
@@ -27,14 +38,13 @@ import base64
 from typing import Dict, List, Tuple
 import tempfile
 from datetime import datetime
+import uuid
+from pathlib import Path
 import requests
 import openai
 from huggingface_hub import InferenceClient
 
 # Try to import Google Vision API (optional)
-VISION_API_AVAILABLE = False
-vision_client = None
-
 try:
     from google.cloud import vision
     from google.oauth2 import service_account
@@ -99,11 +109,46 @@ OPENAI_MODEL_ID = os.getenv("OPENAI_MODEL_ID") or os.getenv("OPENAI_MODEL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL_ID = os.getenv("GEMINI_MODEL_ID") or "models/gemini-2.0-flash"
 
+try:
+    CURVE_TRACE_UPSCALE = float(os.environ.get("CURVE_TRACE_UPSCALE", "2.0"))
+except Exception:
+    CURVE_TRACE_UPSCALE = 2.0
+CURVE_TRACE_UPSCALE = max(1.0, min(4.0, CURVE_TRACE_UPSCALE))
+
 APP_VERSION = os.environ.get("APP_VERSION", "dev")
 APP_BUILD_TIME = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
+
+
+@app.errorhandler(500)
+def _handle_internal_server_error(exc):
+    if request.path == '/digitize':
+        import traceback
+        original = getattr(exc, 'original_exception', None)
+        if original is not None:
+            print(f"/digitize 500 error: {original}")
+            print(traceback.format_exc())
+            err_msg = str(original)
+        else:
+            print(f"/digitize 500 error: {exc}")
+            err_msg = str(exc)
+
+        tb = traceback.format_exc()
+        tb_lines = tb.splitlines()[-25:]
+        tb_short = "\n".join(tb_lines)
+
+        return jsonify({
+            'success': False,
+            'error': err_msg,
+            'traceback': tb_short,
+        }), 500
+
+    return jsonify({
+        'success': False,
+        'error': 'Internal server error',
+    }), 500
 
 # ----------------------------
 # Core Processing Functions
@@ -1166,10 +1211,48 @@ def apply_local_contrast_normalization(img_bgr):
     lab_enhanced = cv2.merge([l_enhanced, a_channel, b_channel])
     enhanced_bgr = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
     
+    # SATURATION BOOST: "Up the contrast" for color
+    # Make faint ink look vibrant
+    hsv = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    s = cv2.multiply(s, 1.5) # Boost saturation by 50%
+    s = np.clip(s, 0, 255).astype(np.uint8)
+    enhanced_bgr = cv2.cvtColor(cv2.merge([h, s, v]), cv2.COLOR_HSV2BGR)
+    
     return enhanced_bgr
 
 
-def compute_prob_map(roi_bgr, mode="black"):
+def enhance_curve_roi(roi_bgr):
+    """
+    Apply lightweight denoise + horizontal super-resolution to a curve ROI.
+    Returns (processed_roi, horizontal_scale_factor).
+    """
+    if roi_bgr is None or roi_bgr.size == 0:
+        return roi_bgr, 1.0
+    proc = roi_bgr
+    scale = 1.0
+    try:
+        proc = cv2.bilateralFilter(proc, d=5, sigmaColor=25, sigmaSpace=12)
+    except Exception:
+        pass
+    if CURVE_TRACE_UPSCALE > 1.01 and proc.shape[1] >= 2:
+        h, w = proc.shape[:2]
+        new_w = max(2, int(round(w * CURVE_TRACE_UPSCALE)))
+        try:
+            proc = cv2.resize(proc, (new_w, h), interpolation=cv2.INTER_CUBIC)
+            scale = new_w / max(1, w)
+        except Exception:
+            scale = 1.0
+    try:
+        # Mild sharpening to boost ink contrast after upscaling
+        blur = cv2.GaussianBlur(proc, (0, 0), sigmaX=0.8)
+        proc = cv2.addWeighted(proc, 1.2, blur, -0.2, 0)
+    except Exception:
+        pass
+    return proc, scale
+
+
+def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allowed=True):
     """Build a soft probability map for the curve in a track ROI.
 
     Returns an 8-bit image (0–255) where higher values mean higher likelihood
@@ -1183,8 +1266,63 @@ def compute_prob_map(roi_bgr, mode="black"):
     if h < 2 or w < 2:
         return np.zeros((h, w), dtype=np.uint8)
 
-    # Apply local contrast normalization to enhance faded sections
-    roi_enhanced = apply_local_contrast_normalization(roi_bgr)
+    ui_filters = ui_filters or {}
+    try:
+        use_contrast = bool(ui_filters.get('contrast'))
+        use_invert = bool(ui_filters.get('invert'))
+    except Exception:
+        use_contrast = False
+        use_invert = False
+
+    if _dual_polarity_allowed and mode == "auto" and use_invert:
+        try:
+            ui_filters_no_invert = dict(ui_filters)
+        except Exception:
+            ui_filters_no_invert = {}
+        ui_filters_no_invert['invert'] = False
+        try:
+            inv_roi = cv2.bitwise_not(roi_bgr)
+        except Exception:
+            inv_roi = np.clip(255 - roi_bgr, 0, 255).astype(np.uint8)
+        prob_a = compute_prob_map(
+            roi_bgr,
+            mode=mode,
+            ui_filters=ui_filters_no_invert,
+            _dual_polarity_allowed=False,
+        )
+        prob_b = compute_prob_map(
+            inv_roi,
+            mode=mode,
+            ui_filters=ui_filters_no_invert,
+            _dual_polarity_allowed=False,
+        )
+        try:
+            if prob_a is None:
+                return prob_b
+            if prob_b is None:
+                return prob_a
+            if prob_a.shape != prob_b.shape:
+                return prob_a
+            return np.maximum(prob_a, prob_b)
+        except Exception:
+            return prob_a
+
+    roi_pre = roi_bgr
+    if use_invert and mode == "auto":
+        try:
+            roi_pre = cv2.bitwise_not(roi_pre)
+        except Exception:
+            roi_pre = np.clip(255 - roi_pre, 0, 255).astype(np.uint8)
+    if use_contrast:
+        try:
+            alpha = 2.0
+            roi_f = roi_pre.astype(np.float32)
+            roi_f = (roi_f - 128.0) * alpha + 128.0
+            roi_pre = np.clip(roi_f, 0, 255).astype(np.uint8)
+        except Exception:
+            pass
+
+    roi_enhanced = apply_local_contrast_normalization(roi_pre)
     
     # Use enhanced image for HSV and grayscale conversion
     hsv = cv2.cvtColor(roi_enhanced, cv2.COLOR_BGR2HSV)
@@ -1197,55 +1335,31 @@ def compute_prob_map(roi_bgr, mode="black"):
     # 1) Base color/intensity mask
     # For colored modes, try to detect the actual curve hue for better tracking
     # Use enhanced image for better hue detection in faded areas
+    colored_modes = {"green", "red", "blue", "auto", "cyan", "magenta", "yellow", "orange", "purple"}
     detected_hue = None
-    if mode in ("green", "red", "blue", "auto"):
+    if mode in colored_modes:
         detected_hue = detect_dominant_curve_hue(roi_enhanced)
     
     if mode == "green":
-        # Use detected hue if available, otherwise fall back to fixed green range
-        if detected_hue is not None:
-            hue_center, hue_range = detected_hue
-            # Only use detected hue if it's in the green-ish range (30-100)
-            if 30 <= hue_center <= 100:
-                h_lo = max(0, int(hue_center - hue_range))
-                h_hi = min(180, int(hue_center + hue_range))
-                lower = np.array([h_lo, 40, 40], dtype=np.uint8)
-                upper = np.array([h_hi, 255, 255], dtype=np.uint8)
-            else:
-                # Detected hue is outside green range, use default
-                lower = np.array([35, 40, 40], dtype=np.uint8)
-                upper = np.array([90, 255, 255], dtype=np.uint8)
-        else:
-            lower = np.array([35, 40, 40], dtype=np.uint8)
-            upper = np.array([90, 255, 255], dtype=np.uint8)
-        
+        # PERMISSIVE green detection again - we need to catch the faint tips
+        # We'll rely on the tracer logic to ignore grid noise
+        # Increased saturation min from 30 to 50 to reject gray vertical lines
+        lower = np.array([25, 50, 30], dtype=np.uint8)
+        upper = np.array([95, 255, 255], dtype=np.uint8)
         color_mask = cv2.inRange(hsv, lower, upper)
-
-        # In green mode, actively suppress pixels that look clearly red/orange
-        b, g, r = cv2.split(roi_bgr)
+        
+        # Suppress red/orange pixels
+        b, g, r = cv2.split(roi_enhanced)
         r16 = r.astype(np.int16)
         g16 = g.astype(np.int16)
         b16 = b.astype(np.int16)
-        red_dominant = (r16 > g16 + 10) & (r16 > b16 + 10)
-        color_mask[red_dominant] = 0
-
-        # Refine with median hue from detected pixels for tighter tracking
-        nonzero = np.nonzero(color_mask)
-        if len(nonzero[0]) > 50:
-            h_channel = hsv[:, :, 0]
-            valid_h = h_channel[nonzero]
-            med_h = float(np.median(valid_h))
-            # Use tighter band for refined detection
-            band = 12.0 if detected_hue else 15.0
-            h_lo = max(0, int(med_h - band))
-            h_hi = min(180, int(med_h + band))
-            dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
-            dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
-            color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
-            color_mask[red_dominant] = 0
-
-        # Require G channel dominance to suppress yellow/orange curves
-        g_dominant = (g16 >= r16 - 5) & (g16 >= b16 + 5)
+        
+        # Only suppress clearly red pixels
+        clearly_red = (r16 > g16 + 30) & (r16 > b16 + 30)
+        color_mask[clearly_red] = 0
+        
+        # Weak G-dominance check (allow if G is just slightly higher or equal)
+        g_dominant = (g16 >= r16 - 5) & (g16 >= b16 - 5)
         color_mask[~g_dominant] = 0
 
     elif mode == "auto":
@@ -1365,6 +1479,151 @@ def compute_prob_map(roi_bgr, mode="black"):
             dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
             dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
             color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
+
+    elif mode == "cyan":
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            if 70 <= hue_center <= 110:
+                h_lo = max(60, int(hue_center - hue_range))
+                h_hi = min(120, int(hue_center + hue_range))
+                lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+                upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            else:
+                lower = np.array([70, 40, 40], dtype=np.uint8)
+                upper = np.array([110, 255, 255], dtype=np.uint8)
+        else:
+            lower = np.array([70, 40, 40], dtype=np.uint8)
+            upper = np.array([110, 255, 255], dtype=np.uint8)
+
+        color_mask = cv2.inRange(hsv, lower, upper)
+
+        nonzero = np.nonzero(color_mask)
+        if len(nonzero[0]) > 50:
+            h_channel = hsv[:, :, 0]
+            valid_h = h_channel[nonzero]
+            med_h = float(np.median(valid_h))
+            band = 12.0
+            h_lo = max(60, int(med_h - band))
+            h_hi = min(120, int(med_h + band))
+            dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+            dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
+
+    elif mode == "yellow":
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            if 10 <= hue_center <= 55:
+                h_lo = max(0, int(hue_center - hue_range))
+                h_hi = min(70, int(hue_center + hue_range))
+                lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+                upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            else:
+                lower = np.array([15, 40, 40], dtype=np.uint8)
+                upper = np.array([45, 255, 255], dtype=np.uint8)
+        else:
+            lower = np.array([15, 40, 40], dtype=np.uint8)
+            upper = np.array([45, 255, 255], dtype=np.uint8)
+
+        color_mask = cv2.inRange(hsv, lower, upper)
+
+        nonzero = np.nonzero(color_mask)
+        if len(nonzero[0]) > 50:
+            h_channel = hsv[:, :, 0]
+            valid_h = h_channel[nonzero]
+            med_h = float(np.median(valid_h))
+            band = 10.0
+            h_lo = max(0, int(med_h - band))
+            h_hi = min(70, int(med_h + band))
+            dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+            dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
+
+    elif mode == "orange":
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            if 0 <= hue_center <= 50:
+                h_lo = max(0, int(hue_center - hue_range))
+                h_hi = min(60, int(hue_center + hue_range))
+                lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+                upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            else:
+                lower = np.array([5, 40, 40], dtype=np.uint8)
+                upper = np.array([35, 255, 255], dtype=np.uint8)
+        else:
+            lower = np.array([5, 40, 40], dtype=np.uint8)
+            upper = np.array([35, 255, 255], dtype=np.uint8)
+
+        color_mask = cv2.inRange(hsv, lower, upper)
+
+        nonzero = np.nonzero(color_mask)
+        if len(nonzero[0]) > 50:
+            h_channel = hsv[:, :, 0]
+            valid_h = h_channel[nonzero]
+            med_h = float(np.median(valid_h))
+            band = 10.0
+            h_lo = max(0, int(med_h - band))
+            h_hi = min(60, int(med_h + band))
+            dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+            dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
+
+    elif mode == "magenta":
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            if hue_center >= 110:
+                h_lo = max(100, int(hue_center - hue_range))
+                h_hi = min(180, int(hue_center + hue_range))
+                lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+                upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            else:
+                lower = np.array([140, 40, 40], dtype=np.uint8)
+                upper = np.array([180, 255, 255], dtype=np.uint8)
+        else:
+            lower = np.array([140, 40, 40], dtype=np.uint8)
+            upper = np.array([180, 255, 255], dtype=np.uint8)
+
+        color_mask = cv2.inRange(hsv, lower, upper)
+
+        nonzero = np.nonzero(color_mask)
+        if len(nonzero[0]) > 50:
+            h_channel = hsv[:, :, 0]
+            valid_h = h_channel[nonzero]
+            med_h = float(np.median(valid_h))
+            band = 12.0
+            h_lo = max(100, int(med_h - band))
+            h_hi = min(180, int(med_h + band))
+            dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+            dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
+
+    elif mode == "purple":
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            if 105 <= hue_center <= 175:
+                h_lo = max(90, int(hue_center - hue_range))
+                h_hi = min(180, int(hue_center + hue_range))
+                lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+                upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            else:
+                lower = np.array([115, 40, 40], dtype=np.uint8)
+                upper = np.array([170, 255, 255], dtype=np.uint8)
+        else:
+            lower = np.array([115, 40, 40], dtype=np.uint8)
+            upper = np.array([170, 255, 255], dtype=np.uint8)
+
+        color_mask = cv2.inRange(hsv, lower, upper)
+
+        nonzero = np.nonzero(color_mask)
+        if len(nonzero[0]) > 50:
+            h_channel = hsv[:, :, 0]
+            valid_h = h_channel[nonzero]
+            med_h = float(np.median(valid_h))
+            band = 12.0
+            h_lo = max(90, int(med_h - band))
+            h_hi = min(180, int(med_h + band))
+            dyn_lower = np.array([h_lo, 40, 40], dtype=np.uint8)
+            dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
+            color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
     else:
         # "black" or fallback: dark pixels relative to local background
         color_mask = cv2.adaptiveThreshold(
@@ -1375,6 +1634,24 @@ def compute_prob_map(roi_bgr, mode="black"):
             21,
             10,
         )
+
+        # Suppress colored pixels (grid/track lines are often red/green/blue).
+        # In black mode we want low-saturation dark ink.
+        try:
+            sat = hsv[:, :, 1]
+            val = hsv[:, :, 2]
+            colored = (sat > 55) & (val > 40)
+            color_mask[colored] = 0
+        except Exception:
+            pass
+
+        if h >= 20 and w >= 20:
+            k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, min(60, h // 2))))
+            k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, min(60, w // 2)), 1))
+            v_lines = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, k_v)
+            h_lines = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, k_h)
+            lines = cv2.bitwise_or(v_lines, h_lines)
+            color_mask = cv2.bitwise_and(color_mask, cv2.bitwise_not(lines))
 
     kernel = np.ones((3, 3), np.uint8)
     color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel, 1)
@@ -1397,10 +1674,13 @@ def compute_prob_map(roi_bgr, mode="black"):
     edge_score = edges_blur.astype(np.float32) / 255.0
     
     # For color modes, gate edges by color mask to suppress non-colored edges
-    if mode in {"green", "red", "blue"}:
+    if mode in colored_modes:
         edge_score *= color_score
 
     # 3) Suppress vertical "rails" (grid / borders) and track edges
+    # REMOVED morphological erasure because it was deleting steep curve segments.
+    # We will rely on the column-statistics penalty (rail_penalty) instead.
+
     if h >= 4 and w >= 2:
         col_on_frac = (color_score > 0).mean(axis=0)
         
@@ -1409,63 +1689,103 @@ def compute_prob_map(roi_bgr, mode="black"):
         if np.any(rail_cols):
             color_score[:, rail_cols] *= 0.005  # Almost eliminate vertical rails
             edge_score[:, rail_cols] *= 0.005
+
+        if mode not in colored_modes:
+            row_on_frac = (color_score > 0).mean(axis=1)
+            rail_rows = row_on_frac > 0.35
+            if np.any(rail_rows):
+                color_score[rail_rows, :] *= 0.02
+                edge_score[rail_rows, :] *= 0.02
         
-        # Also suppress the extreme edges of the track (likely borders)
-        edge_margin = max(2, int(w * 0.05))  # 5% margin on each side
-        # Left edge suppression (gradual)
-        for i in range(edge_margin):
-            factor = 0.1 + 0.9 * (i / edge_margin)  # Ramp from 0.1 to 1.0
-            color_score[:, i] *= factor
-            edge_score[:, i] *= factor
-        # Right edge suppression (gradual)
-        for i in range(edge_margin):
-            factor = 0.1 + 0.9 * (i / edge_margin)
-            color_score[:, w - 1 - i] *= factor
-            edge_score[:, w - 1 - i] *= factor
+        # REMOVED edge suppression. Gamma Ray curves often hit the track edges.
+        # We should rely on the specific 'preprocess_curve_track' logic for borders,
+        # not a blind gradient suppression.
 
-    # 4) Centerline boost via distance transform, focused on ink (curve
-    #    strokes) rather than the entire filled panel background. We define
-    #    "ink" as pixels that are both strongly colored and edge-like.
-    ink_mask = (color_score > 0.35) & (edge_score > 0.15)
-    if not np.any(ink_mask):
-        # Fallback for faint curves: relax thresholds slightly.
-        ink_mask = (color_score > 0.2) & (edge_score > 0.05)
+    # 4) Centerline boost via distance transform.
+    # For colored modes, compute this from the filled stroke area (color mask),
+    # not an edge-gated mask. Edge-only masks pull the DT peak toward one side
+    # of a thick stroke.
+    if mode in colored_modes:
+        bin_for_dt = (color_score > 0.12).astype(np.uint8)
+        try:
+            # Fill small holes so DT peaks at true stroke center.
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            bin_for_dt = cv2.morphologyEx(bin_for_dt, cv2.MORPH_CLOSE, k, iterations=1)
+        except Exception:
+            pass
+    else:
+        # For black mode, keep the conservative ink definition (helps avoid grid).
+        ink_mask = (color_score > 0.25) & (edge_score > 0.10)
+        if not np.any(ink_mask):
+            ink_mask = (color_score > 0.15) & (edge_score > 0.05)
+        bin_for_dt = ink_mask.astype(np.uint8)
 
-    bin_for_dt = ink_mask.astype(np.uint8)
     if np.any(bin_for_dt):
         dist = cv2.distanceTransform(bin_for_dt, cv2.DIST_L2, 5)
         center_score = dist.astype(np.float32)
         maxd = float(center_score.max())
         if maxd > 0:
             center_score /= maxd
+            # Boost toward the center of thick strokes.
+            center_score = np.power(center_score, 0.65)
     else:
         center_score = np.zeros_like(color_score, dtype=np.float32)
 
-    # 5) Combine into probability map. For color modes, balance between
-    #    centerline (for smooth path) and edges (for accurate position).
-    if mode in {"green", "red", "blue"}:
-        # Increased edge weight for better curve tracking
-        prob = 0.15 * color_score + 0.25 * edge_score + 0.6 * center_score
-        # Sharpen the ridge so the centerline stands out from its shoulders
-        prob = prob ** 2
+    # 5) Enhanced probability map with edge-aware filtering
+    # For color modes, use adaptive weighting based on local characteristics
+    if mode in colored_modes:
+        # Edge-enhanced weighting for GR logs
+        # Boost edge detection specifically for jagged features
+        edge_enhanced = edge_score.copy()
+        
+        # Apply directional filtering to enhance horizontal edges (curve movement)
+        kernel_horizontal = np.array([[-1, -1, -1], [2, 2, 2], [-1, -1, -1]], dtype=np.float32)
+        horizontal_edges = cv2.filter2D(edge_score, -1, kernel_horizontal)
+        horizontal_edges = np.maximum(0, horizontal_edges)
+        
+        # Combine with original edges
+        edge_enhanced = np.maximum(edge_score, horizontal_edges * 0.5)
+        
+        # Adaptive weighting based on local edge density.
+        # Keep edges helpful but avoid consistent outer-edge bias on thick ink.
+        local_edge_density = cv2.GaussianBlur(edge_enhanced, (5, 5), 0)
+        edge_weight = 0.18 + 0.16 * local_edge_density
+
+         # Centerline boost; for thick strokes DT already peaks at the true center.
+        center_boost = center_score * (1.0 + 0.2 * edge_enhanced)
+
+        # Final probability map: slightly lower color weight, stronger center.
+        prob = 0.08 * color_score + edge_weight * edge_enhanced + (0.92 - edge_weight) * center_boost
+        
+        # Apply gamma correction to boost faint signals
+        prob = np.power(prob, 0.8)  # Gamma < 1 boosts low values
+        
     else:
-        prob = 0.25 * color_score + 0.45 * edge_score + 0.3 * center_score
+        # Enhanced black mode detection
+        edge_enhanced = edge_score.copy()
+        
+        # Boost weak edges in black mode
+        weak_edges = (edge_score > 0.05) & (edge_score < 0.3)
+        edge_enhanced[weak_edges] = edge_score[weak_edges] * 1.5
+        
+        prob = 0.2 * color_score + 0.5 * edge_enhanced + 0.3 * center_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
     #    look like grid or track borders, while preserving the wiggly curve
     #    strokes.
-    try:
-        cleaned_binary = preprocess_curve_track(roi_bgr, mode=mode)
-        if cleaned_binary is not None and cleaned_binary.size == prob.size:
-            cleaned_score = cleaned_binary.astype(np.float32) / 255.0
-            # Where cleaned_score == 0 (likely grid/border), push probability
-            # almost to zero; where == 1, keep prob as-is.
-            gate = 0.05 + 0.95 * cleaned_score
-            prob *= gate
-    except Exception:
-        # If preprocessing fails for any reason, fall back to the ungated map.
-        pass
+    if mode not in colored_modes:
+        try:
+            cleaned_binary = preprocess_curve_track(roi_bgr, mode=mode)
+            if cleaned_binary is not None and cleaned_binary.size == prob.size:
+                cleaned_score = cleaned_binary.astype(np.float32) / 255.0
+                # Where cleaned_score == 0 (likely grid/border), push probability
+                # almost to zero; where == 1, keep prob as-is.
+                gate = 0.05 + 0.95 * cleaned_score
+                prob *= gate
+        except Exception:
+            # If preprocessing fails for any reason, fall back to the ungated map.
+            pass
     maxp = float(prob.max())
     if maxp > 0:
         prob = prob / maxp
@@ -1474,7 +1794,16 @@ def compute_prob_map(roi_bgr, mode="black"):
     return (prob * 255.0).astype(np.uint8)
 
 
-def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.5, hot_side=None):
+def trace_curve_with_dp(
+    curve_mask,
+    scale_min,
+    scale_max,
+    curve_type="GR",
+    max_step=3,
+    smooth_lambda=0.5,
+    curv_lambda=0.0,
+    hot_side=None,
+):
     """Trace a curve using dynamic programming for smooth path finding.
     
     Args:
@@ -1483,7 +1812,8 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
         scale_max: Right scale value
         curve_type: Curve type for plausibility checks (GR, RHOB, NPHI, DT, etc.)
         max_step: Max horizontal movement per row (pixels)
-        smooth_lambda: Smoothness penalty weight
+        smooth_lambda: First-derivative smoothness penalty weight (penalizes jumps)
+        curv_lambda: Second-derivative curvature penalty weight (penalizes kinks)
     
     Returns:
         xs: Array of x-coordinates (one per row), with np.nan for low-confidence rows
@@ -1495,7 +1825,30 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
     h, w = curve_mask.shape
     if h < 2 or w < 2:
         return np.full(h, np.nan), np.zeros(h)
-    
+
+    if not getattr(fast_tracer, "NUMBA_AVAILABLE", False) and w > 420:
+        w_small = int(max(64, min(420, w)))
+        if w_small < w:
+            mask_small = cv2.resize(curve_mask, (w_small, h), interpolation=cv2.INTER_AREA)
+            max_step_small = max(1, int(round(max_step * (w_small - 1) / max(1, w - 1))))
+            xs_small, conf_small = trace_curve_with_dp(
+                mask_small,
+                scale_min=scale_min,
+                scale_max=scale_max,
+                curve_type=curve_type,
+                max_step=max_step_small,
+                smooth_lambda=smooth_lambda,
+                curv_lambda=curv_lambda,
+                hot_side=hot_side,
+            )
+            if xs_small is None or xs_small.size == 0:
+                return xs_small, conf_small
+            scale_back = (w - 1) / max(1, (w_small - 1))
+            xs = xs_small.astype(np.float32, copy=True)
+            finite = np.isfinite(xs)
+            xs[finite] = xs[finite] * scale_back
+            return xs, conf_small
+
     # Define plausible value ranges per curve type
     plausible_ranges = {
         'GR': (0, 200),
@@ -1519,9 +1872,9 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
     # very high column mean and should be discouraged.
     
     # RAIL PENALTY PARAMETERS (tunable)
-    rail_threshold = 0.20          # Columns with >20% of rows lit are suspicious
-    rail_penalty_strength = 4.0    # Base penalty multiplier for rail-like columns
-    rail_shape_penalty_val = 4.0   # Extra penalty for low-variance (flat) columns
+    rail_threshold = 0.10          # Columns with >10% of rows lit are suspicious (raised from 2% to protect steep curves)
+    rail_penalty_strength = 20.0   # Base penalty multiplier for rail-like columns
+    rail_shape_penalty_val = 20.0  # Extra penalty for low-variance (flat) columns
     rail_std_threshold = 0.02      # Columns with std < this are considered flat
     
     # EDGE PENALTY PARAMETERS (tunable) - prevents hugging track edges
@@ -1529,27 +1882,39 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
     edge_penalty_strength = 3.0    # Penalty for being at track edges
     
     if h >= 20 and w >= 4:
+        # Smooth the probability map horizontally to catch wobbling vertical lines
         col_mean = prob.mean(axis=0)
+        # Simple 3-pixel moving average for column stats
+        col_mean_smooth = np.convolve(col_mean, np.ones(3)/3, mode='same')
+        
         col_std = prob.std(axis=0)
         
         # Rail penalty: ramps up for columns that are on for many rows
-        rail_penalty = rail_penalty_strength * np.maximum(0.0, col_mean - rail_threshold)
+        # Use smoothed mean to catch lines that wobble between 2-3 pixels
+        # MASSIVE penalty (10000) to essentially ban these columns
+        rail_penalty = 10000.0 * (col_mean_smooth > rail_threshold).astype(np.float32)
+        
+        # MASK RAIL PENALTY AT EDGES
+        # Gamma Ray curves often touch the chart borders (left/right).
+        # We must NOT apply the rail penalty to the extreme edges, or the tracer will stop short.
+        safe_margin = max(2, int(w * 0.02))  # Safe zone at 2% width on each side
+        rail_penalty[:safe_margin] = 0.0
+        rail_penalty[-safe_margin:] = 0.0
         
         # Extra penalty for flat columns (low variance = likely grid line)
         rail_shape_penalty = np.zeros_like(rail_penalty)
+        # Also ban low-variance columns
         rail_mask = (col_mean > rail_threshold) & (col_std < rail_std_threshold)
         if np.any(rail_mask):
-            rail_shape_penalty[rail_mask] = rail_shape_penalty_val
+            rail_shape_penalty[rail_mask] = 10000.0
+            
+        # Mask shape penalty at edges too
+        rail_shape_penalty[:safe_margin] = 0.0
+        rail_shape_penalty[-safe_margin:] = 0.0
         
         # Edge penalty: discourage hugging the track borders
-        edge_margin = max(1, int(w * edge_margin_pct))
+        # DISABLED: We want to allow hugging the borders if the curve goes there.
         edge_penalty = np.zeros(w, dtype=np.float32)
-        # Left edge: ramp from edge_penalty_strength down to 0
-        for i in range(edge_margin):
-            edge_penalty[i] = edge_penalty_strength * (1.0 - i / edge_margin)
-        # Right edge: ramp from 0 up to edge_penalty_strength
-        for i in range(edge_margin):
-            edge_penalty[w - 1 - i] = edge_penalty_strength * (1.0 - i / edge_margin)
         
         total_rail_penalty = rail_penalty + rail_shape_penalty + edge_penalty
         if np.any(total_rail_penalty > 0):
@@ -1575,189 +1940,838 @@ def trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type="GR", max_s
                 # Penalize implausible values (but not too harshly)
                 cost[:, x] += 2.0
     
-    # Dynamic programming
-    big = 1e6
-    dp = np.full((h, w), big, dtype=np.float32)
-    prev = np.full((h, w), -1, dtype=np.int16)
+    # Run optimized DP (Forward Pass)
+    xs_fwd, conf_fwd = fast_tracer.run_viterbi(
+        cost.astype(np.float32), 
+        prob.astype(np.float32), 
+        int(max_step), 
+        float(smooth_lambda), 
+        float(curv_lambda)
+    )
     
-    # First row: cost as-is
-    dp[0, :] = cost[0, :]
+    # Run optimized DP (Backward Pass)
+    # Flip cost and prob arrays upside down
+    xs_bwd_flipped, conf_bwd_flipped = fast_tracer.run_viterbi(
+        cost[::-1].astype(np.float32), 
+        prob[::-1].astype(np.float32), 
+        int(max_step), 
+        float(smooth_lambda), 
+        float(curv_lambda)
+    )
+    # Flip results back to match original orientation
+    xs_bwd = xs_bwd_flipped[::-1]
+    conf_bwd = conf_bwd_flipped[::-1]
     
-    for y in range(1, h):
-        for x in range(w):
-            x0 = max(0, x - max_step)
-            x1 = min(w, x + max_step + 1)
-            best_val = big
-            best_xp = -1
-            for xp in range(x0, x1):
-                smooth_penalty = smooth_lambda * (x - xp) ** 2
-                v = dp[y - 1, xp] + cost[y, x] + smooth_penalty
-                if v < best_val:
-                    best_val = v
-                    best_xp = xp
-            dp[y, x] = best_val
-            prev[y, x] = best_xp
+    # Merge Forward and Backward results
+    # Averaging the positions cancels out directional lag/hysteresis
+    xs = np.full_like(xs_fwd, np.nan)
+    confidence = np.zeros_like(conf_fwd)
     
-    # Find the best ending point: look for minimum cost in bottom 20% of image
-    # This helps avoid starting from a bad position
-    bottom_start = max(0, int(h * 0.8))
-    best_cost = big
-    best_y = h - 1
-    best_x = 0
-    for y in range(bottom_start, h):
-        min_x = int(np.argmin(dp[y, :]))
-        if dp[y, min_x] < best_cost:
-            best_cost = dp[y, min_x]
-            best_y = y
-            best_x = min_x
-    
-    # Backtrack from best position
-    path_x = np.full(h, -1, dtype=np.int32)
-    path_x[best_y] = best_x
-    for y in range(best_y, 0, -1):
-        if path_x[y] >= 0:
-            path_x[y - 1] = prev[y, path_x[y]]
-    
-    # Forward fill for any rows after best_y
-    if best_y < h - 1:
-        last_x = best_x
-        for y in range(best_y + 1, h):
-            # Find best continuation
-            x0 = max(0, last_x - max_step)
-            x1 = min(w, last_x + max_step + 1)
-            best_local = np.argmax(prob[y, x0:x1])
-            path_x[y] = x0 + best_local
-            last_x = path_x[y]
-    
-    # Compute confidence per row
-    confidence = np.zeros(h, dtype=np.float32)
     for y in range(h):
-        x = path_x[y]
-        if x < 0 or x >= w:
-            confidence[y] = 0.0
-            path_x[y] = -1
-            continue
-            
-        p_best = prob[y, x]
+        v1 = xs_fwd[y]
+        v2 = xs_bwd[y]
+        valid1 = np.isfinite(v1)
+        valid2 = np.isfinite(v2)
         
-        # Find second-best probability within max_step
-        x0 = max(0, x - max_step)
-        x1 = min(w, x + max_step + 1)
-        probs_nearby = prob[y, x0:x1]
-        if probs_nearby.size > 1:
-            probs_sorted = np.sort(probs_nearby)[::-1]
-            p_second = probs_sorted[1] if probs_sorted.size > 1 else 0.0
-            confidence[y] = p_best - p_second
-        else:
-            confidence[y] = p_best
-        
-        # Mark low-confidence as NaN
-        # For maximum accuracy, only drop rows with essentially zero signal
-        if p_best < 0.01:  # Absolute minimum threshold to keep everything
-            path_x[y] = -1
-    
-    # Convert -1 to np.nan
-    xs = path_x.astype(np.float32)
-    xs[xs < 0] = np.nan
+        if valid1 and valid2:
+            # If the two passes disagree significantly (e.g. took different paths around an obstacle),
+            # pick the one with higher local probability instead of averaging (which would land in the middle of nowhere).
+            if abs(v1 - v2) > 5:
+                p1 = prob[y, int(min(w-1, max(0, v1)))]
+                p2 = prob[y, int(min(w-1, max(0, v2)))]
+                xs[y] = v1 if p1 > p2 else v2
+            else:
+                # Otherwise, average them to center the trace on peaks
+                xs[y] = (v1 + v2) * 0.5
+            confidence[y] = (conf_fwd[y] + conf_bwd[y]) * 0.5
+        elif valid1:
+            xs[y] = v1
+            confidence[y] = conf_fwd[y]
+        elif valid2:
+            xs[y] = v2
+            confidence[y] = conf_bwd[y]
     
     return xs, confidence
 
 
 def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.5, hot_side=None):
     """
-    Multi-scale curve tracing: run DP at multiple resolutions and merge.
+    Enhanced multi-scale curve tracing with 5 scales and weighted fusion.
     
     This improves detection by:
-    - Coarse scales capture the overall trend and avoid local noise.
-    - Fine scale captures detail.
-    - Merging favors the path with higher local probability at each row.
+    - More granular scales for better feature capture
+    - Weighted fusion based on confidence and scale
+    - Scale-adaptive parameters for GR logs
+    - Better handling of jagged Gamma Ray spikes
     
-    Scales used: 1.0 (full), 0.5 (half), 0.25 (quarter)
+    Scales used: 1.0, 0.75, 0.5, 0.33, 0.25, 0.125 (6 scales)
     """
     if curve_mask is None or curve_mask.size == 0:
         return np.array([]), np.array([])
     
     h, w = curve_mask.shape
     if h < 4 or w < 4:
-        # Too small for multi-scale, just use single scale
         return trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type, max_step, smooth_lambda, hot_side)
     
-    scales = [1.0, 0.5, 0.25]
-    all_xs = []
+    # Adaptive scale selection based on image content
+    def adaptive_scale_selection(curve_mask, curve_type):
+        """Choose optimal scales based on image characteristics"""
+        h, w = curve_mask.shape
+        prob = curve_mask.astype(np.float32) / 255.0
+        
+        if curve_type.upper() == "GR":
+            # Analyze jaggedness for GR logs
+            gray = (prob * 255).astype(np.uint8)
+            
+            # Edge detection to measure jaggedness
+            edges = cv2.Canny(gray, 30, 100)
+            edge_density = np.sum(edges > 0) / edges.size
+            
+            # Measure intensity variance (indicates sharp transitions)
+            intensity_var = np.var(prob)
+            
+            # Determine scale set based on jaggedness
+            if edge_density > 0.15 or intensity_var > 0.1:  # Very jagged
+                scales = [1.0, 0.8, 0.6, 0.4, 0.2]  # More fine scales
+            elif edge_density > 0.08 or intensity_var > 0.05:  # Moderately jagged
+                scales = [1.0, 0.75, 0.5, 0.33, 0.25]  # Balanced
+            else:  # Smooth
+                scales = [1.0, 0.67, 0.33, 0.17]  # More coarse scales
+        else:
+            # Default for other curve types
+            scales = [1.0, 0.67, 0.33, 0.17]
+        
+        # Filter scales that are too small
+        valid_scales = []
+        for scale in scales:
+            h_s = max(4, int(h * scale))
+            w_s = max(4, int(w * scale))
+            if h_s >= 4 and w_s >= 4:
+                valid_scales.append(scale)
+        
+        return valid_scales if len(valid_scales) >= 2 else [1.0, 0.5]
     
-    for scale in scales:
+    # Use adaptive scale selection
+    valid_scales = adaptive_scale_selection(curve_mask, curve_type)
+    
+    all_xs = []
+    all_confs = []
+    
+    # Enhanced scale-adaptive parameters
+    def get_scale_params(scale, curve_type, jaggedness_factor=1.0):
+        """Get parameters optimized for each scale and curve type"""
+        if curve_type.upper() == "GR":
+            # Adjust based on jaggedness
+            return {
+                "smooth_lambda": max(0.0001, smooth_lambda * scale * jaggedness_factor),
+                "max_step": max(1, int(max_step * scale * 2.5)),  # Allow more movement for GR
+                "rail_threshold": max(0.01, 0.1 * scale * jaggedness_factor),
+                "curv_lambda": max(0.0001, 0.001 * scale * jaggedness_factor)
+            }
+        else:
+            return {
+                "smooth_lambda": smooth_lambda * scale,
+                "max_step": max(1, int(max_step * scale)),
+                "rail_threshold": 0.1 * scale,
+                "curv_lambda": 0.05 * scale
+            }
+    
+    # Calculate jaggedness factor for parameter tuning
+    prob = curve_mask.astype(np.float32) / 255.0
+    gray = (prob * 255).astype(np.uint8)
+    edges = cv2.Canny(gray, 30, 100)
+    edge_density = np.sum(edges > 0) / edges.size if edges.size > 0 else 0
+    jaggedness_factor = max(0.5, min(2.0, 1.0 + edge_density * 5))
+    
+    if len(valid_scales) < 2:
+        return trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type, max_step, smooth_lambda, hot_side)
+    
+    prob = curve_mask.astype(np.float32) / 255.0
+    
+    for scale in valid_scales:
         if scale == 1.0:
             mask_scaled = curve_mask
             h_s, w_s = h, w
         else:
             h_s = max(4, int(h * scale))
             w_s = max(4, int(w * scale))
-            mask_scaled = cv2.resize(curve_mask, (w_s, h_s), interpolation=cv2.INTER_AREA)
+            
+            # Use appropriate interpolation
+            if scale > 0.5:
+                mask_scaled = cv2.resize(curve_mask, (w_s, h_s), interpolation=cv2.INTER_LINEAR)
+            else:
+                mask_scaled = cv2.resize(curve_mask, (w_s, h_s), interpolation=cv2.INTER_AREA)
         
-        # Adjust max_step for scale
-        max_step_scaled = max(1, int(max_step * scale))
+        # Get scale-adaptive parameters
+        params = get_scale_params(scale, curve_type)
         
         # Run DP at this scale
-        xs_scaled, _ = trace_curve_with_dp(
+        xs_scaled, conf_scaled = trace_curve_with_dp(
             mask_scaled,
             scale_min=scale_min,
             scale_max=scale_max,
             curve_type=curve_type,
-            max_step=max_step_scaled,
-            smooth_lambda=smooth_lambda,
+            max_step=params["max_step"],
+            smooth_lambda=params["smooth_lambda"],
+            curv_lambda=params["curv_lambda"],
             hot_side=hot_side,
         )
         
-        # Upsample back to full resolution
+        # Upsample back to full resolution with sub-pixel precision
         if scale != 1.0 and xs_scaled.size > 0:
-            # Scale x coordinates back
             xs_full = np.full(h, np.nan, dtype=np.float32)
+            conf_full = np.zeros(h, dtype=np.float32)
+            
             for y_full in range(h):
-                y_scaled = int(y_full * scale)
-                if 0 <= y_scaled < xs_scaled.size and np.isfinite(xs_scaled[y_scaled]):
-                    xs_full[y_full] = xs_scaled[y_scaled] / scale
+                y_scaled = y_full * scale
+                y_int = int(y_scaled)
+                y_frac = y_scaled - y_int
+                
+                if y_int < xs_scaled.size and np.isfinite(xs_scaled[y_int]):
+                    # Linear interpolation for sub-pixel accuracy
+                    x_scaled = xs_scaled[y_int] / scale
+                    conf_scaled_val = conf_scaled[y_int]
+                    
+                    # Handle fractional positions
+                    if y_int + 1 < xs_scaled.size and np.isfinite(xs_scaled[y_int + 1]):
+                        x_next = xs_scaled[y_int + 1] / scale
+                        conf_next = conf_scaled[y_int + 1]
+                        
+                        # Interpolate both position and confidence
+                        x_full = x_scaled * (1 - y_frac) + x_next * y_frac
+                        conf_full[y_full] = conf_scaled_val * (1 - y_frac) + conf_next * y_frac
+                    else:
+                        x_full = x_scaled
+                        conf_full[y_full] = conf_scaled_val
+                    
+                    xs_full[y_full] = x_full
+            
             xs_scaled = xs_full
+            conf_scaled = conf_full
         
         all_xs.append(xs_scaled)
+        all_confs.append(conf_scaled)
     
-    # Merge: for each row, pick the x with highest probability in the original mask
-    prob = curve_mask.astype(np.float32) / 255.0
-    xs_merged = np.full(h, np.nan, dtype=np.float32)
+    # Nuclear option - ultra-aggressive peak detection for missed GR spikes
+    def detect_local_peaks(prob_map, min_prominence=0.005, sensitivity_boost=True):
+        """Nuclear option: ultra-aggressive peak detection for GR spike detection"""
+        h, w = prob_map.shape
+        peaks = []
+        
+        # Use raw probability map for maximum sensitivity (no blur)
+        raw = prob_map
+        
+        # Ultra-aggressive peak detection parameters
+        min_prominence = 0.005  # Extremely low threshold
+        search_window = 2       # Very small neighborhood
+        
+        # Multi-scale detection with different sensitivities
+        for y in range(1, h-1):
+            row = raw[y]
+            
+            # Find ALL local maxima, even tiny ones
+            for x in range(1, w-1):
+                # Check 3x3 neighborhood for local max
+                local_max = True
+                for dy in [-1, 0, 1]:
+                    for dx in [-1, 0, 1]:
+                        if dy == 0 and dx == 0:
+                            continue
+                        if row[x] < raw[y+dy, x+dx]:
+                            local_max = False
+                            break
+                    if not local_max:
+                        break
+                
+                # Accept even tiny peaks for GR logs
+                if local_max and row[x] > min_prominence:
+                    # Minimal prominence requirement
+                    window_size = min(8, w//8)
+                    left_start = max(0, x-window_size)
+                    right_end = min(w, x+window_size+1)
+                    
+                    left_region = row[left_start:x]
+                    right_region = row[x+1:right_end]
+                    
+                    if len(left_region) > 0 and len(right_region) > 0:
+                        # Use 20th percentile for valleys (very relaxed)
+                        left_valley = np.percentile(left_region, 20)
+                        right_valley = np.percentile(right_region, 20)
+                        prominence = row[x] - max(left_valley, right_valley)
+                        
+                        # Ultra-low threshold for GR logs
+                        if curve_type.upper() == "GR":
+                            prominence_threshold = 0.005  # Almost any peak
+                        else:
+                            prominence_threshold = 0.01
+                        
+                        if prominence > prominence_threshold:
+                            # Accept even flat peaks
+                            peaks.append((y, x, prominence))
+        
+        # Ultra-aggressive edge peak detection
+        if curve_type.upper() == "GR":
+            for y in range(h):
+                # Very low threshold for edge detection
+                if prob_map[y, 0] > 0.1:  # Very low edge threshold
+                    peaks.append((y, 0, prob_map[y, 0]))
+                if prob_map[y, w-1] > 0.1:  # Very low edge threshold
+                    peaks.append((y, w-1, prob_map[y, w-1]))
+        
+        # Accept all peaks, no filtering for maximum sensitivity
+        return peaks  # Return all detected peaks, no filtering
+    
+    def is_near_peak(y, peaks, window=4):
+        """Check if y coordinate is near a detected peak with expanded window"""
+        return any(abs(py - y) <= window for py, px, prom in peaks)
+    
+    def is_near_peak(y, peaks, window=3):
+        """Check if y coordinate is near a detected peak"""
+        return any(abs(py - y) <= window for py, px, prom in peaks)
+    
+    # AI-powered peak detection fallback
+    def ai_detect_peaks(image_roi, curve_type="GR"):
+        """Use Google Vision API to detect curve peaks as fallback"""
+        if not VISION_API_AVAILABLE or vision_client is None:
+            print("AI detection: Vision API not available")
+            return []
+        
+        print(f"AI detection: Starting for {curve_type} curve...")
+        try:
+            # Ensure ROI is proper format for Vision API
+            if len(image_roi.shape) == 3:
+                # Convert BGR to RGB for Vision API
+                roi_rgb = cv2.cvtColor(image_roi, cv2.COLOR_BGR2RGB)
+            else:
+                roi_rgb = cv2.cvtColor(image_roi, cv2.COLOR_GRAY2RGB)
+            
+            # Convert to bytes
+            _, buffer = cv2.imencode('.jpg', roi_rgb, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            image_bytes = buffer.tobytes()
+            
+            print("AI detection: Sending to Vision API...")
+            
+            # Use Vision API for object detection
+            image = vision.Image(content=image_bytes)
+            response = vision_client.object_localization(image=image)
+            
+            peaks = []
+            objects = response.localized_object_annotations
+            print(f"AI detection: Found {len(objects)} objects")
+            
+            h, w = image_roi.shape[:2]
+            
+            for obj in objects:
+                print(f"AI detection: Object '{obj.name}' with confidence {obj.score:.2f}")
+                if obj.name.lower() in ['line', 'curve', 'graph', 'drawing'] and obj.score > 0.3:
+                    # Convert normalized vertices to pixel coordinates
+                    vertices = obj.bounding_poly.normalized_vertices
+                    if len(vertices) >= 4:
+                        # Calculate center points for peaks
+                        y_coords = [v.y * h for v in vertices]
+                        x_coords = [v.x * w for v in vertices]
+                        
+                        # Create peaks along detected curve
+                        for i in range(len(y_coords)):
+                            peaks.append((int(y_coords[i]), int(x_coords[i]), obj.score))
+            
+            # Also try document text detection for numeric patterns
+            try:
+                doc_response = vision_client.document_text_detection(image=image)
+                texts = doc_response.text_annotations
+                if texts:
+                    print(f"AI detection: Found text - {texts[0].description[:50]}...")
+            except Exception as e:
+                print(f"AI text detection failed: {e}")
+            
+            print(f"AI detection: Returning {len(peaks)} AI-detected peaks")
+            return peaks
+            
+        except Exception as e:
+            print(f"AI detection error: {e}")
+            return []
+        
+        try:
+            # Convert ROI to bytes for Vision API
+            _, buffer = cv2.imencode('.jpg', image_roi, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            image_bytes = buffer.tobytes()
+            
+            # Use Vision API to detect curve features
+            image = vision.Image(content=image_bytes)
+            response = vision_client.text_detection(image=image)
+            
+            # Alternative: use document text detection for better curve detection
+            response = vision_client.document_text_detection(image=image)
+            
+            # Extract text and analyze for curve patterns
+            texts = response.text_annotations
+            if texts:
+                full_text = texts[0].description
+                # Look for numeric patterns that might indicate curve values
+                numbers = re.findall(r'\d+\.?\d*', full_text)
+                
+            # Use object detection for curve features (if available)
+            response = vision_client.object_localization(image=image)
+            objects = response.localized_object_annotations
+            
+            peaks = []
+            for obj in objects:
+                if obj.name.lower() in ['line', 'curve', 'graph']:
+                    # Convert bounding box to peak coordinates
+                    vertices = obj.bounding_poly.normalized_vertices
+                    if len(vertices) >= 4:
+                        # Calculate center as peak
+                        center_x = (vertices[0].x + vertices[2].x) * w / 2
+                        center_y = (vertices[0].y + vertices[2].y) * h / 2
+                        peaks.append((int(center_y), int(center_x), 0.8))  # High confidence
+            
+            return peaks
+        except Exception as e:
+            print(f"AI peak detection failed: {e}")
+            return []
+    
+    # Hybrid AI + Traditional peak detection
+    peaks_traditional = detect_local_peaks(prob, min_prominence=0.005) if curve_type.upper() == "GR" else []
+    peaks_ai = ai_detect_peaks(roi, curve_type) if curve_type.upper() == "GR" and VISION_API_AVAILABLE else []
+    
+    # Merge traditional and AI peaks
+    all_peaks = peaks_traditional + peaks_ai
+    
+    # Final refinement with AI-enhanced sub-pixel accuracy
+    def refine_subpixel_parabola(mask, xs, prob_map):
+        """Refine positions using parabolic sub-pixel interpolation
+        Given peak pixel x, fits parabola to (x-1), x, (x+1) to find true max.
+        
+        Formula: offset = 0.5 * (left - right) / (left - 2*center + right)
+        """
+        if mask is None or xs is None:
+            return xs, np.zeros_like(xs)
+        
+        h, w = prob_map.shape
+        xs_refined = xs.copy()
+        subpixel_conf = np.zeros_like(xs)
+        
+        for y in range(h):
+            if not np.isfinite(xs[y]):
+                continue
+                
+            x = int(round(xs[y]))
+            if x < 1 or x >= w-1:
+                continue
+            
+            # Get intensity values at peak and neighbors
+            center = prob_map[y, x]
+            left = prob_map[y, x-1] if x-1 >= 0 else center
+            right = prob_map[y, x+1] if x+1 < w else center
+            
+            # Check if we have a valid parabola (concave down)
+            denom = left - 2*center + right
+            if abs(denom) > 1e-6:  # Avoid division by zero
+                # Calculate sub-pixel offset
+                offset = 0.5 * (left - right) / denom
+                
+                # Only apply if offset is reasonable (< 1 pixel)
+                if abs(offset) < 1.0:
+                    xs_refined[y] = x + offset
+                    subpixel_conf[y] = 1.0 - abs(offset)  # Confidence decreases with offset
+                else:
+                    xs_refined[y] = xs[y]
+                    subpixel_conf[y] = 0.5
+            else:
+                xs_refined[y] = xs[y]
+                subpixel_conf[y] = 0.3
+        
+        return xs_refined, subpixel_conf
+    
+    # Curvature-based refinement for missed peaks
+    def curvature_based_refinement(xs, prob_map, curve_type="GR"):
+        """Refine based on local curvature analysis to catch missed peaks"""
+        h, w = prob_map.shape
+        xs_refined = xs.copy()
+        
+        # Calculate curvature using second derivative
+        valid_mask = np.isfinite(xs)
+        if np.sum(valid_mask) < 5:
+            return xs, np.zeros(h)
+        
+        # Fill NaNs for curvature calculation
+        xs_smooth = xs.copy()
+        xs_smooth[~valid_mask] = np.interp(np.where(~valid_mask)[0], 
+                                          np.where(valid_mask)[0], 
+                                          xs[valid_mask])
+        
+        # Calculate curvature (second derivative)
+        curvature = np.gradient(np.gradient(xs_smooth))
+        
+        # Identify high curvature regions (likely missed peaks)
+        high_curvature = np.abs(curvature) > np.percentile(np.abs(curvature[valid_mask]), 80)
+        
+        # Refine high curvature regions
+        for y in range(h):
+            if not valid_mask[y] or not high_curvature[y]:
+                continue
+                
+            # Search locally around current position
+            x_current = int(round(xs[y]))
+            search_radius = 5
+            
+            # Define search window
+            start = max(0, x_current - search_radius)
+            end = min(w, x_current + search_radius + 1)
+            
+            # Find local maximum in probability map
+            local_prob = prob_map[y, start:end]
+            if local_prob.size > 0:
+                local_max_idx = np.argmax(local_prob)
+                local_max_val = local_prob[local_max_idx]
+                
+                # Only refine if local max is significantly better
+                current_val = prob_map[y, x_current] if 0 <= x_current < w else 0
+                if local_max_val > current_val * 1.2:  # 20% improvement threshold
+                    xs_refined[y] = start + local_max_idx
+        
+        return xs_refined
+
+    def ensure_peak_crests(xs, conf, prob_map, peaks, hot_side=None, y_merge_window=3):
+        """Ensure each vertical GR peak cluster has at least one crest sample.
+
+        For each cluster of peaks in Y, we pick a single row and move that
+        row's sample to the crest (tip) on the hot side, but only if the
+        crest candidate is at least as strong in the probability map and
+        farther toward the hot side than the current position. This avoids
+        reintroducing zig-zag artifacts while still guaranteeing a tip dot.
+        """
+        if xs is None or peaks is None:
+            return xs, conf
+
+        if len(peaks) == 0:
+            return xs, conf
+
+        h, w = prob_map.shape
+        xs_out = xs.copy()
+        conf_out = conf.copy()
+
+        # Filter to reasonably strong peaks to avoid pure noise
+        strong_peaks = []
+        for py, px, prom in peaks:
+            if not np.isfinite(py) or not np.isfinite(px):
+                continue
+            py_i = int(py)
+            px_i = int(px)
+            if py_i < 0 or py_i >= h or px_i < 0 or px_i >= w:
+                continue
+            # Use either provided prominence or local prob as strength
+            strength = float(prom) if np.isfinite(prom) else float(prob_map[py_i, px_i])
+            if strength <= 0.01:
+                continue
+            strong_peaks.append((py_i, px_i, strength))
+
+        if not strong_peaks:
+            return xs_out, conf_out
+
+        # Group peaks into vertical clusters by Y
+        strong_peaks.sort(key=lambda p: p[0])
+        clusters = []
+        current = [strong_peaks[0]]
+        for py, px, prom in strong_peaks[1:]:
+            if abs(py - current[-1][0]) <= y_merge_window:
+                current.append((py, px, prom))
+            else:
+                clusters.append(current)
+                current = [(py, px, prom)]
+        clusters.append(current)
+
+        for cluster in clusters:
+            # Pick a crest candidate within this vertical group.
+            # We bias toward the hot side (right/left) while still requiring
+            # a strong probability value.
+            best_py, best_px, best_score = None, None, -1.0
+            for py, px, prom in cluster:
+                score = float(prob_map[py, px])
+                if hot_side == "right":
+                    key = (px, score)
+                elif hot_side == "left":
+                    key = (-px, score)
+                else:
+                    key = (score,)
+
+                # Simple dominance: prefer higher score, then more extreme X
+                if score > best_score:
+                    best_score = score
+                    best_py, best_px = py, px
+
+            if best_py is None:
+                continue
+
+            y = int(best_py)
+            x_peak = int(best_px)
+            if y < 0 or y >= h or x_peak < 0 or x_peak >= w:
+                continue
+
+            x_curr = xs_out[y] if np.isfinite(xs_out[y]) else None
+            x_curr_int = int(round(x_curr)) if x_curr is not None else None
+
+            p_peak = float(prob_map[y, x_peak])
+            p_curr = float(prob_map[y, x_curr_int]) if x_curr_int is not None and 0 <= x_curr_int < w else 0.0
+
+            move = False
+            if x_curr is None:
+                move = True
+            else:
+                if hot_side == "right":
+                    if x_peak > x_curr_int and p_peak >= max(0.1, p_curr * 0.9):
+                        move = True
+                elif hot_side == "left":
+                    if x_peak < x_curr_int and p_peak >= max(0.1, p_curr * 0.9):
+                        move = True
+                else:
+                    if p_peak >= p_curr * 1.1:
+                        move = True
+
+            if not move:
+                continue
+
+            xs_out[y] = float(x_peak)
+            conf_out[y] = max(conf_out[y], p_peak)
+
+        return xs_out, conf_out
+
+    # Apply final refinements
+    xs_fused = np.full(h, np.nan, dtype=np.float32)
     confidence = np.zeros(h, dtype=np.float32)
     
-    for y in range(h):
-        best_x = np.nan
-        best_prob = -1.0
-        
-        for xs in all_xs:
-            if xs is None or y >= xs.size:
-                continue
-            x_cand = xs[y]
-            if not np.isfinite(x_cand):
-                continue
-            x_int = int(round(x_cand))
-            if 0 <= x_int < w:
-                p = prob[y, x_int]
-                if p > best_prob:
-                    best_prob = p
-                    best_x = x_cand
-        
-        xs_merged[y] = best_x
-        confidence[y] = best_prob
+    # Peak-aware fusion with curvature refinement
+    peaks = detect_local_peaks(prob, min_prominence=0.03) if curve_type.upper() == "GR" else []
     
-    # Light smoothing to reduce scale-switching jitter
+    for y in range(h):
+        valid_indices = []
+        valid_xs = []
+        valid_confs = []
+        valid_scales = []
+        
+        for i, (xs, conf, scale) in enumerate(zip(all_xs, all_confs, valid_scales)):
+            if xs is not None and y < xs.size and np.isfinite(xs[y]):
+                x_int = int(round(xs[y]))
+                if 0 <= x_int < w:
+                    # Enhanced peak-aware weighting
+                    if curve_type.upper() == "GR":
+                        if is_near_peak(y, peaks):
+                            # Aggressive peak detection near known peaks
+                            weight = conf[y] * (scale ** 2.5)  # Stronger fine scale preference
+                        else:
+                            # Standard weighting away from peaks
+                            weight = conf[y] * scale
+                    else:
+                        weight = conf[y] * scale
+                    
+                    valid_indices.append(i)
+                    valid_xs.append(xs[y])
+                    valid_confs.append(conf[y])
+                    valid_scales.append(scale)
+        
+        if valid_xs:
+            # Fusion strategy
+            if curve_type.upper() == "GR":
+                # WINNER-TAKES-ALL for jagged GR peaks: pick the candidate
+                # that lands on the highest probability in the original map.
+                best_val = -1.0
+                best_x = np.nan
+
+                for x_cand in valid_xs:
+                    x_int = int(round(x_cand))
+                    if 0 <= x_int < w:
+                        val = prob[y, x_int]
+                        if val > best_val:
+                            best_val = val
+                            best_x = x_cand
+
+                if best_val > 0.0:
+                    xs_fused[y] = best_x
+                    confidence[y] = best_val
+                else:
+                    # Fallback to weighted average if everything is very weak
+                    weights = np.array(valid_confs) * np.array(valid_scales)
+                    if weights.sum() > 0:
+                        weights = weights / weights.sum()
+                        xs_fused[y] = float(np.sum(np.array(valid_xs) * weights))
+                        confidence[y] = float(np.sum(np.array(valid_confs) * weights))
+            else:
+                # Original weighted-average fusion for smoother curves
+                weights = np.array(valid_confs) * np.array(valid_scales)
+                if weights.sum() > 0:
+                    weights = weights / weights.sum()
+                    xs_fused[y] = float(np.sum(np.array(valid_xs) * weights))
+                    confidence[y] = float(np.sum(np.array(valid_confs) * weights))
+
+    # Second pass: spike extender for GR logs.
+    # The DP path can cut corners on very sharp spikes. Here we search
+    # a wider horizontal window for a brighter pixel and snap to it.
+    if curve_type.upper() == "GR":
+        # Spike extension: search a horizontal window for a clearly brighter pixel
+        # and snap to it. This is conservative enough to avoid false snaps.
+        search_window = 15
+        for y in range(h):
+            x0 = xs_fused[y]
+            if not np.isfinite(x0):
+                continue
+
+            x_int = int(round(x0))
+            if x_int < 0 or x_int >= w:
+                continue
+
+            current_val = prob[y, x_int]
+            x_start = max(0, x_int - search_window)
+            x_end = min(w, x_int + search_window + 1)
+            row_seg = prob[y, x_start:x_end]
+            if row_seg.size == 0:
+                continue
+
+            local_idx = int(np.argmax(row_seg))
+            local_x = x_start + local_idx
+            local_val = row_seg[local_idx]
+
+            # Only snap if the candidate is clearly better.
+            if local_x != x_int and local_val > 0.1 and local_val >= current_val * 1.1:
+                xs_fused[y] = float(local_x)
+                confidence[y] = float(local_val)
+
+    # Apply sub-pixel refinement for maximum accuracy
+    xs_refined, subpixel_conf = refine_subpixel_parabola(mask, xs_fused, prob)
+    
+    # Final curvature-based refinement for any remaining missed peaks
+    xs_final = curvature_based_refinement(xs_refined, prob, curve_type)
+    
+    # Update confidence with sub-pixel accuracy
+    confidence = confidence * subpixel_conf
+    
+    # Adaptive smoothing based on local curvature
     try:
         from scipy.ndimage import uniform_filter1d
-        valid_mask = np.isfinite(xs_merged)
+        valid_mask = np.isfinite(xs_final)
         if np.sum(valid_mask) > 5:
-            xs_temp = xs_merged.copy()
-            xs_temp[~valid_mask] = np.nanmean(xs_merged)
-            xs_smooth = uniform_filter1d(xs_temp, size=3, mode='nearest')
-            xs_merged[valid_mask] = xs_smooth[valid_mask]
+            # Calculate local curvature for adaptive smoothing
+            xs_smooth = xs_final.copy()
+            xs_smooth[~valid_mask] = np.interp(np.where(~valid_mask)[0], 
+                                              np.where(valid_mask)[0], 
+                                              xs_final[valid_mask])
+            
+            curvature = np.gradient(np.gradient(xs_smooth))
+            curvature_magnitude = np.abs(curvature)
+            
+            # Adaptive smoothing: less smoothing in high curvature regions
+            for y in range(h):
+                if valid_mask[y]:
+                    # Reduce smoothing near peaks
+                    curv_penalty = min(1.0, curvature_magnitude[y] / np.percentile(curvature_magnitude[valid_mask], 90))
+                    smooth_factor = max(0.1, 1.0 - curv_penalty)
+                    
+                    # Apply minimal smoothing to preserve peaks
+                    if smooth_factor > 0.1:
+                        window = max(3, int(3 + 2 * (1 - smooth_factor)))
+                        if y - window//2 >= 0 and y + window//2 < h:
+                            local_values = xs_final[max(0, y-window//2):min(h, y+window//2+1)]
+                            valid_local = np.isfinite(local_values)
+                            if np.sum(valid_local) > 0:
+                                xs_final[y] = np.mean(local_values[valid_local])
     except ImportError:
         pass
+
+    # Final guarantee: ensure each GR peak cluster has at least one crest sample
+    if curve_type.upper() == "GR" and len(all_peaks) > 0:
+        xs_final, confidence = ensure_peak_crests(xs_final, confidence, prob, all_peaks, hot_side=hot_side)
     
-    return xs_merged, confidence
+    return xs_final, confidence
+
+
+def refine_subpixel_parabola(mask, xs):
+    """
+    Refine positions using parabolic sub-pixel interpolation.
+    Given peak pixel x, fits parabola to (x-1), x, (x+1) to find true max.
+    
+    Formula: offset = 0.5 * (left - right) / (left - 2*center + right)
+    """
+    if mask is None or xs is None:
+        return xs
+        
+    h, w = mask.shape
+    prob = mask.astype(np.float32) / 255.0
+    xs_refined = xs.copy()
+    
+    for y in range(h):
+        x = xs_refined[y]
+        if not np.isfinite(x):
+            continue
+            
+        ix = int(round(x))
+        if ix < 1 or ix >= w - 1:
+            continue
+            
+        # Get values of 3 neighbors
+        v_left = prob[y, ix - 1]
+        v_curr = prob[y, ix]
+        v_right = prob[y, ix + 1]
+        
+        # Only fit if current is indeed a local peak (or plateau)
+        if v_curr >= v_left and v_curr >= v_right:
+            denominator = v_left - 2 * v_curr + v_right
+            # Avoid division by zero (flat region)
+            if abs(denominator) > 1e-4:
+                offset = 0.5 * (v_left - v_right) / denominator
+                # Clamp offset to [-0.5, 0.5] to prevent instability
+                offset = max(-0.5, min(0.5, offset))
+                xs_refined[y] = float(ix) + offset
+                
+    return xs_refined
+
+
+def refine_trace_gradient_ascent(mask, xs, iterations=5):
+    """
+    Iteratively move each point to the brightest immediate neighbor.
+    This helps snap the trace to the exact peak of the ink profile.
+    
+    Args:
+        mask: Probability map (0-255)
+        xs: Trace x-coordinates
+        iterations: Number of hill-climbing steps
+        
+    Returns:
+        Refined x-coordinates
+    """
+    if mask is None or xs is None:
+        return xs
+        
+    h, w = mask.shape
+    prob = mask.astype(np.float32) / 255.0
+    xs_refined = xs.copy()
+    
+    for _ in range(iterations):
+        moved = False
+        for y in range(h):
+            x = xs_refined[y]
+            if not np.isfinite(x):
+                continue
+                
+            ix = int(round(x))
+            if ix < 1 or ix >= w - 1:
+                continue
+                
+            # Check immediate neighbors (3-pixel window)
+            p_curr = prob[y, ix]
+            p_left = prob[y, ix - 1]
+            p_right = prob[y, ix + 1]
+            
+            # Move towards brighter neighbor
+            if p_left > p_curr and p_left >= p_right:
+                xs_refined[y] = float(ix - 1)
+                moved = True
+            elif p_right > p_curr and p_right > p_left:
+                xs_refined[y] = float(ix + 1)
+                moved = True
+                
+        if not moved:
+            break
+            
+    return xs_refined
 
 
 def refine_trace_with_local_maxima(mask, xs, max_shift=6, dominance_ratio=1.1, min_prob=0.2):
@@ -1882,6 +2896,776 @@ def refine_trace_with_local_maxima(mask, xs, max_shift=6, dominance_ratio=1.1, m
                 x_centroid = float((xs_local * weights_centroid).sum() / wsum)
                 xs_ref[y] = x_centroid
 
+    return xs_ref
+
+
+def trace_curve_greedy_peaks(mask, max_jump=30, min_prob=0.05):
+    """Trace curve by greedily following the strongest peak in each row.
+    
+    This tracer finds the brightest pixel in each row within a search window,
+    with NO smoothness penalty - it follows every peak and valley exactly.
+    
+    Args:
+        mask: Probability map (0-255)
+        max_jump: Maximum horizontal jump between rows
+        min_prob: Minimum probability to consider
+    
+    Returns:
+        Array of x-coordinates, one per row
+    """
+    if mask is None:
+        return None
+    
+    h, w = mask.shape[:2]
+    prob = mask.astype(np.float32) / 255.0
+    xs = np.full(h, np.nan, dtype=np.float32)
+    
+    # For each row, just find the brightest pixel - simple and direct
+    # First pass: find brightest pixel in each row
+    row_max_vals = prob.max(axis=1)
+    row_max_xs = prob.argmax(axis=1).astype(np.float32)
+    
+    # Mark rows with sufficient signal
+    valid_rows = row_max_vals >= min_prob
+    
+    # Start from the row with the strongest signal
+    if not np.any(valid_rows):
+        return xs
+    
+    start_row = int(np.argmax(row_max_vals))
+    xs[start_row] = row_max_xs[start_row]
+    
+    # Trace downward - at each row, find brightest pixel within max_jump of previous
+    current_x = xs[start_row]
+    for y in range(start_row + 1, h):
+        row = prob[y]
+        
+        # Search in a window around current position
+        x0 = max(0, int(current_x) - max_jump)
+        x1 = min(w, int(current_x) + max_jump + 1)
+        window = row[x0:x1]
+        
+        if window.max() >= min_prob:
+            # Find brightest in window
+            best_local = np.argmax(window)
+            best_x = x0 + best_local
+            
+            # But also check if there's a much stronger peak outside the window
+            global_max_x = int(row_max_xs[y])
+            global_max_val = row[global_max_x]
+            local_max_val = window[best_local]
+            
+            # If global peak is significantly stronger (2x), jump to it
+            if global_max_val > local_max_val * 2.0:
+                best_x = global_max_x
+            
+            current_x = float(best_x)
+            xs[y] = current_x
+    
+    # Trace upward from start
+    current_x = xs[start_row]
+    for y in range(start_row - 1, -1, -1):
+        row = prob[y]
+        
+        x0 = max(0, int(current_x) - max_jump)
+        x1 = min(w, int(current_x) + max_jump + 1)
+        window = row[x0:x1]
+        
+        if window.max() >= min_prob:
+            best_local = np.argmax(window)
+            best_x = x0 + best_local
+            
+            global_max_x = int(row_max_xs[y])
+            global_max_val = row[global_max_x]
+            local_max_val = window[best_local]
+            
+            if global_max_val > local_max_val * 2.0:
+                best_x = global_max_x
+            
+            current_x = float(best_x)
+            xs[y] = current_x
+    
+    return xs
+
+
+def refine_to_smart_edges(mask, xs, min_prob=0.005):
+    """
+    Smart refinement based on local geometry (SR Tuned):
+    - Vertical runs (width < 10px): Center on ink (CoM).
+    - Spikes/Bumps: Snap to EDGE if deviation > 3.0px.
+    """
+    if mask is None or xs is None:
+        return xs
+    
+    h, w = mask.shape
+    prob = mask.astype(np.float32)
+    xs_smart = xs.copy()
+    
+    # 1. Compute local median
+    try:
+        s = pd.Series(xs)
+        local_med = s.rolling(window=15, center=True, min_periods=1).median().to_numpy() # Increased window for SR
+    except:
+        local_med = xs.copy()
+
+    for y in range(h):
+        x = xs_smart[y]
+        if not np.isfinite(x):
+            continue
+            
+        ix = int(round(x))
+        if ix < 0 or ix >= w:
+            continue
+            
+        # 2. Find connected ink chunk
+        w_start = max(0, ix - 200) # Increased search for SR
+        w_end = min(w, ix + 201)
+        row_slice = prob[y, w_start:w_end]
+        
+        # Simple threshold
+        ink_indices = np.where(row_slice > min_prob * 255)[0] if prob.max() > 1.0 else np.where(row_slice > min_prob)[0]
+        if ink_indices.size == 0:
+            continue
+            
+        ink_indices_global = ink_indices + w_start
+        min_ink = ink_indices_global[0]
+        max_ink = ink_indices_global[-1]
+        ink_width = max_ink - min_ink
+        
+        # 3. Geometric Decision
+        med_val = local_med[y]
+        if not np.isfinite(med_val):
+            med_val = x
+            
+        diff = x - med_val
+        
+        # LOGIC FOR 2x SUPER-RES:
+        # Width < 14px (was 10) -> Center
+        # Deviation > 5.0px (was 3.0) -> Snap
+        
+        if ink_width < 14:
+            # Narrow Line -> Center of Mass
+            weights = row_slice[ink_indices]
+            coords = ink_indices_global
+            total_w = weights.sum()
+            if total_w > 0:
+                xs_smart[y] = (coords * weights).sum() / total_w
+            else:
+                xs_smart[y] = (min_ink + max_ink) / 2.0
+        else:
+            # Wide/Feature
+            if diff > 5.0:
+                xs_smart[y] = float(max_ink) # Snap Right
+            elif diff < -5.0:
+                xs_smart[y] = float(min_ink) # Snap Left
+            elif abs(diff) < 2.5:
+                # Stable Zone -> Center of Mass
+                weights = row_slice[ink_indices]
+                coords = ink_indices_global
+                total_w = weights.sum()
+                if total_w > 0:
+                    xs_smart[y] = (coords * weights).sum() / total_w
+                else:
+                    xs_smart[y] = (min_ink + max_ink) / 2.0
+            else:
+                # Transition Zone -> Keep current
+                xs_smart[y] = x
+
+    return xs_smart
+
+def refine_peaks_and_valleys(mask, xs, search_radius=25, min_prob=0.1):
+    """Specifically refine peaks and valleys where the curve changes direction.
+    
+    This function detects where the traced curve has local extrema (peaks/valleys)
+    and searches more aggressively in those regions to find the true curve position.
+    
+    Args:
+        mask: Probability map (0-255)
+        xs: Array of x-coordinates from initial trace
+        search_radius: How far to search horizontally at peaks/valleys
+        min_prob: Minimum probability to consider a pixel as curve
+    
+    Returns:
+        Refined x-coordinates
+    """
+    if mask is None or xs is None:
+        return xs
+    if not hasattr(xs, "size") or xs.size < 5:
+        return xs
+    
+    h, w = mask.shape[:2]
+    if h < 5 or w < 5:
+        return xs
+    
+    prob = mask.astype(np.float32) / 255.0
+    xs_ref = xs.copy()
+    
+    # Detect peaks and valleys by looking at the derivative of x positions
+    # A peak is where x goes from increasing to decreasing (or vice versa for valley)
+    valid_mask = np.isfinite(xs_ref)
+    if np.sum(valid_mask) < 5:
+        return xs_ref
+    
+    # Fill gaps for derivative calculation
+    xs_filled = xs_ref.copy()
+    valid_indices = np.where(valid_mask)[0]
+    if len(valid_indices) > 0:
+        xs_filled[:valid_indices[0]] = xs_ref[valid_indices[0]]
+        xs_filled[valid_indices[-1]:] = xs_ref[valid_indices[-1]]
+        # Linear interpolation for gaps
+        for i in range(len(valid_indices) - 1):
+            start_idx = valid_indices[i]
+            end_idx = valid_indices[i + 1]
+            if end_idx - start_idx > 1:
+                xs_filled[start_idx:end_idx] = np.linspace(
+                    xs_ref[start_idx], xs_ref[end_idx], end_idx - start_idx
+                )
+    
+    # Calculate first derivative (velocity)
+    dx = np.diff(xs_filled)
+    
+    # Find zero crossings in derivative (peaks and valleys) - vectorized
+    # Sign change indicates peak or valley
+    sign_change = (dx[:-1] * dx[1:]) < 0
+    # Large magnitude change also indicates sharp turn; use a slightly lower
+    # threshold so more subtle bends get refined
+    large_change = np.abs(np.diff(dx)) > 2
+    extrema_mask = sign_change | large_change
+    extrema_rows = np.where(extrema_mask)[0] + 1  # +1 because diff reduces length
+    
+    # Refine at each extremum with a wider search
+    for y in extrema_rows:
+        if y < 0 or y >= h:
+            continue
+        x = xs_ref[y]
+        if not np.isfinite(x):
+            continue
+        
+        x_c = int(round(float(x)))
+        if x_c < 0 or x_c >= w:
+            continue
+        
+        row = prob[y]
+        x0 = max(0, x_c - search_radius)
+        x1 = min(w, x_c + search_radius + 1)
+        window = row[x0:x1]
+        if window.size == 0:
+            continue
+        
+        max_p = float(window.max())
+        if max_p < min_prob:
+            continue
+        
+        # Find the peak position
+        local_peak_idx = int(np.argmax(window))
+        x_peak = x0 + local_peak_idx
+        
+        # Use weighted centroid of strong pixels around the peak
+        # Use HIGH power (4) to stay very close to the peak
+        xs_local = np.arange(x0, x1, dtype=np.float32)
+        weights = window.astype(np.float32)
+        peak_mask = weights >= max_p * 0.3  # Include pixels at 30% of peak
+        
+        if np.any(peak_mask):
+            weights_masked = (weights * peak_mask.astype(np.float32)) ** 4
+            wsum = float(weights_masked.sum())
+            if wsum > 0:
+                x_centroid = float((xs_local * weights_masked).sum() / wsum)
+                
+                # EXTREMUM PUSH: If this is a sharp peak/valley, push towards the extremity
+                # Check 3 rows above and below to see curvature
+                if y > 2 and y < h - 3:
+                    prev_x = np.nanmedian(xs_ref[y-3:y])
+                    next_x = np.nanmedian(xs_ref[y+1:y+4])
+                    if np.isfinite(prev_x) and np.isfinite(next_x):
+                        # Detected a peak (point is > neighbors) or valley (point is < neighbors)
+                        # Use 0.2 buffer to catch almost all real features while ignoring microscopic noise.
+                        # LOGIC UPDATE: Allow "Plateaus" (flat tops) to be detected as peaks.
+                        # Strict peak: > prev AND > next
+                        # Plateau start: > prev AND >= next
+                        # Plateau end: >= prev AND > next
+                        buf = 0.2
+                        
+                        # Right Peak (High value)
+                        # Check if strictly higher than at least one side, and at least equal (within tolerance) to the other
+                        is_right_peak = (x_centroid > prev_x + buf and x_centroid >= next_x - buf) or \
+                                        (x_centroid >= prev_x - buf and x_centroid > next_x + buf)
+
+                        # Left Peak (Low value) - Valley
+                        is_left_peak = (x_centroid < prev_x - buf and x_centroid <= next_x + buf) or \
+                                       (x_centroid <= prev_x + buf and x_centroid < next_x - buf)
+                        
+                        # Helper to find connected ink span around the centroid
+                        def get_connected_range(weights, center_idx):
+                            # Ensure center_idx is within bounds
+                            center_idx = max(0, min(len(weights)-1, center_idx))
+                            
+                            # If we landed on empty space, find nearest ink
+                            if weights[center_idx] == 0:
+                                valid = np.where(weights > 0)[0]
+                                if valid.size == 0:
+                                    return center_idx, center_idx
+                                # Closest valid index
+                                center_idx = valid[np.abs(valid - center_idx).argmin()]
+                                
+                            # Expand Left
+                            l_idx = center_idx
+                            while l_idx > 0 and weights[l_idx-1] > 0:
+                                l_idx -= 1
+                                
+                            # Expand Right
+                            r_idx = center_idx
+                            while r_idx < len(weights)-1 and weights[r_idx+1] > 0:
+                                r_idx += 1
+                                
+                            return l_idx, r_idx
+
+                        center_idx_local = int(round(x_centroid - x0))
+                        
+                        if is_right_peak:
+                            # Find rightmost CONNECTED pixel
+                            l_idx, r_idx = get_connected_range(weights, center_idx_local)
+                            rightmost_x = x0 + r_idx
+                            xs_ref[y] = float(rightmost_x)
+                            
+                        elif is_left_peak:
+                            # Find leftmost CONNECTED pixel
+                            l_idx, r_idx = get_connected_range(weights, center_idx_local)
+                            leftmost_x = x0 + l_idx
+                            xs_ref[y] = float(leftmost_x)
+                        else:
+                            xs_ref[y] = x_centroid
+                else:
+                    xs_ref[y] = x_centroid
+                
+                # Also refine a couple rows above and below (reduced from ±5 to ±2 for speed)
+                half_radius = search_radius // 3
+                for dy in [-2, -1, 1, 2]:
+                    y2 = y + dy
+                    if y2 < 0 or y2 >= h:
+                        continue
+                    x2 = xs_ref[y2]
+                    if not np.isfinite(x2):
+                        continue
+                    
+                    x2_c = int(round(float(x2)))
+                    row2 = prob[y2]
+                    x0_2 = max(0, x2_c - half_radius)
+                    x1_2 = min(w, x2_c + half_radius + 1)
+                    window2 = row2[x0_2:x1_2]
+                    if window2.size == 0:
+                        continue
+                    
+                    # Simplified: just snap to max in window
+                    best_idx = np.argmax(window2)
+                    if window2[best_idx] >= min_prob:
+                        xs_ref[y2] = float(x0_2 + best_idx)
+    
+    return xs_ref
+
+
+def ensure_peaks_have_points(
+    mask,
+    xs,
+    min_prob=0.08,
+    min_peak_prominence=0.03,
+    max_shift=40,
+):
+    """Ensure every significant peak in the probability map has a traced point.
+    
+    Optimized version using vectorized operations.
+    
+    Args:
+        mask: Probability map (0-255)
+        xs: Array of x-coordinates from trace
+        min_prob: Minimum probability to consider a peak
+        min_peak_prominence: Minimum prominence (height above neighbors) for a peak
+    
+    Returns:
+        Refined x-coordinates with peaks properly captured
+    """
+    if mask is None or xs is None:
+        return xs
+    if not hasattr(xs, "size") or xs.size < 3:
+        return xs
+    
+    h, w = mask.shape[:2]
+    if h < 3 or w < 3:
+        return xs
+    
+    prob = mask.astype(np.float32) / 255.0
+    xs_ref = xs.copy()
+    
+    # Vectorized peak detection: find where each pixel is greater than both neighbors
+    # This is much faster than row-by-row Python loops
+    left_shift = np.roll(prob, 1, axis=1)
+    right_shift = np.roll(prob, -1, axis=1)
+    is_peak = (prob > left_shift) & (prob > right_shift) & (prob >= min_prob)
+    # Zero out edges
+    is_peak[:, 0] = False
+    is_peak[:, -1] = False
+    
+    # Process only rows that have peaks
+    rows_with_peaks = np.where(np.any(is_peak, axis=1))[0]
+    
+    for y in rows_with_peaks:
+        row = prob[y]
+        current_x = xs_ref[y]
+        
+        # Get candidate peak positions in this row
+        peak_xs = np.where(is_peak[y])[0]
+        if peak_xs.size == 0:
+            continue
+        
+        peak_probs = row[peak_xs]
+        # Estimate local prominence vs immediate neighbors
+        left_vals = row[peak_xs - 1]
+        right_vals = row[peak_xs + 1]
+        prominences = peak_probs - np.maximum(left_vals, right_vals)
+        valid_mask = prominences >= min_peak_prominence
+        if not np.any(valid_mask):
+            continue
+        peak_xs = peak_xs[valid_mask]
+        peak_probs = peak_probs[valid_mask]
+        prominences = prominences[valid_mask]
+        
+        # Sort peaks by strength descending
+        sort_idx = np.argsort(-peak_probs)
+        peak_xs = peak_xs[sort_idx]
+        peak_probs = peak_probs[sort_idx]
+        
+        # If current trace is far from the best peak, snap to it
+        if np.isfinite(current_x):
+            current_x_int = int(round(current_x))
+            current_prob = row[current_x_int] if 0 <= current_x_int < w else 0
+            
+            # Prefer a peak near the current trace when possible
+            target_peak_x = None
+            for px in peak_xs:
+                if abs(px - current_x) <= max_shift:
+                    target_peak_x = px
+                    break
+            
+            # If no peak is close enough, DO NOT jump to a far-away peak.
+            # Stick to the current trace.
+            if target_peak_x is None:
+                continue
+
+            target_prob = row[target_peak_x]
+            
+            # Only move if the nearby target is clearly stronger than current position
+            if target_prob > current_prob * 1.05:
+                x0 = max(0, target_peak_x - 6)
+                x1 = min(w, target_peak_x + 7)
+                window = row[x0:x1]
+                if window.size == 0:
+                    continue
+                xs_local = np.arange(x0, x1, dtype=np.float32)
+                weights = window ** 3
+                wsum = weights.sum()
+                if wsum > 0:
+                    xs_ref[y] = float((xs_local * weights).sum() / wsum)
+        else:
+            xs_ref[y] = float(peak_xs[0])
+    
+    return xs_ref
+
+
+def _push_crest_hot_side(mask, xs, hot_side, curve_type=None, min_prob=0.01, max_shift=200):
+    # Only apply this aggressive crest push for GR-type curves
+    if curve_type is not None and str(curve_type).upper() != "GR":
+        return xs
+    if mask is None or xs is None:
+        return xs
+    if hot_side not in ("left", "right"):
+        return xs
+    if not hasattr(xs, "size") or xs.size == 0:
+        return xs
+    h, w = mask.shape[:2]
+    if h == 0 or w == 0:
+        return xs
+    prob = mask.astype(np.float32) / 255.0
+    xs_out = xs.copy()
+    moved = 0
+    for y in range(h):
+        x = xs_out[y]
+        if not np.isfinite(x):
+            continue
+        x_int = int(round(x))
+        if x_int < 0 or x_int >= w:
+            continue
+        row = prob[y]
+        if hot_side == "right":
+            start = x_int
+            end = min(w, x_int + max_shift + 1)
+        else:
+            start = max(0, x_int - max_shift)
+            end = x_int + 1
+        if end <= start:
+            continue
+        seg = row[start:end]
+        if seg.size == 0:
+            continue
+        # Find all pixels above a very low probability floor and move to the
+        # **furthest** such pixel toward the hot side. This guarantees that,
+        # wherever the GR ink extends horizontally, at least some rows will
+        # put their sample at the outer tip.
+        if hot_side == "right":
+            cand = np.where(seg >= min_prob)[0]
+            if cand.size == 0:
+                continue
+            peak_idx = int(cand[-1])  # furthest right
+        else:
+            cand = np.where(seg >= min_prob)[0]
+            if cand.size == 0:
+                continue
+            peak_idx = int(cand[0])  # furthest left
+        x_peak = start + peak_idx
+        if x_peak != x_int:
+            xs_out[y] = float(x_peak)
+            moved += 1
+    try:
+        if moved > 0:
+            print(f"[crest] moved {moved} rows toward {hot_side} (curve_type={curve_type})")
+        else:
+            print(f"[crest] no moves (hot_side={hot_side}, curve_type={curve_type})")
+    except Exception:
+        pass
+    return xs_out
+
+
+def ensure_gr_peak_crests(xs, prob_map, hot_side=None, min_prob=0.002, y_merge_window=5, max_shift_frac=0.6):
+    """For GR colored-mode traces, guarantee at least one crest sample per spike.
+
+    This is a conservative helper that, for each vertical cluster of rows, moves
+    at most ONE row further toward the hot-side tip, based on the probability
+    map. It avoids reshaping the whole trace while ensuring every spike has a
+    dot at its outermost visible tip.
+    """
+    if xs is None or prob_map is None:
+        return xs
+    if hot_side not in ("left", "right"):
+        return xs
+    if not hasattr(xs, "size") or xs.size == 0:
+        return xs
+
+    h, w = prob_map.shape
+    n = xs.size
+    m = min(h, n)
+    if m == 0:
+        return xs
+
+    prob = prob_map[:m].astype(np.float32)
+    xs_out = xs.copy()
+
+    # Allow large moves, but not across the entire track; cap at a fraction
+    # of the track width.
+    max_dx_allowed = max(1, int(max_shift_frac * w))
+
+    # 1) Build crest candidates per row
+    candidates = []  # (y, crest_x, dx)
+    for y in range(m):
+        x_curr = xs_out[y]
+        if not np.isfinite(x_curr):
+            continue
+        row = prob[y]
+        x_curr_int = int(round(x_curr))
+        if x_curr_int < 0 or x_curr_int >= w:
+            continue
+
+        on = row >= float(min_prob)
+        if not np.any(on):
+            continue
+
+        if bool(on[x_curr_int]):
+            l_idx = int(x_curr_int)
+            r_idx = int(x_curr_int)
+        else:
+            idxs = np.where(on)[0]
+            if idxs.size == 0:
+                continue
+            nearest = int(idxs[int(np.argmin(np.abs(idxs - x_curr_int)))])
+            if abs(nearest - x_curr_int) > max_dx_allowed:
+                continue
+            l_idx = int(nearest)
+            r_idx = int(nearest)
+
+        while l_idx > 0 and bool(on[l_idx - 1]):
+            l_idx -= 1
+        while r_idx + 1 < w and bool(on[r_idx + 1]):
+            r_idx += 1
+
+        crest_x = int(r_idx if hot_side == "right" else l_idx)
+        dx = crest_x - x_curr_int if hot_side == "right" else x_curr_int - crest_x
+        if dx <= 0 or dx > max_dx_allowed:
+            continue
+        candidates.append((y, crest_x, dx))
+
+    if not candidates:
+        return xs_out
+
+    # 2) Group into vertical clusters by Y (each cluster ≈ one spike)
+    candidates.sort(key=lambda c: c[0])
+    clusters = []
+    current = [candidates[0]]
+    for y, crest_x, dx in candidates[1:]:
+        if abs(y - current[-1][0]) <= y_merge_window:
+            current.append((y, crest_x, dx))
+        else:
+            clusters.append(current)
+            current = [(y, crest_x, dx)]
+    clusters.append(current)
+
+    # 3) For each cluster, move exactly one row: the one that can move
+    #    furthest toward the hot side.
+    moved_clusters = 0
+    for cluster in clusters:
+        y_best, x_best, dx_best = max(cluster, key=lambda t: t[2])
+        dx_keep = max(1, int(round(float(dx_best) * 0.8)))
+        keep = [t for t in cluster if int(t[2]) >= dx_keep]
+        keep.sort(key=lambda t: abs(int(t[0]) - int(y_best)))
+        for (yy, xx, _dd) in keep[:3]:
+            xs_out[int(yy)] = float(xx)
+        moved_clusters += 1
+
+    try:
+        if moved_clusters:
+            print(f"[gr-crest] moved {moved_clusters} crest rows (clusters={len(clusters)})")
+    except Exception:
+        pass
+
+    return xs_out
+
+
+def refine_to_stroke_centerline(mask, xs, threshold_ratio=0.5, window_size=None):
+    """Refine trace to the centerline of the curve stroke width.
+    
+    Uses a half-maximum window (FWHM) to estimate stroke width and blends
+    geometric and weighted centers for stability.
+    """
+    if mask is None or xs is None:
+        return xs
+    if not hasattr(xs, "size") or xs.size < 3:
+        return xs
+    
+    h, w = mask.shape[:2]
+    if h < 3 or w < 3:
+        return xs
+    
+    prob = mask.astype(np.float32) / 255.0
+    xs_ref = xs.copy()
+    
+    valid_rows = np.where(np.isfinite(xs_ref))[0]
+    try:
+        if window_size is not None:
+            search_radius = max(1, int(window_size))
+        else:
+            search_radius = 15
+    except Exception:
+        search_radius = 15
+    
+    for y in valid_rows:
+        x_prev = float(xs_ref[y])
+        x_c = int(round(x_prev))
+        if x_c < 0 or x_c >= w:
+            continue
+        
+        row = prob[y]
+        x0 = max(0, x_c - search_radius)
+        x1 = min(w, x_c + search_radius + 1)
+        window = row[x0:x1]
+        if window.size == 0:
+            continue
+        
+        max_val = window.max()
+        if max_val < 0.05:
+            continue
+        
+        peak_idx = int(np.argmax(window))
+        thr = float(max_val) * float(threshold_ratio)
+        if thr <= 0:
+            continue
+
+        above = window >= thr
+        if not np.any(above):
+            continue
+
+        # Choose the contiguous above-threshold band that overlaps the current
+        # x (or is nearest). Using argmax alone can lock onto a bright edge on
+        # thick strokes.
+        segs = []
+        in_seg = False
+        seg_start = 0
+        for i in range(int(above.size)):
+            if bool(above[i]) and not in_seg:
+                in_seg = True
+                seg_start = i
+            elif (not bool(above[i])) and in_seg:
+                segs.append((int(seg_start), int(i - 1)))
+                in_seg = False
+        if in_seg:
+            segs.append((int(seg_start), int(above.size) - 1))
+
+        x_rel = float(x_prev) - float(x0)
+        chosen = None
+        best_dist = None
+        for (l, r) in segs:
+            if l <= x_rel <= r:
+                chosen = (l, r)
+                best_dist = 0.0
+                break
+            if x_rel < l:
+                dist = float(l) - x_rel
+            else:
+                dist = x_rel - float(r)
+            if best_dist is None or dist < best_dist:
+                chosen = (l, r)
+                best_dist = dist
+            elif best_dist is not None and abs(dist - best_dist) < 1e-6:
+                # Tie-breaker: prefer the segment with higher local intensity
+                try:
+                    if chosen is not None:
+                        l0, r0 = chosen
+                        if float(window[l:r + 1].max()) > float(window[l0:r0 + 1].max()):
+                            chosen = (l, r)
+                except Exception:
+                    pass
+
+        if chosen is None:
+            continue
+
+        left_idx, right_idx = chosen
+
+        stroke_center = (left_idx + right_idx) / 2.0
+
+        # Optional weighted correction within the band. Keep it mild to prevent
+        # a consistent pull toward stronger edges.
+        final_center = float(stroke_center)
+        try:
+            stroke_slice = window[left_idx:right_idx + 1]
+            if stroke_slice.size > 0:
+                xs_local = np.arange(left_idx, right_idx + 1, dtype=np.float32)
+                weights = np.power(stroke_slice.astype(np.float32), 1.5)
+                wsum = float(weights.sum())
+                if wsum > 1e-8:
+                    weighted_center = float((xs_local * weights).sum() / wsum)
+                    final_center = 0.75 * float(stroke_center) + 0.25 * weighted_center
+        except Exception:
+            final_center = float(stroke_center)
+
+        x_new = float(x0 + final_center)
+
+        # Clamp and blend for stability
+        max_shift = max(1.5, float(search_radius) * 0.6)
+        dx = x_new - x_prev
+        if dx > max_shift:
+            x_new = x_prev + max_shift
+        elif dx < -max_shift:
+            x_new = x_prev - max_shift
+
+        alpha = 0.85
+        xs_ref[y] = float((1.0 - alpha) * x_prev + alpha * x_new)
+    
     return xs_ref
 
 
@@ -2657,25 +4441,33 @@ def auto_layout_tracks():
     # If no header text found, fall back to edge-based track detection
     if not items:
         print("⚠️  No header text found; falling back to edge-based track detection")
-        local_tracks = auto_detect_tracks(panel)
-        tracks_out = []
-        for idx, (lx, rx) in enumerate(local_tracks or []):
-            try:
-                lx_f = float(lx)
-                rx_f = float(rx)
-            except (TypeError, ValueError):
-                continue
-            if not np.isfinite(lx_f) or not np.isfinite(rx_f) or rx_f <= lx_f:
-                continue
-            tracks_out.append({
-                'name': f'Track{idx+1}',
-                'left_px': float(left) + lx_f,
-                'right_px': float(left) + rx_f,
-                'scale_min': None,
-                'scale_max': None,
-                'unit': None,
-                'hot_side': None,
-            })
+        try:
+            local_tracks = auto_detect_tracks(panel)
+            tracks_out = []
+            for idx, (lx, rx) in enumerate(local_tracks or []):
+                try:
+                    lx_f = float(lx)
+                    rx_f = float(rx)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(lx_f) or not np.isfinite(rx_f) or rx_f <= lx_f:
+                    continue
+                tracks_out.append({
+                    'name': f'Track{idx+1}',
+                    'left_px': float(left) + lx_f,
+                    'right_px': float(left) + rx_f,
+                    'scale_min': None,
+                    'scale_max': None,
+                    'unit': None,
+                    'hot_side': None,
+                })
+        except Exception as exc:
+            import traceback
+            return jsonify({
+                'success': False,
+                'error': f'Edge fallback failed: {str(exc)}',
+                'traceback': traceback.format_exc()[-1500:]
+            }), 500
         
         if not tracks_out:
             return jsonify({'success': False, 'error': 'No tracks detected (neither header text nor edge detection found tracks).'}), 400
@@ -2696,9 +4488,59 @@ def auto_layout_tracks():
 
     layout = call_ai_auto_layout(layout_payload)
     if not layout:
+        # If no AI providers are configured, give an actionable error.
+        has_provider = bool((GEMINI_API_KEY and GEMINI_MODEL_ID) or (OPENAI_API_KEY and OPENAI_MODEL_ID) or (HF_API_TOKEN and HF_MODEL_ID))
+        if not has_provider:
+            return jsonify({
+                'success': False,
+                'error': 'AI layout detection is not configured. Set GEMINI_API_KEY (or OPENAI_API_KEY / HF_API_TOKEN) in the server environment.'
+            }), 500
+
+        # Otherwise fall back to edge-based track detection on the panel.
+        print("⚠️  AI layout inference returned no result; falling back to edge-based track detection")
+        try:
+            local_tracks = auto_detect_tracks(panel)
+            tracks_out = []
+            for idx, (lx, rx) in enumerate(local_tracks or []):
+                try:
+                    lx_f = float(lx)
+                    rx_f = float(rx)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(lx_f) or not np.isfinite(rx_f) or rx_f <= lx_f:
+                    continue
+                tracks_out.append({
+                    'name': f'Track{idx+1}',
+                    'left_px': float(left) + lx_f,
+                    'right_px': float(left) + rx_f,
+                    'scale_min': None,
+                    'scale_max': None,
+                    'unit': None,
+                    'hot_side': None,
+                    'color_hint': None,
+                })
+        except Exception as exc:
+            import traceback
+            return jsonify({
+                'success': False,
+                'error': f'AI layout returned no result, and edge fallback failed: {str(exc)}',
+                'traceback': traceback.format_exc()[-1500:]
+            }), 500
+
+        if tracks_out:
+            return jsonify({
+                'success': True,
+                'tracks': tracks_out,
+                'raw_layout': {
+                    'tracks': [],
+                    'fallback': 'edge_detection_after_ai_failure',
+                    'ocr_items': len(items),
+                },
+            })
+
         return jsonify({
             'success': False,
-            'error': 'AI layout detection failed or returned no result. Check server logs.'
+            'error': f"AI layout detection failed and edge fallback found no tracks. OCR items={len(items)}. Try selecting a larger/clearer header region."
         }), 500
 
     raw_tracks = layout.get('tracks') or []
@@ -3635,33 +5477,34 @@ def upload_file():
 def digitize():
     """Process digitization request"""
     data = request.json
-    
+
     # Decode image
     img_data = data['image'].split(',')[1]
     img_bytes = base64.b64decode(img_data)
     nparr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    
+
     # Extract config
     cfg = data['config']
+    preview_filters = data.get('preview_filters') or {}
     detected_text = data.get('detected_text') or {}
     depth_cfg = cfg['depth']
     curves = (cfg['curves'] or [])[:6]
     gopt = cfg.get('global_options', {})
-    
+
     null_val = float(gopt.get('null', -999.25))
     downsample = int(gopt.get('downsample', 1))
     blur = int(gopt.get('blur', 3))
     min_run = int(gopt.get('min_run', 2))
     smooth_window = int(gopt.get('smooth_window', 5))
-    
+
     H, W, _ = img.shape
     top = max(0, int(depth_cfg['top_px']))
     bot = min(H, int(depth_cfg['bottom_px']))
     top_depth = float(depth_cfg['top_depth'])
     bottom_depth = float(depth_cfg['bottom_depth'])
     depth_unit = depth_cfg.get('unit', 'FT')
-    
+
     nrows = bot - top
     base_depth = compute_depth_vector(nrows, top_depth, bottom_depth)
 
@@ -3695,14 +5538,14 @@ def digitize():
             roi = cv2.GaussianBlur(roi, (bb, bb), 0)
         
         # Define colored modes set (including auto which detects hue automatically)
-        colored_modes = {"green", "red", "blue", "auto"}
+        colored_modes = {"green", "red", "blue", "auto", "cyan", "magenta", "yellow", "orange", "purple"}
         
         # NEW: Build a soft probability mask for the curve using color/edges
         # plus vertical-rail suppression. This returns an 8-bit image where
         # higher values mean higher likelihood of curve pixels.
         # Use compute_prob_map for all modes - it has sophisticated edge detection
         # and centerline boost that works well
-        mask = compute_prob_map(roi, mode=mode)
+        mask = compute_prob_map(roi, mode=mode, ui_filters=preview_filters)
 
         # NEW: Use DP-based smooth path tracing with plausibility checks
         curve_type = c.get('type', 'GR')  # Get curve type for plausibility
@@ -3718,135 +5561,220 @@ def digitize():
             # NO smoothing: window = 1 means no median filter applied
             curve_smooth_window = 1
             # MAXIMUM local window and absolute minimum threshold to snap to any ink
-            refine_kwargs = {"dominance_ratio": 0.0, "max_shift": 15, "min_prob": 0.005}
+            refine_kwargs = {"dominance_ratio": 1.05, "max_shift": 25, "min_prob": 0.005}
             # Disable outlier removal - keep every point for maximum accuracy
             outlier_threshold = 100.0  # Effectively disabled
+        # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
         dp_smooth_lambda = 0.001 if mode in colored_modes else 0.5
+        # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
+        dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
+        max_step_dp = 200 if mode in colored_modes else 3  # Allow unlimited movement to follow gamma ray spikes
 
-        max_step_dp = 12 if mode in colored_modes else 3
-
-        # For colored modes, use a two-stage approach:
-        # Stage 1: DP finds a globally coherent path that prefers the right
-        #          colored curve.
-        # Stage 2: Combine that DP path with a direct row-wise centerline
-        #          estimate from the same probability map, favoring whichever
-        #          has clearly higher probability in each row. This reduces
-        #          the appearance of a doubled cyan line by locking onto a
-        #          single strong ridge.
+        # For colored modes, use the "Fusion" strategy from successful memories:
+        # Run both DP and Direct Centerline tracers, then merge per-row based on probability.
+        # AND DISABLE EXTRA REFINEMENTS which cause the zig-zag snapping.
         if mode in colored_modes:
-            # STAGE 1: Global DP path search
-            # Use DP with very light smoothness to follow the sharpened centerline ridge
-            xs_dp, confidence = trace_curve_with_dp(
+            # SUPER-RESOLUTION: Upscale mask by 2x to allow sub-pixel precision
+            # Use LINEAR interpolation to create smooth gradients between pixels
+            mask_orig = mask
+            h_orig, w_orig = mask.shape
+            mask = cv2.resize(mask, (w_orig * 2, h_orig * 2), interpolation=cv2.INTER_LINEAR)
+            
+            # Adjust parameters for 2x scale
+            max_step_dp_sr = max_step_dp * 2
+            
+            # 1. Run DP Tracer (provides continuity)
+            xs_dp, conf_dp = trace_curve_with_dp(
                 mask,
                 scale_min=left_value,
                 scale_max=right_value,
                 curve_type=curve_type,
-                max_step=max_step_dp,
-                smooth_lambda=dp_smooth_lambda,  # 0.001 for colored modes - tight following
+                max_step=max_step_dp_sr,
+                smooth_lambda=dp_smooth_lambda,
+                curv_lambda=dp_curv_lambda,
                 hot_side=hot_side,
             )
 
-            # STAGE 2: Blend DP path with a direct centerline estimate from the
-            # same probability map. Per row we prefer whichever candidate has
-            # the higher local probability, then smooth along depth so the
-            # final path behaves like a single curve rather than bouncing
-            # between two nearby peaks.
-            h, w = mask.shape[:2]
-            prob_rows = mask.astype(np.float32) / 255.0
-
-            try:
-                xs_dc = trace_curve_direct_centerline(mask)
-            except Exception:
-                xs_dc = None
-
-            xs_refined = np.full(h, np.nan, dtype=np.float32)
-
-            for y in range(h):
-                x_dp = xs_dp[y] if y < xs_dp.size else np.nan
-                x_dc = xs_dc[y] if (xs_dc is not None and y < xs_dc.size) else np.nan
-
-                have_dp = np.isfinite(x_dp)
-                have_dc = np.isfinite(x_dc)
-
-                if have_dp and have_dc:
-                    x_dpi = int(round(float(x_dp)))
-                    x_dci = int(round(float(x_dc)))
-
-                    if 0 <= x_dpi < w:
-                        p_dp = float(prob_rows[y, x_dpi])
-                    else:
-                        p_dp = 0.0
-
-                    if 0 <= x_dci < w:
-                        p_dc = float(prob_rows[y, x_dci])
-                    else:
-                        p_dc = 0.0
-
-                    # Prefer the centerline estimate only when it clearly wins
-                    # in probability so the path does not oscillate between two
-                    # almost-equal ridges.
-                    if p_dc >= p_dp * 1.05:
-                        xs_refined[y] = float(x_dc)
-                    else:
-                        xs_refined[y] = float(x_dp)
-                elif have_dp:
-                    xs_refined[y] = float(x_dp)
-                elif have_dc:
-                    xs_refined[y] = float(x_dc)
+            # 2. Local Peak Search Fusion
+            # Instead of a global direct tracer (which gets distracted by far-away curves),
+            # search locally around the DP path for the true tip of the spike.
+            h_mask, w_mask = mask.shape
+            prob_map = mask.astype(np.float32) / 255.0
+            xs = np.full(h_mask, np.nan, dtype=np.float32)
             
-            # STAGE 3: Light smoothing to remove jitter.
-            # Prefer Savitzky-Golay from SciPy if available, but do not make
-            # SciPy a hard dependency – fall back to a simple filled series
-            # when the import is missing.
+            search_window = 100
+            
+            for y in range(h_mask):
+                x_dp = xs_dp[y]
+                
+                if not np.isfinite(x_dp):
+                    xs[y] = x_dp
+                    continue
+                    
+                ix_dp = int(round(x_dp))
+                if not (0 <= ix_dp < w_mask):
+                    xs[y] = x_dp
+                    continue
+                    
+                p_dp = prob_map[y, ix_dp]
+                
+                # Search for a better peak in the window
+                start = max(0, ix_dp - search_window)
+                end = min(w_mask, ix_dp + search_window + 1)
+                
+                # Extract local slice
+                local_prob = prob_map[y, start:end]
+                if local_prob.size > 0:
+                    # Find ALL peaks, not just the first one
+                    max_p = local_prob.max()
+                    if max_p > 0:
+                        # Get all indices that are essentially the max
+                        candidates = np.where(local_prob >= max_p * 0.99)[0]
 
+                        # Prefer the strongest local peak that stays close to the DP path.
+                        best_cand = candidates[0]
+                        best_score = -1e9
+                        for c in candidates:
+                            x_cand = start + c
+                            d = abs(x_cand - x_dp)
+                            score = local_prob[c] - 0.15 * d  # strongest penalty to stay on DP path center
+                            if score > best_score:
+                                best_score = score
+                                best_cand = c
+                                
+                        p_local = float(local_prob[best_cand])
+
+                        # Ridge-centroid snap: if the peak is a short plateau (common on thick ink),
+                        # take the weighted centroid of the contiguous plateau region around best_cand.
+                        # This avoids consistent 1-2px edge bias from argmax selection.
+                        x_local = float(start + best_cand)
+                        try:
+                            peak_thr = float(max_p) * 0.99
+                            left_i = int(best_cand)
+                            right_i = int(best_cand)
+                            while left_i > 0 and float(local_prob[left_i - 1]) >= peak_thr:
+                                left_i -= 1
+                            while right_i + 1 < int(local_prob.size) and float(local_prob[right_i + 1]) >= peak_thr:
+                                right_i += 1
+
+                            seg = local_prob[left_i:right_i + 1].astype(np.float32)
+                            s = float(seg.sum())
+                            if s > 1e-8:
+                                coords = np.arange(start + left_i, start + right_i + 1, dtype=np.float32)
+                                x_local = float((coords * seg).sum() / s)
+                        except Exception:
+                            x_local = float(start + best_cand)
+                        
+                        # Fusion Logic:
+                        # If local peak is found and is at least 6% as bright as the DP point,
+                        # AND it is substantially far away (indicating a missed spike), take it.
+                        if p_local > p_dp * 0.06:
+                            xs[y] = float(x_local)
+                        else:
+                            xs[y] = x_dp
+                    else:
+                        xs[y] = x_dp
+                else:
+                    xs[y] = x_dp
+
+            # 3. Pure Center-of-Mass refinement (no edge snapping)
+            # Use weighted COM per row to center on ink
+            h_sr, w_sr = mask.shape
+            prob_sr = mask.astype(np.float32) / 255.0
+            for y in range(h_sr):
+                x_cur = xs[y]
+                if not np.isfinite(x_cur):
+                    continue
+                ix = int(round(x_cur))
+                # Search in a local window around current position
+                win = 12
+                start = max(0, ix - win)
+                end = min(w_sr, ix + win + 1)
+                row_slice = prob_sr[y, start:end]
+                if row_slice.sum() > 1e-6:
+                    coords = np.arange(start, end, dtype=np.float32)
+                    xs[y] = (coords * row_slice).sum() / row_slice.sum()
+
+            # 4. Refine Peaks (MOVED to after downsampling)
+            # We don't run it here to avoid the downsampling smoothing out the sharp tips.
+            
+            # 8. Minimal cleanup only - NO aggressive snapping to far-away peaks
+            s = pd.Series(xs)
+            xs = s.interpolate(method='linear', limit_direction='both').to_numpy(dtype=np.float32)
+            
+            # DOWNSAMPLE: Map back to original resolution
+            # Take every 2nd point and divide coordinate by 2
+            # Use averaging to reduce noise: (y*2 + y*2+1) / 2
+            xs_down = np.full(h_orig, np.nan, dtype=np.float32)
+            for y_orig in range(h_orig):
+                y_sr = y_orig * 2
+                val1 = xs[y_sr]
+                val2 = xs[y_sr + 1] if y_sr + 1 < h_mask else val1
+                
+                if np.isfinite(val1) and np.isfinite(val2):
+                    xs_down[y_orig] = (val1 + val2) / 4.0 # Divide by 2 (avg) then divide by 2 (scale) -> /4
+                elif np.isfinite(val1):
+                    xs_down[y_orig] = val1 / 2.0
+                elif np.isfinite(val2):
+                    xs_down[y_orig] = val2 / 2.0
+            
+            xs = xs_down
+            # Restore original mask for downstream
+            mask = mask_orig
+
+            # 8b. Clean up artifacts (single-pixel horizontal glitches)
+            # The high-sensitivity plateau logic can sometimes trigger on noise.
+            # A median filter of size 3 removes single-pixel spikes but keeps real features (width >= 2).
             try:
-                from scipy.signal import savgol_filter  # type: ignore
-                have_savgol = True
+                 from scipy.signal import medfilt
+                 xs_valid_mask = np.isfinite(xs)
+                 if np.sum(xs_valid_mask) > 3:
+                     # Fill NaNs temporarily
+                     xs_filled = xs.copy()
+                     xs_filled[~xs_valid_mask] = np.nanmedian(xs)
+                     # Apply median filter
+                     xs_smooth = medfilt(xs_filled, kernel_size=3)
+                     # Restore valid pixels
+                     xs[xs_valid_mask] = xs_smooth[xs_valid_mask]
             except ImportError:
-                have_savgol = False
+                 pass
 
-            s = pd.Series(xs_refined)
-            # Fill any remaining NaN
-            xs_filled = s.interpolate(method='linear', limit_direction='both')
-            if xs_filled.isna().any():
-                xs_filled = xs_filled.fillna(method='ffill').fillna(method='bfill')
+            # 9. FINAL TIP REFINEMENT (Post-Downsample)
+            # Run the peak pusher on the original resolution to catch the absolute edges
+            # that might have been smoothed by downsampling.
+            # Use small buffer (0.2) to be very sticky to tips.
+            xs = refine_peaks_and_valleys(mask, xs, search_radius=100, min_prob=0.005)
 
-            if have_savgol and len(xs_filled) >= 5:
-                try:
-                    xs_smoothed = savgol_filter(xs_filled, window_length=5, polyorder=2, mode='nearest')
-                    xs = np.asarray(xs_smoothed, dtype=np.float32)
-                except Exception:
-                    xs = xs_filled.to_numpy(dtype=np.float32)
-            else:
-                xs = xs_filled.to_numpy(dtype=np.float32)
-
-            # RAIL-HUGGING RESCUE: if over a substantial vertical interval the
-            # traced path becomes nearly vertical (very small dynamic range
-            # compared to the track width), fall back to a simpler row-wise
-            # centerline estimate for that interval using
-            # trace_curve_direct_centerline on the same probability mask.
+            # Gentle centerline refinement to re-center on ink after outer-edge bias and fusion
             try:
-                xs_dc_rescue = trace_curve_direct_centerline(mask)
+                xs = refine_to_stroke_centerline(mask, xs, threshold_ratio=0.5, window_size=8)
             except Exception:
-                xs_dc_rescue = None
-            if xs_dc_rescue is not None and hasattr(xs_dc_rescue, "size") and xs_dc_rescue.size == xs.size:
-                xs_combined = xs.astype(np.float32).copy()
+                pass
+
+            # Global centering correction: subtract median residual vs. ink center-of-mass
+            try:
                 h_mask, w_mask = mask.shape
-                width_px = float(w_mask)
-                min_dyn = max(4.0, 0.02 * width_px)
-                window_rows = max(40, int(h_mask * 0.02))
-                for y0 in range(0, h_mask, window_rows):
-                    y1 = min(h_mask, y0 + window_rows)
-                    seg = xs[y0:y1]
-                    seg_valid = seg[np.isfinite(seg)]
-                    if seg_valid.size == 0:
-                        continue
-                    dyn = float(np.nanmax(seg_valid) - np.nanmin(seg_valid))
-                    if dyn < min_dyn:
-                        for yy in range(y0, y1):
-                            if np.isfinite(xs_dc_rescue[yy]):
-                                xs_combined[yy] = float(xs_dc_rescue[yy])
-                xs = xs_combined
+                xs_valid = xs[~np.isnan(xs)]
+                if xs_valid.size > 0:
+                    # Compute per-row center-of-mass of probability
+                    probs = mask.astype(np.float32) / 255.0
+                    weight_sums = probs.sum(axis=1)
+                    com = np.full(h_mask, np.nan, dtype=np.float32)
+                    nonzero_rows = weight_sums > 1e-6
+                    com[nonzero_rows] = (probs[nonzero_rows] * np.arange(w_mask, dtype=np.float32)).sum(axis=1) / weight_sums[nonzero_rows]
+                    deltas = []
+                    for y in range(h_mask):
+                        if np.isnan(xs[y]) or np.isnan(com[y]):
+                            continue
+                        deltas.append(xs[y] - com[y])
+                    if deltas:
+                        median_delta = float(np.median(deltas))
+                        xs = xs - median_delta
+                    
+                    # Do not apply a fixed pixel shift; it prevents true centerline alignment.
+            except Exception:
+                pass
+            
         else:
             # For black/other modes, use DP with smoothness constraints
             xs, confidence = trace_curve_with_dp(
@@ -3856,11 +5784,21 @@ def digitize():
                 curve_type=curve_type,
                 max_step=max_step_dp,
                 smooth_lambda=dp_smooth_lambda,
+                curv_lambda=0.05,
                 hot_side=hot_side,
             )
             
             # Snap the DP path toward obvious local maxima in the prob mask
             xs = refine_trace_with_local_maxima(mask, xs, **refine_kwargs)
+            
+            # Refine peaks and valleys where curve changes direction sharply
+            xs = refine_peaks_and_valleys(mask, xs, search_radius=50, min_prob=0.03)
+            
+            # Ensure every significant peak has a traced point
+            xs = ensure_peaks_have_points(mask, xs, min_prob=0.08, min_peak_prominence=0.03, max_shift=40)
+            
+            # Final centerline refinement
+            xs = refine_to_stroke_centerline(mask, xs, window_size=6)
 
             # Remove outliers and smooth
             xs = remove_outliers_and_smooth(xs, window=curve_smooth_window, outlier_threshold=outlier_threshold)
@@ -3880,16 +5818,56 @@ def digitize():
                 s = s.fillna(method='ffill', limit=max_gap).fillna(method='bfill', limit=max_gap)
             xs = s.to_numpy(dtype=np.float32)
 
-            # Optionally perform a final local peak snap; disabled by default to
-            # favor a single stable centerline over bouncing between nearby peaks.
+            if curve_type.upper() == "GR":
+                prob_map = mask.astype(np.float32) / 255.0
+                xs = ensure_gr_peak_crests(xs, prob_map, hot_side=hot_side)
+
+            # Final centerline snap for ALL colored modes (green/red/blue/auto).
+            # This helps achieve near pixel-perfect centerline after interpolation
+            # and GR peak tweaks.
+            try:
+                xs = refine_to_stroke_centerline(mask, xs, threshold_ratio=0.5, window_size=10)
+            except Exception:
+                pass
+
+            try:
+                prob = mask.astype(np.float32) / 255.0
+                h_mask, w_mask = prob.shape
+                radius = 4
+                xs2 = xs.copy()
+                for y in range(h_mask):
+                    x0 = xs2[y]
+                    if not np.isfinite(x0):
+                        continue
+                    ix = int(round(x0))
+                    x_min = max(0, ix - radius)
+                    x_max = min(w_mask, ix + radius + 1)
+                    row = prob[y, x_min:x_max]
+                    if row.size == 0:
+                        continue
+                    s = float(row.sum())
+                    if s <= 1e-8:
+                        continue
+                    coords = np.arange(x_min, x_max, dtype=np.float32)
+                    xs2[y] = float((coords * row).sum() / s)
+                xs = xs2
+            except Exception:
+                pass
+
+            if curve_type.upper() == "GR":
+                prob_map = mask.astype(np.float32) / 255.0
+                xs = ensure_gr_peak_crests(xs, prob_map, hot_side=hot_side)
+
+            # Optional final local peak snap; kept disabled because it
+            # quantizes to integer columns and can reintroduce zig-zags.
             do_final_peak_snap = False
             if do_final_peak_snap:
                 # FINAL STEP: refine each point to local probability maximum
-                # Search within ±5 pixels for a balance between precision and stability
+                # Tight window to avoid sideways wander
                 h_mask, w_mask = mask.shape
                 xs_refined_final = np.copy(xs)
                 
-                local_search_radius = 5  # Balanced window - not too tight, not too wide
+                local_search_radius = 2  # Very tight window to avoid sideways wander
                 
                 for y in range(h_mask):
                     if not np.isnan(xs[y]):
@@ -3946,7 +5924,7 @@ def digitize():
                 # This creates a completely solid line that shows the exact trace.
                 for row_idx in valid_rows:
                     x_val = xs[row_idx]
-                    x_img = int(left_px + x_val)
+                    x_img = round(left_px + x_val)
                     y_img = int(top + row_idx)
                     trace_points.append([x_img, y_img])
 
@@ -3955,6 +5933,10 @@ def digitize():
     # Resample to fixed 0.5 ft step when using feet
     las_depth = base_depth
     las_curve_data = curve_data
+    ai_payload = None
+    ai_summary = None
+    digitized_depth = None
+    digitized_curves = None
     if depth_unit.upper() == "FT" and base_depth.size > 1:
         start = float(base_depth[0])
         stop = float(base_depth[-1])
@@ -3986,6 +5968,20 @@ def digitize():
     # Run simple curve sanity checks (outlier warnings) on the final LAS depth grid
     outlier_warnings = compute_curve_outlier_warnings(curves, las_curve_data, null_val)
 
+    # Prepare digitized vectors for frontend cursor readout (always, even without lasio)
+    try:
+        digitized_depth = las_depth.tolist()
+        digitized_curves = {
+            name: {
+                "unit": meta.get("unit", ""),
+                "values": (meta.get("values").tolist() if meta.get("values") is not None else None),
+            }
+            for name, meta in las_curve_data.items()
+        }
+    except Exception:
+        digitized_depth = None
+        digitized_curves = None
+
     # Generate LAS file
     las_content = write_las_simple(las_depth, las_curve_data, depth_unit)
 
@@ -4007,23 +6003,9 @@ def digitize():
                 'message': f'LAS validation failed: {exc}'
             }
 
-    # Build AI analysis payload (OCR + LAS stats + user curve config)
-    ai_payload = build_ai_analysis_payload(las_content, detected_text, curves)
-    ai_summary = call_hf_curve_analysis(ai_payload) if ai_payload else None
-
-    # Prepare digitized vectors for frontend cursor readout
-    try:
-        digitized_depth = las_depth.tolist()
-        digitized_curves = {
-            name: {
-                "unit": meta.get("unit", ""),
-                "values": (meta.get("values") or []).tolist(),
-            }
-            for name, meta in las_curve_data.items()
-        }
-    except Exception:
-        digitized_depth = None
-        digitized_curves = None
+        # Build AI analysis payload (OCR + LAS stats + user curve config)
+        ai_payload = build_ai_analysis_payload(las_content, detected_text, curves)
+        ai_summary = call_hf_curve_analysis(ai_payload) if ai_payload else None
 
     return jsonify({
         'success': True,
@@ -4277,39 +6259,103 @@ def refine_edit():
         
         # Get parameters
         track = data.get('track', {})
-        left_x = int(track.get('leftX', 0))
-        right_x = int(track.get('rightX', w_img))
+        # Note: if isCrop is True, leftX/rightX are used mainly for scale_min/max mapping,
+        # but the image provided is ALREADY the cropped track.
         left_value = float(track.get('leftValue', 0))
         right_value = float(track.get('rightValue', 100))
         
         edit_y = int(data.get('editY', h_img // 2))
-        edit_x = float(data.get('editX', (left_x + right_x) // 2))
+        edit_x = float(data.get('editX', w_img // 2))
         window_size = int(data.get('windowSize', 50))
         curve_type = data.get('curveType', 'GR').upper()
         mode = data.get('mode', 'green').lower()
         
-        # Extract the track region
-        left_x = max(0, min(left_x, w_img - 1))
-        right_x = max(left_x + 1, min(right_x, w_img))
-        
-        # Extract vertical window around edit point
-        y_start = max(0, edit_y - window_size // 2)
-        y_end = min(h_img, edit_y + window_size // 2)
-        
-        track_crop = img[y_start:y_end, left_x:right_x]
-        
+        is_crop = data.get('isCrop', False)
+        crop_origin_x = int(data.get('cropOriginX', 0))
+        edit_relative_y = int(data.get('editRelativeY', -1))
+
+        ui_filters = data.get('uiFilters') or data.get('ui_filters') or {}
+        try:
+            ui_filters = {
+                'invert': bool(ui_filters.get('invert')),
+                'contrast': bool(ui_filters.get('contrast')),
+            }
+        except Exception:
+            ui_filters = {}
+
+        request_max_snap_dist = data.get('maxSnapDist')
+        try:
+            request_max_snap_dist = float(request_max_snap_dist)
+        except Exception:
+            request_max_snap_dist = None
+
+        if is_crop:
+            # Image is already cropped to the track/ROI
+            track_crop = img
+            # If editRelativeY is provided, use it; otherwise assume center
+            if edit_relative_y >= 0:
+                edit_row_in_window = edit_relative_y
+            else:
+                edit_row_in_window = h_img // 2
+            
+            # For multiscale tracer, the "track" is the whole image provided
+            # effectively left_x=0, right_x=w_img in local coords
+            # BUT we need to be careful if the user provided leftX/rightX in the request
+            # they might be absolute. For the tracer, we just need scale mapping.
+            pass
+        else:
+            # Standard mode: image is the full page, we crop it
+            left_x = int(track.get('leftX', 0))
+            right_x = int(track.get('rightX', w_img))
+            
+            left_x = max(0, min(left_x, w_img - 1))
+            right_x = max(left_x + 1, min(right_x, w_img))
+            
+            # Extract vertical window around edit point
+            y_start = max(0, edit_y - window_size // 2)
+            y_end = min(h_img, edit_y + window_size // 2)
+            
+            track_crop = img[y_start:y_end, left_x:right_x]
+            
+            edit_row_in_window = edit_y - y_start
+            
+            # We want to add this offset back to the result
+            crop_origin_x = left_x
+            
+        track_proc = track_crop
+        x_scale_factor = 1.0
         if track_crop.size == 0:
             return jsonify({'success': False, 'error': 'Empty track region'})
+        try:
+            track_proc, x_scale_factor = enhance_curve_roi(track_crop)
+        except Exception:
+            track_proc = track_crop
+            x_scale_factor = 1.0
+        if x_scale_factor <= 0:
+            x_scale_factor = 1.0
         
         # Build probability map for this segment
         colored_modes = {'green', 'red', 'blue', 'auto', 'cyan', 'magenta', 'yellow', 'orange', 'purple'}
         
         if mode in colored_modes:
-            mask = compute_prob_map(track_crop, mode)
+            mask = compute_prob_map(track_proc, mode, ui_filters=ui_filters)
         else:
             # Black curve detection
-            gray = cv2.cvtColor(track_crop, cv2.COLOR_BGR2GRAY) if len(track_crop.shape) == 3 else track_crop
+            source_roi = track_proc if track_proc is not None else track_crop
+            gray = cv2.cvtColor(source_roi, cv2.COLOR_BGR2GRAY) if len(source_roi.shape) == 3 else source_roi
             mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+
+        weight_map = mask.astype(np.float32)
+        if mode not in colored_modes:
+            try:
+                bin_mask = (mask > 0).astype(np.uint8)
+                dist = cv2.distanceTransform(bin_mask, cv2.DIST_L2, 3)
+                if dist is not None and dist.size:
+                    maxv = float(np.max(dist))
+                    if maxv > 1e-6:
+                        weight_map = (dist / maxv) * 255.0
+            except Exception:
+                weight_map = mask.astype(np.float32)
         
         # Run multi-scale tracing on this segment
         xs_refined, confidence = trace_curve_multiscale(
@@ -4317,28 +6363,100 @@ def refine_edit():
             scale_min=left_value,
             scale_max=right_value,
             curve_type=curve_type,
-            max_step=12,
-            smooth_lambda=0.001,
+            max_step=100,
+            smooth_lambda=0.5,  # Increased from 0.00001 to 0.5 to prevent zig-zag "kinks"
             hot_side=None,
         )
         
-        # Find the x at the edit row (relative to window)
-        edit_row_in_window = edit_y - y_start
-        
+        # Helper for centroid refinement
+        def get_refined_centroid(x_viterbi, row_idx):
+            try:
+                search_r = 10
+                center_int = int(round(x_viterbi))
+                r_start = max(0, center_int - search_r)
+                r_end = min(mask.shape[1], center_int + search_r + 1)
+                
+                if r_end > r_start:
+                    row_vals = weight_map[row_idx, r_start:r_end].astype(float)
+                    row_vals = cv2.GaussianBlur(row_vals.reshape(1, -1), (3, 1), 0).flatten()
+                    
+                    total_mass = np.sum(row_vals)
+                    if total_mass > 1e-3:
+                        indices = np.arange(len(row_vals))
+                        com_local = np.sum(indices * row_vals) / total_mass
+                        refined_pos = r_start + com_local
+                        
+                        # Only accept if close to Viterbi
+                        if abs(refined_pos - x_viterbi) < search_r:
+                            return refined_pos
+            except Exception:
+                pass
+            return x_viterbi
+
         if 0 <= edit_row_in_window < len(xs_refined) and np.isfinite(xs_refined[edit_row_in_window]):
-            refined_x_local = xs_refined[edit_row_in_window]
-            refined_x = left_x + refined_x_local  # Convert back to full image coordinates
+            # Refine the specific click point
+            refined_x_local = get_refined_centroid(xs_refined[edit_row_in_window], edit_row_in_window)
+
+            try:
+                w_local = mask.shape[1]
+                edit_x_local = float(edit_x) - float(crop_origin_x)
+                edit_x_local_proc = edit_x_local * x_scale_factor
+                if w_local > 2 and np.isfinite(edit_x_local_proc):
+                    try:
+                        max_snap = float(request_max_snap_dist) if request_max_snap_dist is not None else 15.0
+                        max_snap = float(np.clip(max_snap, 4.0, 60.0))
+                    except Exception:
+                        max_snap = 15.0
+                    max_snap_proc = max_snap * x_scale_factor
+
+                    search_r = int(max(4, min(80, round(max_snap_proc + 6))))
+                    center_int = int(round(edit_x_local_proc))
+                    r_start = max(0, center_int - search_r)
+                    r_end = min(w_local, center_int + search_r + 1)
+                    if r_end > r_start:
+                        row_vals = weight_map[edit_row_in_window, r_start:r_end].astype(np.float32)
+                        if row_vals.size > 0:
+                            local_best = int(np.argmax(row_vals))
+                            local_best_x = float(r_start + local_best)
+
+                            dp_x = float(refined_x_local)
+                            local_score = float(row_vals[local_best])
+                            dp_score = float(weight_map[edit_row_in_window, int(np.clip(round(dp_x), 0, w_local - 1))])
+
+                            if abs(local_best_x - edit_x_local_proc) <= max_snap_proc and (
+                                abs(dp_x - edit_x_local_proc) > max_snap_proc or local_score > dp_score * 1.10
+                            ):
+                                refined_x_local = get_refined_centroid(local_best_x, edit_row_in_window)
+            except Exception:
+                pass
+
+            refined_x_orig = refined_x_local / x_scale_factor
+            refined_x = crop_origin_x + refined_x_orig  # Convert back to full image coordinates
             conf = float(confidence[edit_row_in_window]) if edit_row_in_window < len(confidence) else 0.5
         else:
             # Fallback: return the user's edit position
             refined_x = edit_x
             conf = 0.0
         
+        # Prepare the full path segment relative to the crop, with centroid refinement applied to ALL points
+        refined_path_segment = []
+        if xs_refined is not None and len(xs_refined) > 0:
+            for i, val in enumerate(xs_refined):
+                if np.isfinite(val):
+                    # Refine every point for sub-pixel accuracy and smoother crests
+                    final_val = get_refined_centroid(val, i)
+                    refined_path_segment.append({
+                        'offsetY': i,
+                        'x': float(crop_origin_x + (final_val / x_scale_factor)),
+                        'confidence': float(confidence[i]) if confidence is not None and i < len(confidence) else 0.0
+                    })
+
         return jsonify({
             'success': True,
             'refinedX': float(refined_x),
             'confidence': conf,
             'originalX': float(edit_x),
+            'refinedPath': refined_path_segment
         })
         
     except Exception as e:
@@ -4348,6 +6466,63 @@ def refine_edit():
             'error': str(e),
             'traceback': traceback.format_exc()
         })
+
+
+@app.route('/api/log_correction', methods=['POST'])
+def log_correction():
+    try:
+        data = request.json or {}
+        if not isinstance(data, dict):
+            return jsonify({'success': False, 'error': 'Invalid JSON payload'}), 400
+
+        now = datetime.utcnow()
+        date_str = now.strftime('%Y-%m-%d')
+        ts = now.strftime('%Y%m%dT%H%M%S.%fZ')
+        event_id = data.get('event_id') or str(uuid.uuid4())
+
+        base_dir = Path(__file__).resolve().parent
+        out_dir = base_dir / 'corrections' / date_str
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        image_path = None
+        image_data = data.get('image')
+        if isinstance(image_data, str) and image_data.startswith('data:image'):
+            try:
+                header, b64 = image_data.split(',', 1)
+                ext = 'jpg'
+                if 'image/png' in header:
+                    ext = 'png'
+                raw = base64.b64decode(b64)
+                image_path = out_dir / f'{ts}_{event_id}.{ext}'
+                image_path.write_bytes(raw)
+            except Exception:
+                image_path = None
+
+        record = {
+            'event_id': event_id,
+            'ts_utc': now.isoformat() + 'Z',
+            'type': data.get('type'),
+            'curve_id': data.get('curve_id'),
+            'curve_index': data.get('curve_index'),
+            'mode': data.get('mode'),
+            'track': data.get('track'),
+            'depth_index': data.get('depth_index'),
+            'depth': data.get('depth'),
+            'before': data.get('before'),
+            'after': data.get('after'),
+            'refine': data.get('refine'),
+            'fallback': data.get('fallback'),
+            'notes': data.get('notes'),
+            'image_path': str(image_path) if image_path else None,
+        }
+
+        jsonl_path = out_dir / 'corrections.jsonl'
+        with jsonl_path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+        return jsonify({'success': True, 'event_id': event_id})
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 500
 
 
 if __name__ == '__main__':

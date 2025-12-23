@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../Tiff2Las"
+		}
+	],
+	"settings": {}
+}

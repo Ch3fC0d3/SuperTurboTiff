@@ -51,7 +51,7 @@
         .upload-area.dragover { background: #e0e7ff; border-color: #667eea; }
         #imagePreview {
             max-width: 100%;
-            border: 2px solid #ddd;
+            border: 0;
             border-radius: 8px;
             margin: 0;
             cursor: crosshair;
@@ -477,15 +477,16 @@
             border-color: #111827;
             background: rgba(15, 23, 42, 0.18);
         }
-        .track-fill-disabled .ai-track-overlay,
-        .track-fill-disabled .ai-track-overlay-red,
-        .track-fill-disabled .ai-track-overlay-blue,
-        .track-fill-disabled .ai-track-overlay-green,
-        .track-fill-disabled .ai-track-overlay-black {
+        .ai-track-overlay.track-fill-disabled,
+        .ai-track-overlay.ai-track-overlay-red.track-fill-disabled,
+        .ai-track-overlay.ai-track-overlay-blue.track-fill-disabled,
+        .ai-track-overlay.ai-track-overlay-green.track-fill-disabled,
+        .ai-track-overlay.ai-track-overlay-black.track-fill-disabled {
             background: transparent !important;
         }
         .panel-mask-overlay {
             position: absolute;
+            left: 0;
             background: #ffffff;
             opacity: 0.96;
             pointer-events: none;
@@ -586,6 +587,105 @@
             pointer-events: none;
             z-index: 30;
         }
+        /* Toolbar Styles */
+        .floating-toolbar {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            padding: 6px;
+            display: flex;
+            gap: 8px;
+            z-index: 100;
+            border: 1px solid #ddd;
+        }
+        .toolbar-group {
+            display: flex;
+            gap: 4px;
+        }
+        .toolbar-divider {
+            width: 1px;
+            background: #ddd;
+            margin: 0 4px;
+        }
+        .tool-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            width: 36px;
+            height: 36px;
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .tool-btn:hover {
+            background: #f0f4ff;
+            border-color: #dbeafe;
+        }
+        .tool-btn.active {
+            background: #e0e7ff;
+            border-color: #667eea;
+            color: #4c51bf;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+        }
+        /* Eraser Selection Box */
+        .eraser-box {
+            position: absolute;
+            border: 2px dashed #ef4444;
+            background: rgba(239, 68, 68, 0.2);
+            pointer-events: none;
+            z-index: 50;
+        }
+        /* Crosshair Styles */
+        .crosshair-line {
+            position: absolute;
+            background: rgba(255, 0, 255, 0.6);
+            pointer-events: none;
+            z-index: 90;
+        }
+        #crosshairX { height: 1px; width: 100%; left: 0; }
+        #crosshairY { width: 1px; height: 100%; top: 0; }
+        .crosshair-label {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.85);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            pointer-events: none;
+            z-index: 95;
+            white-space: nowrap;
+            transform: translate(10px, -100%);
+        }
+        .pulse-ring {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid #00ffff;
+            background: rgba(0, 255, 255, 0.1);
+            box-shadow: 0 0 10px #00ffff;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 1000;
+            animation: pulse-animation 0.5s ease-out forwards;
+        }
+        @keyframes pulse-animation {
+            0% {
+                transform: translate(-50%, -50%) scale(0.2);
+                opacity: 1;
+            }
+            100% {
+                transform: translate(-50%, -50%) scale(2.0);
+                opacity: 0;
+            }
+        }
         .mouse-tooltip {
             position: absolute;
             font-size: 10px;
@@ -653,7 +753,37 @@
             <div id="workspace" class="workspace hidden">
                 <!-- Left: log viewer -->
                 <div class="viewer-pane">
-                    <div class="viewer-frame">
+                    <div class="viewer-frame" style="position: relative;">
+                        <!-- Floating Toolbar (initially hidden, shown in Edit Mode) -->
+                        <div class="floating-toolbar hidden" id="digitizerToolbar">
+                            <div class="toolbar-group">
+                                <button class="tool-btn active" id="toolPointer" title="Pointer (Edit/Move)" onclick="setTool('pointer')">🖱️</button>
+                                <button class="tool-btn" id="toolAddPoint" title="Add Point" onclick="setTool('addPoint')">➕</button>
+                                <button class="tool-btn" id="toolEraser" title="Eraser (Box Delete)" onclick="setTool('eraser')">🧽</button>
+                                <button class="tool-btn" id="toolCrosshair" title="Smart Crosshair" onclick="toggleCrosshair()">⌖</button>
+                            </div>
+                            <div class="toolbar-divider"></div>
+                            <div class="toolbar-group">
+                                <button class="tool-btn" id="toolUndo" title="Undo Last Edit (Ctrl+Z)" onclick="undoLastCurveEdit()">↩️</button>
+                            </div>
+                            <div class="toolbar-divider"></div>
+                            <div class="toolbar-group" style="display: flex; align-items: center; padding: 0 4px;">
+                                <label style="font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; color: #333;" title="Move neighbors with drag">
+                                    <input type="checkbox" id="smoothEditToggle"> Smooth
+                                </label>
+                            </div>
+                            <div class="toolbar-divider"></div>
+                            <div class="toolbar-group">
+                                <button class="tool-btn" id="btnFilterInvert" title="Invert Colors" onclick="toggleFilter('invert')">🌗</button>
+                                <button class="tool-btn" id="btnFilterContrast" title="High Contrast" onclick="toggleFilter('contrast')">◐</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Crosshair Overlay Elements -->
+                        <div id="crosshairX" class="crosshair-line hidden"></div>
+                        <div id="crosshairY" class="crosshair-line hidden"></div>
+                        <div id="crosshairLabel" class="crosshair-label hidden"></div>
+                        
                         <div class="overlay-scroll viewer-scroll">
                             <div id="overlay">
                                 <img id="imagePreview" alt="Log preview">
@@ -667,8 +797,44 @@
                         <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(0.5)">50%</button>
                         <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="setZoom(1.0)">100%</button>
                         <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(2.0)">200%</button>
-                        <input type="range" id="zoomSlider" min="50" max="300" value="100" step="5" oninput="setZoom(this.value / 100)" style="width: 120px;" />
+                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(4.0)">400%</button>
+                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(8.0)">800%</button>
+                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(12.0)">1200%</button>
+                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(16.0)">1600%</button>
+                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(20.0)">2000%</button>
+                        <input type="range" id="zoomSlider" min="50" max="4800" value="100" step="5" oninput="setZoom(this.value / 100)" style="width: 140px;" />
                         <span id="zoomLabel" class="hint-text" style="font-size: 0.85em;">100%</span>
+                    </div>
+                    <!-- Overlay size controls -->
+                    <div class="overlay-size-controls" style="padding: 4px 12px 8px 12px; background: #f5f5f5; border-top: 1px solid #eee; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                        <label style="font-weight: 600; font-size: 0.8em;">Overlay Size:</label>
+                        <label style="font-size: 0.75em;">Line:</label>
+                        <input type="range" id="lineWidthSlider" min="0.10" max="8" value="2" step="0.05" oninput="updateOverlaySize()" style="width: 80px;" />
+                        <span id="lineWidthLabel" class="hint-text" style="font-size: 0.75em; min-width: 20px;">2</span>
+                        
+                        <label style="margin-left: 8px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="showLine" checked onchange="toggleOverlayVisibility()"> Line
+                        </label>
+
+                        <label style="font-size: 0.75em; margin-left: 12px;">Points:</label>
+                        <input type="range" id="pointSizeSlider" min="0.1" max="4" value="0.8" step="0.05" oninput="updateOverlaySize()" style="width: 80px;" />
+                        <span id="pointSizeLabel" class="hint-text" style="font-size: 0.75em; min-width: 20px;">0.8</span>
+
+                        <label style="margin-left: 8px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="showPoints" checked onchange="toggleOverlayVisibility()"> Points
+                        </label>
+
+                        <label style="margin-left: 10px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="highContrastOverlay" checked onchange="toggleOverlayVisibility()"> High contrast
+                        </label>
+
+                        <label style="margin-left: 10px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="crispOverlay" onchange="toggleOverlayVisibility()"> Crisp
+                        </label>
+
+                        <label style="margin-left: 10px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="compactOverlay" onchange="toggleOverlayVisibility()"> Compact
+                        </label>
                     </div>
                 </div>
 
@@ -787,12 +953,6 @@
                                 <div id="curvesContainer"></div>
                                 <div id="curveScaleSummary" class="hint-text" style="margin-top: 8px;"></div>
                                 <div class="form-group" style="margin-top: 8px;">
-                                    <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem;">
-                                        <input type="checkbox" id="hideTrackFillToggle">
-                                        Hide colored track fill (show dashed edges only)
-                                    </label>
-                                </div>
-                                <div class="form-group" style="margin-top: 8px;">
                                     <label>Curve summary (list view)</label>
                                     <div class="curve-list-wrapper">
                                         <div id="curveListView" class="curve-list-summary hint-text"></div>
@@ -820,10 +980,20 @@
                                         <span id="editModeStatus" class="hint-text" style="font-size: 0.8em;">Edit mode off</span>
                                     </div>
                                     <div style="display: flex; gap: 12px; align-items: center; margin-top: 6px;">
-                                        <label style="font-size: 0.8em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                                            <input type="checkbox" id="snapToCurveToggle" checked>
-                                            <span>Snap to curve (AI assist)</span>
-                                        </label>
+                                        <div style="display: flex; align-items: center; gap: 6px;">
+                                            <input type="checkbox" id="snapToCurveToggle" style="cursor: pointer; width: 16px; height: 16px;">
+                                            <label for="snapToCurveToggle" style="font-size: 0.8em; cursor: pointer;">
+                                                Snap to curve (AI assist)
+                                            </label>
+                                            <label for="snapMaxDistanceSelect" style="font-size: 0.8em; cursor: pointer;">
+                                                strength:
+                                            </label>
+                                            <select id="snapMaxDistanceSelect" style="font-size: 0.8em; padding: 2px 4px;">
+                                                <option value="8">tight</option>
+                                                <option value="15" selected>normal</option>
+                                                <option value="25">loose</option>
+                                            </select>
+                                        </div>
                                     </div>
                                     <div class="hint-text" style="font-size: 0.8em; margin-top: 4px;">
                                         Drag points to adjust. Snap-to-curve helps find the nearest colored line. Ctrl+Z to undo.
@@ -885,6 +1055,7 @@
         let lastLasContent = null;       // LAS text from last digitization
         let lastLasFilename = null;      // LAS filename from last digitization
         let zoomLevel = 1.0;             // zoom factor for the overlay/image
+        let lastZoomClampNoticeMs = 0;   // debounce for zoom clamp messaging
         let lastDepthConfig = null;      // depth config used for last digitization
         let lastNullValue = -999.25;     // null sentinel used for LAS output
         let editMode = false;            // whether curve edit mode is active
@@ -892,31 +1063,294 @@
         let editCurveDataKey = null;     // actual key in lastDigitizedCurves used for LAS data
         let editDragState = null;        // { curveId, curveKey, pointIndex, depthIndex, yImg }
         let lastCurveTraces = null;      // last curve_traces overlay returned from backend
+        let curveIndexToTraceKey = null; // { [curveIndex:number]: string } mapping from UI curve index to curve_traces key
         let editUndoStack = [];          // stack of { curveKey, idx, oldValue, oldTraceX } for Ctrl+Z
+
+        let pinnedDepthIndices = new Map();
+        let lastMouseImgX = null;
+        let lastMouseImgY = null;
+
+        function normalizeCurveKey(curveId) {
+            const key = (curveId || '').toString().trim();
+            return key ? key.toUpperCase() : '';
+        }
+
+        function getActiveCurveTraceKey() {
+            const key = editCurveDataKey || editCurveId;
+            if (!key) return null;
+            const trimmed = String(key).trim();
+            return trimmed ? trimmed : null;
+        }
+
+        function getActiveCurveTracePoints() {
+            const traceKey = getActiveCurveTraceKey();
+            if (!traceKey || !lastCurveTraces || typeof lastCurveTraces !== 'object') {
+                return { traceKey: null, points: null };
+            }
+            let pts = lastCurveTraces[traceKey];
+            if (!Array.isArray(pts)) {
+                const upper = traceKey.toUpperCase();
+                for (const key of Object.keys(lastCurveTraces)) {
+                    if (!key) continue;
+                    if (String(key).toUpperCase() === upper && Array.isArray(lastCurveTraces[key])) {
+                        return { traceKey: key, points: lastCurveTraces[key] };
+                    }
+                }
+                return { traceKey: null, points: null };
+            }
+            return { traceKey, points: pts };
+        }
+
+        function getCurrentPinKey() {
+            const traceKey = getActiveCurveTraceKey();
+            const fallback = editCurveDataKey || editCurveId;
+            const key = traceKey || fallback;
+            return key ? key : null;
+        }
+
+        // Toolbar State
+        let activeTool = 'pointer'; // 'pointer', 'eraser'
+        let crosshairEnabled = false;
+        let eraserStart = null;
+        let eraserBox = null;
+
+        function setEditModeUI() {
+            const container = document.getElementById('workspace');
+            const toolbar = document.getElementById('digitizerToolbar');
+            const btn = document.getElementById('toggleEditModeBtn');
+            const status = document.getElementById('editModeStatus');
+            const sel = document.getElementById('editCurveSelect');
+            if (editMode && editCurveId) {
+                if (container) container.classList.add('edit-mode');
+                document.body.classList.add('edit-mode-active');
+                if (toolbar) toolbar.classList.remove('hidden');
+                setTool('pointer'); // Reset to pointer on entry
+                if (btn) btn.textContent = 'Disable edit mode';
+                if (status) status.textContent = `Editing ${editCurveId}`;
+            } else {
+                if (container) container.classList.remove('edit-mode');
+                document.body.classList.remove('edit-mode-active');
+                if (toolbar) toolbar.classList.add('hidden');
+                // clear any active crosshair/eraser
+                if (crosshairEnabled) toggleCrosshair();
+                eraserStart = null;
+                if (eraserBox) { eraserBox.remove(); eraserBox = null; }
+                editDragState = null;
+                if (btn) btn.textContent = 'Enable edit mode';
+                if (status) status.textContent = 'Edit mode off';
+                if (sel) sel.value = '';
+            }
+            renderCurveListView();
+        }
+
+        function setTool(tool) {
+            activeTool = tool;
+            // Update buttons
+            ['toolPointer', 'toolAddPoint', 'toolEraser'].forEach(id => {
+                const btn = document.getElementById(id);
+                if (btn) {
+                    if (id === 'tool' + tool.charAt(0).toUpperCase() + tool.slice(1)) {
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                }
+            });
+            
+            // Cursor update
+            const overlay = document.getElementById('overlay');
+            if (overlay) {
+                if (tool === 'eraser' || tool === 'addPoint') overlay.style.cursor = 'crosshair';
+                else overlay.style.cursor = 'default';
+            }
+        }
+
+        function toggleCrosshair() {
+            crosshairEnabled = !crosshairEnabled;
+            const btn = document.getElementById('toolCrosshair');
+            const els = ['crosshairX', 'crosshairY', 'crosshairLabel'].map(id => document.getElementById(id));
+            
+            if (crosshairEnabled) {
+                if (btn) btn.classList.add('active');
+                els.forEach(el => el && el.classList.remove('hidden'));
+            } else {
+                if (btn) btn.classList.remove('active');
+                els.forEach(el => el && el.classList.add('hidden'));
+            }
+        }
+
+        function toggleFilter(type) {
+            const btn = document.getElementById(type === 'invert' ? 'btnFilterInvert' : 'btnFilterContrast');
+            if (btn) btn.classList.toggle('active');
+            updateImageFilters();
+        }
+
+        function updateImageFilters() {
+            const invertBtn = document.getElementById('btnFilterInvert');
+            const contrastBtn = document.getElementById('btnFilterContrast');
+            
+            const isInvert = invertBtn && invertBtn.classList.contains('active');
+            const isContrast = contrastBtn && contrastBtn.classList.contains('active');
+            
+            const img = document.getElementById('imagePreview');
+            if (img) {
+                let filters = [];
+                if (isInvert) filters.push('invert(1)');
+                if (isContrast) filters.push('contrast(2.0)');
+                
+                img.style.filter = filters.join(' ') || 'none';
+            }
+        }
+        
+        function updateCrosshair(xImg, yImg, rect, event) {
+            if (!crosshairEnabled) return;
+            
+            // The crosshair lines are fixed inside the relative viewer-frame.
+            // But we need to calculate where the mouse is relative to that frame.
+            const frame = document.querySelector('.viewer-frame');
+            if (!frame) return;
+            const fRect = frame.getBoundingClientRect();
+            
+            const mx = event.clientX - fRect.left;
+            const my = event.clientY - fRect.top;
+            
+            // Constrain to frame
+            if (mx < 0 || my < 0 || mx > fRect.width || my > fRect.height) return;
+            
+            const xLine = document.getElementById('crosshairX');
+            const yLine = document.getElementById('crosshairY');
+            const label = document.getElementById('crosshairLabel');
+            
+            if (xLine) xLine.style.top = `${my}px`;
+            if (yLine) yLine.style.left = `${mx}px`;
+            
+            if (label) {
+                label.style.left = `${mx + 10}px`;
+                label.style.top = `${my - 25}px`;
+                
+                // Calculate values if we have calibration
+                let text = `Y: ${Math.round(yImg)}`;
+                
+                // Find depth
+                const depthCfg = lastDepthConfig; // captured global
+                if (depthCfg && Number.isFinite(depthCfg.top_px) && Number.isFinite(depthCfg.bottom_px)) {
+                    const t = (yImg - depthCfg.top_px) / (depthCfg.bottom_px - depthCfg.top_px);
+                    const depth = depthCfg.top_depth + t * (depthCfg.bottom_depth - depthCfg.top_depth);
+                    text = `D: ${depth.toFixed(2)}`;
+                    
+                    // If near a specific curve, show its value
+                    // We can check editCurveId
+                    if (editCurveId) {
+                        const track = getTrackCalibrationsSnapshot().find(t => t.id === editCurveId);
+                        if (track) {
+                            const val = pixelToTrackValue(xImg, track);
+                            text += ` | ${track.name}: ${val.toFixed(2)}`;
+                        }
+                    }
+                }
+                
+                label.textContent = text;
+            }
+        }
 
         const DEPTH_SESSION_KEY = 'tifflas_depth_config_v1';
         const INTRO_SESSION_KEY = 'tifflas_intro_seen_v1';
 
+        function updateDisplayBaseScale() {
+            try {
+                const img = document.getElementById('imagePreview');
+                if (img) {
+                    const nw = img.naturalWidth || img.width;
+                    const nh = img.naturalHeight || img.height;
+                    if (nw) imageWidth = nw;
+                    if (nh) imageHeight = nh;
+                }
+            } catch (e) {
+            }
+        }
+
         function applyZoom() {
             const overlay = document.getElementById('overlay');
+            const img = document.getElementById('imagePreview');
+            const canvas = document.getElementById('curveCanvas');
             const label = document.getElementById('zoomLabel');
             const slider = document.getElementById('zoomSlider');
+            const z = zoomLevel || 1.0;
             if (overlay) {
                 overlay.style.transformOrigin = 'top left';
-                overlay.style.transform = `scale(${zoomLevel})`;
+                overlay.style.transform = '';
+            }
+            if (img && imageWidth && imageHeight) {
+                img.style.maxWidth = 'none';
+                img.style.width = `${Math.round(imageWidth * z)}px`;
+                img.style.height = `${Math.round(imageHeight * z)}px`;
+            }
+            if (overlay && imageWidth && imageHeight) {
+                overlay.style.width = `${Math.round(imageWidth * z)}px`;
+                overlay.style.height = `${Math.round(imageHeight * z)}px`;
+            }
+            if (canvas && imageWidth && imageHeight) {
+                canvas.style.width = `${Math.round(imageWidth * z)}px`;
+                canvas.style.height = `${Math.round(imageHeight * z)}px`;
             }
             if (label) {
                 label.textContent = `${Math.round(zoomLevel * 100)}%`;
             }
             if (slider) {
                 slider.value = String(Math.round(zoomLevel * 100));
+                try {
+                    const maxZoom = getMaxSafeZoom();
+                    slider.max = String(Math.max(Number(slider.min || 50), Math.round(maxZoom * 100)));
+                } catch (e) {
+                    // ignore
+                }
             }
+
+            try {
+                if (typeof renderDepthOverlays === 'function') renderDepthOverlays();
+                if (typeof renderPrimaryRegionOverlay === 'function') renderPrimaryRegionOverlay();
+                if (typeof renderHeaderRegionOverlay === 'function') renderHeaderRegionOverlay();
+                if (typeof refreshTrackOverlaysFromCurves === 'function') refreshTrackOverlaysFromCurves();
+                if (typeof renderLabelOverlays === 'function') renderLabelOverlays();
+            } catch (e) {
+                // ignore
+            }
+
+            if (typeof renderCurveTraceOverlays === 'function' && lastCurveTraces) {
+                try {
+                    renderCurveTraceOverlays(lastCurveTraces);
+                } catch (e) {
+                    // ignore
+                }
+            }
+        }
+
+        function getMaxSafeZoom() {
+            const minZoom = 0.5;
+            const hardMaxZoom = 20.0;
+            // Allow much higher zoom on tall logs without exploding layout width.
+            const maxCssWidth = 120000;
+            const maxCssHeight = 600000;
+            if (!imageWidth || !imageHeight) return Math.max(minZoom, hardMaxZoom);
+            const maxByW = maxCssWidth / Math.max(1, imageWidth);
+            const maxByH = maxCssHeight / Math.max(1, imageHeight);
+            const maxZoom = Math.min(hardMaxZoom, maxByW, maxByH);
+            return Math.max(minZoom, maxZoom);
         }
 
         function setZoom(value) {
             const minZoom = 0.5;
-            const maxZoom = 3.0;  // 300%
-            zoomLevel = Math.max(minZoom, Math.min(maxZoom, value));
+            const maxZoom = getMaxSafeZoom();
+            const requested = Number(value);
+            const clamped = Math.max(minZoom, Math.min(maxZoom, requested));
+            if (clamped < requested) {
+                const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+                if (now - lastZoomClampNoticeMs > 2000) {
+                    showStatus(`Zoom capped at ${Math.round(clamped * 100)}% to keep the viewer responsive.`, 'info');
+                    lastZoomClampNoticeMs = now;
+                }
+            }
+            zoomLevel = clamped;
             applyZoom();
         }
 
@@ -926,6 +1360,31 @@
 
         function resetZoom() {
             setZoom(1.0);
+        }
+
+        // Overlay size settings
+        let overlayLineWidth = 2;
+        let overlayPointSize = 0.8;
+
+        function updateOverlaySize() {
+            const lineSlider = document.getElementById('lineWidthSlider');
+            const pointSlider = document.getElementById('pointSizeSlider');
+            const lineLabel = document.getElementById('lineWidthLabel');
+            const pointLabel = document.getElementById('pointSizeLabel');
+            
+            if (lineSlider) {
+                overlayLineWidth = parseFloat(lineSlider.value);
+                if (lineLabel) lineLabel.textContent = overlayLineWidth.toFixed(2);
+            }
+            if (pointSlider) {
+                overlayPointSize = parseFloat(pointSlider.value);
+                if (pointLabel) pointLabel.textContent = overlayPointSize.toFixed(1);
+            }
+            
+            // Re-render the overlay with new sizes
+            if (lastCurveTraces) {
+                renderCurveTraceOverlays(lastCurveTraces);
+            }
         }
 
         function openIntroModal() {
@@ -1196,7 +1655,7 @@
             return leftX + frac * (rightX - leftX);
         }
 
-        function valueAtDepth1D(depth, depths, values) {
+        function valueAtDepth1D(depth, depths, values, nullSentinel) {
             if (!Array.isArray(depths) || !Array.isArray(values) ||
                 depths.length !== values.length || depths.length === 0) {
                 return null;
@@ -1216,6 +1675,9 @@
             }
             const d0 = depths[lo], d1 = depths[hi];
             const v0 = values[lo], v1 = values[hi];
+            if (v0 == null || v1 == null) return null;
+            if (typeof nullSentinel === 'number' && (v0 === nullSentinel || v1 === nullSentinel)) return null;
+            if (!Number.isFinite(v0) || !Number.isFinite(v1)) return null;
             const denom = d1 - d0;
             if (!Number.isFinite(denom) || Math.abs(denom) < 1e-6) return v0;
             const t = (depth - d0) / denom;
@@ -1229,17 +1691,21 @@
             for (let i = 0; i < numCurves; i++) {
                 const leftPxEl = document.getElementById(`leftPx${i}`);
                 const rightPxEl = document.getElementById(`rightPx${i}`);
+                const xOffsetEl = document.getElementById(`xOffset${i}`);
                 const leftValEl = document.getElementById(`leftVal${i}`);
                 const rightValEl = document.getElementById(`rightVal${i}`);
                 if (!leftPxEl || !rightPxEl || !leftValEl || !rightValEl) continue;
 
                 const leftX = parseFloat(leftPxEl.value);
                 const rightX = parseFloat(rightPxEl.value);
+                const xOffset = xOffsetEl ? (parseFloat(xOffsetEl.value) || 0) : 0;
                 const scaleMin = parseFloat(leftValEl.value);
                 const scaleMax = parseFloat(rightValEl.value);
-                if (!Number.isFinite(leftX) || !Number.isFinite(rightX) ||
+                const leftXAdj = leftX + xOffset;
+                const rightXAdj = rightX + xOffset;
+                if (!Number.isFinite(leftXAdj) || !Number.isFinite(rightXAdj) ||
                     !Number.isFinite(scaleMin) || !Number.isFinite(scaleMax) ||
-                    rightX <= leftX) {
+                    rightXAdj <= leftXAdj) {
                     continue;
                 }
 
@@ -1258,8 +1724,8 @@
                     index: i,
                     name: typeEl && typeEl.value ? typeEl.value : id,
                     displayName: nameEl && nameEl.value ? nameEl.value : '',
-                    leftX,
-                    rightX,
+                    leftX: leftXAdj,
+                    rightX: rightXAdj,
                     scaleMin,
                     scaleMax,
                     displayUnit: unitEl && unitEl.value ? unitEl.value : '',
@@ -1319,19 +1785,201 @@
             return { key: foundKey, entry: lastDigitizedCurves[foundKey] };
         }
 
-        function setEditModeUI() {
-            const btn = document.getElementById('toggleEditModeBtn');
-            const status = document.getElementById('editModeStatus');
-            const sel = document.getElementById('editCurveSelect');
-            if (!btn || !status || !sel) return;
+        function applyCurveXShiftForCurve(index) {
+            try {
+                const idx = Number(index);
+                if (!Number.isInteger(idx) || idx < 0) return;
 
-            if (editMode && editCurveId) {
-                btn.textContent = 'Disable edit mode';
-                status.textContent = `Editing ${editCurveId}`;
-            } else {
-                btn.textContent = 'Enable edit mode';
-                status.textContent = 'Edit mode off';
-                sel.value = '';
+                const shiftEl = document.getElementById(`curveShift${idx}`);
+                const deltaX = shiftEl ? (parseFloat(shiftEl.value) || 0) : 0;
+                if (!Number.isFinite(deltaX) || Math.abs(deltaX) < 1e-6) return;
+
+                const tracks = getTrackCalibrationsSnapshot();
+                if (!tracks || !tracks.length) return;
+                const track = tracks.find(t => t.index === idx);
+                if (!track || !track.id) return;
+
+                const curveId = String(track.id || '').trim();
+                if (!curveId) return;
+                if (!lastCurveTraces || typeof lastCurveTraces !== 'object') return;
+
+                const traceKey = (function () {
+                    if (curveIndexToTraceKey && curveIndexToTraceKey[idx] && lastCurveTraces[curveIndexToTraceKey[idx]]) {
+                        return curveIndexToTraceKey[idx];
+                    }
+                    if (lastCurveTraces[curveId]) return curveId;
+                    const upper = curveId.toUpperCase();
+                    const lower = curveId.toLowerCase();
+                    for (const k of Object.keys(lastCurveTraces)) {
+                        if (!k) continue;
+                        if (k === curveId || k.toUpperCase() === upper || k.toLowerCase() === lower) return k;
+                    }
+                    // Fallback: sometimes traces are keyed by curve type/name.
+                    const nameHint = String(track.name || '').trim();
+                    if (nameHint) {
+                        const u2 = nameHint.toUpperCase();
+                        const l2 = nameHint.toLowerCase();
+                        for (const k of Object.keys(lastCurveTraces)) {
+                            if (!k) continue;
+                            if (k === nameHint || k.toUpperCase() === u2 || k.toLowerCase() === l2) return k;
+                        }
+                    }
+                    return null;
+                })();
+                if (!traceKey || !lastCurveTraces[traceKey]) {
+                    showStatus(`Curve X shift failed: could not find trace data for Curve ${idx + 1}. Try running Digitize again.`, 'info');
+                    return;
+                }
+
+                const pts = lastCurveTraces[traceKey];
+                if (!Array.isArray(pts) || !pts.length) return;
+
+                if (!lastDigitizedDepth || !Array.isArray(lastDigitizedDepth) || !lastDigitizedDepth.length) return;
+                const found = findDigitizedCurveEntry(curveId) || findDigitizedCurveEntry(traceKey);
+                if (!found || !found.entry || !Array.isArray(found.entry.values)) return;
+                const entry = found.entry;
+
+                ensureTracePointsHaveDepthIndex(traceKey);
+
+                for (let i = 0; i < pts.length; i++) {
+                    const p = pts[i];
+                    if (!Array.isArray(p) || p.length < 2) continue;
+                    const oldX = Number(p[0]);
+                    if (!Number.isFinite(oldX)) continue;
+                    const newX = oldX + deltaX;
+                    p[0] = newX;
+
+                    const dIdx = Number.isInteger(p[2]) ? p[2] : null;
+                    if (dIdx != null && dIdx >= 0 && dIdx < entry.values.length) {
+                        const newVal = pixelToTrackValue(newX, track);
+                        if (Number.isFinite(newVal)) {
+                            entry.values[dIdx] = newVal;
+                        }
+                    }
+                }
+
+                lastCurveTraces[traceKey] = pts;
+                renderCurveTraceOverlays(lastCurveTraces);
+                showStatus(`Shifted curve ${curveId} by ${deltaX.toFixed(2)} px.`, 'success');
+
+                logCorrectionEvent({
+                    type: 'curve_shift_x',
+                    curve_id: curveId,
+                    curve_index: idx,
+                    mode: null,
+                    track: { leftX: track.leftX, rightX: track.rightX, leftValue: track.scaleMin, rightValue: track.scaleMax },
+                    before: null,
+                    after: null,
+                    notes: { delta_x: deltaX }
+                });
+            } catch (e) {
+                console.warn('applyCurveXShiftForCurve failed:', e);
+            }
+        }
+
+        function applyCurveYShiftForCurve(index) {
+            try {
+                const idx = Number(index);
+                if (!Number.isInteger(idx) || idx < 0) return;
+
+                const shiftEl = document.getElementById(`curveShiftY${idx}`);
+                const deltaY = shiftEl ? (parseFloat(shiftEl.value) || 0) : 0;
+                if (!Number.isFinite(deltaY) || Math.abs(deltaY) < 1e-6) return;
+
+                const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+                if (!depthCfg) return;
+                if (!lastDigitizedDepth || !Array.isArray(lastDigitizedDepth) || !lastDigitizedDepth.length) return;
+
+                const tracks = getTrackCalibrationsSnapshot();
+                if (!tracks || !tracks.length) return;
+                const track = tracks.find(t => t.index === idx);
+                if (!track || !track.id) return;
+
+                const curveId = String(track.id || '').trim();
+                if (!curveId) return;
+                if (!lastCurveTraces || typeof lastCurveTraces !== 'object') return;
+
+                const traceKey = (function () {
+                    if (curveIndexToTraceKey && curveIndexToTraceKey[idx] && lastCurveTraces[curveIndexToTraceKey[idx]]) {
+                        return curveIndexToTraceKey[idx];
+                    }
+                    if (lastCurveTraces[curveId]) return curveId;
+                    const upper = curveId.toUpperCase();
+                    const lower = curveId.toLowerCase();
+                    for (const k of Object.keys(lastCurveTraces)) {
+                        if (!k) continue;
+                        if (k === curveId || k.toUpperCase() === upper || k.toLowerCase() === lower) return k;
+                    }
+                    const nameHint = String(track.name || '').trim();
+                    if (nameHint) {
+                        const u2 = nameHint.toUpperCase();
+                        const l2 = nameHint.toLowerCase();
+                        for (const k of Object.keys(lastCurveTraces)) {
+                            if (!k) continue;
+                            if (k === nameHint || k.toUpperCase() === u2 || k.toLowerCase() === l2) return k;
+                        }
+                    }
+                    return null;
+                })();
+
+                if (!traceKey || !lastCurveTraces[traceKey]) {
+                    showStatus(`Curve Y shift failed: could not find trace data for Curve ${idx + 1}. Try running Digitize again.`, 'info');
+                    return;
+                }
+
+                const pts = lastCurveTraces[traceKey];
+                if (!Array.isArray(pts) || !pts.length) return;
+
+                const found = findDigitizedCurveEntry(curveId) || findDigitizedCurveEntry(traceKey);
+                if (!found || !found.entry || !Array.isArray(found.entry.values)) return;
+                const entry = found.entry;
+
+                ensureTracePointsHaveDepthIndex(traceKey);
+
+                const nullVal = (typeof lastNullValue === 'number') ? lastNullValue : -999.25;
+                const newValues = new Array(entry.values.length).fill(nullVal);
+
+                for (let i = 0; i < pts.length; i++) {
+                    const p = pts[i];
+                    if (!Array.isArray(p) || p.length < 2) continue;
+                    const oldX = Number(p[0]);
+                    const oldY = Number(p[1]);
+                    if (!Number.isFinite(oldX) || !Number.isFinite(oldY)) continue;
+
+                    const newY = oldY + deltaY;
+                    p[1] = newY;
+
+                    const depth = pixelToDepthFromConfig(newY, depthCfg);
+                    if (!Number.isFinite(depth)) continue;
+                    const newDepthIdx = findNearestDepthIndex(depth, lastDigitizedDepth);
+                    if (!Number.isInteger(newDepthIdx) || newDepthIdx < 0 || newDepthIdx >= newValues.length) continue;
+                    p[2] = newDepthIdx;
+
+                    const newVal = pixelToTrackValue(oldX, track);
+                    if (Number.isFinite(newVal)) {
+                        newValues[newDepthIdx] = newVal;
+                    }
+                }
+
+                // Keep trace order stable for overlay rendering
+                pts.sort((a, b) => (a[1] || 0) - (b[1] || 0));
+                lastCurveTraces[traceKey] = pts;
+                entry.values = newValues;
+                renderCurveTraceOverlays(lastCurveTraces);
+                showStatus(`Shifted curve ${curveId} by ${deltaY.toFixed(2)} px vertically.`, 'success');
+
+                logCorrectionEvent({
+                    type: 'curve_shift_y',
+                    curve_id: curveId,
+                    curve_index: idx,
+                    mode: null,
+                    track: { leftX: track.leftX, rightX: track.rightX, leftValue: track.scaleMin, rightValue: track.scaleMax },
+                    before: null,
+                    after: null,
+                    notes: { delta_y: deltaY }
+                });
+            } catch (e) {
+                console.warn('applyCurveYShiftForCurve failed:', e);
             }
         }
 
@@ -1376,6 +2024,7 @@
                 editMode = false;
                 editCurveId = null;
                 editCurveDataKey = null;
+                if (pinnedDepthIndices) pinnedDepthIndices.clear();
                 setEditModeUI();
                 showStatus('Edit mode off.', 'info');
             }
@@ -1397,7 +2046,251 @@
             return bestIdx;
         }
 
+        function ensureTracePointsHaveDepthIndex(curveId) {
+            if (!curveId) return;
+            if (!lastCurveTraces || !lastCurveTraces[curveId]) return;
+            if (!Array.isArray(lastDigitizedDepth) || !lastDigitizedDepth.length) return;
+
+            const pts = lastCurveTraces[curveId];
+            if (!Array.isArray(pts) || !pts.length) return;
+
+            const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+            if (!depthCfg) return;
+
+            for (let i = 0; i < pts.length; i++) {
+                const pt = pts[i];
+                if (!Array.isArray(pt) || pt.length < 2) continue;
+                if (Number.isInteger(pt[2]) && pt[2] >= 0) continue;
+
+                const depth = pixelToDepthFromConfig(pt[1], depthCfg);
+                if (!Number.isFinite(depth)) continue;
+                const dIdx = findNearestDepthIndex(depth, lastDigitizedDepth);
+                if (dIdx >= 0) {
+                    pt[2] = dIdx;
+                }
+            }
+        }
+
+        function findPointIndexByDepthIndex(points, depthIndex) {
+            if (!Array.isArray(points) || !Number.isInteger(depthIndex)) return -1;
+            for (let i = 0; i < points.length; i++) {
+                const pt = points[i];
+                if (Array.isArray(pt) && pt.length >= 3 && pt[2] === depthIndex) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        function resolvePinKey(curveId) {
+            const direct = normalizeCurveKey(curveId);
+            if (direct) return direct;
+            const fallback = getCurrentPinKey();
+            return fallback ? normalizeCurveKey(fallback) : null;
+        }
+
+        function findPinnedSetByKey(key) {
+            if (!key) return null;
+            let set = pinnedDepthIndices.get(key);
+            if (set) return set;
+            for (const [existingKey, existingSet] of pinnedDepthIndices.entries()) {
+                if (existingKey === key) continue;
+                if (normalizeCurveKey(existingKey) === key) {
+                    pinnedDepthIndices.delete(existingKey);
+                    pinnedDepthIndices.set(key, existingSet);
+                    return existingSet;
+                }
+            }
+            return null;
+        }
+
+        function getPinnedSetForCurve(curveId) {
+            const key = resolvePinKey(curveId);
+            if (!key) return null;
+            let set = findPinnedSetByKey(key);
+            if (!set) {
+                set = new Set();
+                pinnedDepthIndices.set(key, set);
+            }
+            return set;
+        }
+
+        function isDepthIndexPinned(curveId, depthIndex) {
+            if (!Number.isInteger(depthIndex)) return false;
+            const key = resolvePinKey(curveId);
+            if (!key) return false;
+            const set = findPinnedSetByKey(key);
+            return !!(set && set.has(depthIndex));
+        }
+
+        function setDepthIndexPinned(curveId, depthIndex, pinned) {
+            const key = resolvePinKey(curveId);
+            if (!key || !Number.isInteger(depthIndex) || depthIndex < 0) return false;
+            if (pinned) {
+                const set = getPinnedSetForCurve(key);
+                set.add(depthIndex);
+                return true;
+            }
+            const set = findPinnedSetByKey(key);
+            if (!set) return false;
+            set.delete(depthIndex);
+            if (set.size === 0) pinnedDepthIndices.delete(key);
+            return false;
+        }
+
+        function toggleDepthIndexPinned(curveId, depthIndex) {
+            const pinned = isDepthIndexPinned(curveId, depthIndex);
+            return setDepthIndexPinned(curveId, depthIndex, !pinned);
+        }
+
+        function togglePinAtImageCoords(xImg, yImg) {
+            if (!editMode || !editCurveId) return;
+            const curveId = editCurveId;
+            const pts = lastCurveTraces && lastCurveTraces[curveId];
+            if (!Array.isArray(pts) || !pts.length) return;
+
+            ensureTracePointsHaveDepthIndex(curveId);
+
+            let nearestIndex = -1;
+            let nearestDist2 = Infinity;
+            let bestUnpinnedIndex = -1;
+            let bestUnpinnedDist2 = Infinity;
+            const maxDist = 20;
+            const maxDist2 = maxDist * maxDist;
+            const unpinRadius = 6;
+            const unpinRadius2 = unpinRadius * unpinRadius;
+
+            for (let i = 0; i < pts.length; i++) {
+                const pt = pts[i];
+                if (!Array.isArray(pt) || pt.length < 2) continue;
+                const dx = pt[0] - xImg;
+                const dy = pt[1] - yImg;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < nearestDist2) {
+                    nearestDist2 = d2;
+                    nearestIndex = i;
+                }
+
+                if (d2 <= maxDist2) {
+                    const dIdx = Number.isInteger(pt[2]) ? pt[2] : -1;
+                    if (dIdx >= 0 && !isDepthIndexPinned(curveId, dIdx) && d2 < bestUnpinnedDist2) {
+                        bestUnpinnedDist2 = d2;
+                        bestUnpinnedIndex = i;
+                    }
+                }
+            }
+
+            if (nearestIndex < 0 || nearestDist2 > maxDist2) return;
+
+            let chosenIndex = nearestIndex;
+            const nearestDepthIdx = (Array.isArray(pts[nearestIndex]) && Number.isInteger(pts[nearestIndex][2])) ? pts[nearestIndex][2] : -1;
+            const nearestPinned = (nearestDepthIdx >= 0) ? isDepthIndexPinned(curveId, nearestDepthIdx) : false;
+            if (nearestPinned && nearestDist2 > unpinRadius2 && bestUnpinnedIndex >= 0) {
+                chosenIndex = bestUnpinnedIndex;
+            } else if (nearestDepthIdx < 0 && bestUnpinnedIndex >= 0) {
+                chosenIndex = bestUnpinnedIndex;
+            }
+
+            const depthIdx = (Array.isArray(pts[chosenIndex]) && Number.isInteger(pts[chosenIndex][2])) ? pts[chosenIndex][2] : -1;
+            if (!Number.isInteger(depthIdx) || depthIdx < 0) return;
+
+            const pinnedNow = toggleDepthIndexPinned(curveId, depthIdx);
+            if (lastCurveTraces) renderCurveTraceOverlays(lastCurveTraces);
+            showStatus(pinnedNow ? 'Point pinned.' : 'Point unpinned.', 'info');
+        }
+
         function handleCurveEditClick(xImg, yImg) {
+            if (!editMode || !editCurveId) return;
+            if (!lastDigitizedDepth || !lastDigitizedCurves) return;
+
+            const curveKey = editCurveDataKey || editCurveId;
+            if (!curveKey || !lastDigitizedCurves[curveKey]) return;
+
+            const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+            const depth = pixelToDepthFromConfig(yImg, depthCfg);
+            if (!Number.isFinite(depth)) return;
+            const idx = findNearestDepthIndex(depth, lastDigitizedDepth);
+            if (!Number.isInteger(idx) || idx < 0) return;
+            if (isDepthIndexPinned(editCurveId, idx)) {
+                showStatus('Point is pinned; unpin before editing.', 'info');
+                return;
+            }
+
+            const targetTrack = getTrackCalibrationsSnapshot()?.find(t => t.id === editCurveId);
+            if (!targetTrack) return;
+
+            const clampedX = Math.max(targetTrack.leftX, Math.min(targetTrack.rightX, xImg));
+            const newValue = pixelToTrackValue(clampedX, targetTrack);
+            if (!Number.isFinite(newValue)) return;
+
+            const entry = lastDigitizedCurves[curveKey];
+            if (!entry || !Array.isArray(entry.values) || idx >= entry.values.length) return;
+
+            // Save old value for undo
+            const oldValue = entry.values[idx];
+            let oldTraceX = null;
+            const pts = lastCurveTraces && lastCurveTraces[editCurveId];
+            if (Array.isArray(pts) && pts.length) {
+                ensureTracePointsHaveDepthIndex(editCurveId);
+                let bestIdxPt = findPointIndexByDepthIndex(pts, idx);
+                let bestDy = Infinity;
+                if (bestIdxPt < 0) {
+                    bestIdxPt = 0;
+                    bestDy = Math.abs(pts[0][1] - yImg);
+                    for (let i = 1; i < pts.length; i++) {
+                        const dy = Math.abs(pts[i][1] - yImg);
+                        if (dy < bestDy) { bestDy = dy; bestIdxPt = i; }
+                    }
+                } else {
+                    bestDy = Math.abs(pts[bestIdxPt][1] - yImg);
+                }
+                if (bestIdxPt >= 0 && bestDy <= 10) oldTraceX = pts[bestIdxPt][0];
+            }
+            editUndoStack.push({ curveKey, curveId: editCurveId, idx, oldValue, oldTraceX, yImg, depthIndex: idx });
+
+            entry.values[idx] = newValue;
+
+            if (!lastCurveTraces) {
+                lastCurveTraces = {};
+            }
+            let pts2 = lastCurveTraces[editCurveId];
+            if (!Array.isArray(pts2)) {
+                pts2 = [];
+            }
+
+            if (pts2.length) {
+                ensureTracePointsHaveDepthIndex(editCurveId);
+                let bestIdxPt = findPointIndexByDepthIndex(pts2, idx);
+                let bestDy = Infinity;
+                if (bestIdxPt < 0) {
+                    bestIdxPt = 0;
+                    bestDy = Math.abs(pts2[0][1] - yImg);
+                    for (let i = 1; i < pts2.length; i++) {
+                        const dy = Math.abs(pts2[i][1] - yImg);
+                        if (dy < bestDy) {
+                            bestDy = dy;
+                            bestIdxPt = i;
+                        }
+                    }
+                } else {
+                    bestDy = Math.abs(pts2[bestIdxPt][1] - yImg);
+                }
+
+                if (bestIdxPt >= 0 && bestDy <= 10) {
+                    pts2[bestIdxPt][0] = clampedX;
+                    pts2[bestIdxPt][2] = idx;
+                } else {
+                    pts2.push([clampedX, yImg, idx]);
+                }
+            } else {
+                pts2.push([clampedX, yImg, idx]);
+            }
+
+            lastCurveTraces[editCurveId] = pts2;
+            renderCurveTraceOverlays(lastCurveTraces);
+        }
+
+        function handleCurveAddPoint(xImg, yImg) {
             if (!editMode || !editCurveId) return;
             if (!lastDigitizedDepth || !lastDigitizedCurves) return;
 
@@ -1416,58 +2309,48 @@
             const targetTrack = tracks.find(t => t.id === editCurveId);
             if (!targetTrack) return;
 
-            const newValue = pixelToTrackValue(xImg, targetTrack);
+            // Clamp to track bounds so values stay within scale
+            const clampedX = Math.max(targetTrack.leftX, Math.min(targetTrack.rightX, xImg));
+            const newValue = pixelToTrackValue(clampedX, targetTrack);
             if (!Number.isFinite(newValue)) return;
 
             const entry = lastDigitizedCurves[curveKey];
             if (!entry || !Array.isArray(entry.values) || idx >= entry.values.length) return;
 
-            // Save old value for undo
             const oldValue = entry.values[idx];
-            let oldTraceX = null;
-            const pts = lastCurveTraces && lastCurveTraces[editCurveId];
-            if (Array.isArray(pts) && pts.length) {
-                let bestIdxPt = 0;
-                let bestDy = Math.abs(pts[0][1] - yImg);
-                for (let i = 1; i < pts.length; i++) {
-                    const dy = Math.abs(pts[i][1] - yImg);
-                    if (dy < bestDy) { bestDy = dy; bestIdxPt = i; }
-                }
-                if (bestDy <= 10) oldTraceX = pts[bestIdxPt][0];
-            }
-            editUndoStack.push({ curveKey, curveId: editCurveId, idx, oldValue, oldTraceX, yImg });
+
+            // For a pure "add point" operation, mark oldTraceX as null so undo removes
+            editUndoStack.push({
+                curveKey,
+                curveId: editCurveId,
+                idx,
+                oldValue,
+                oldTraceX: null,
+                yImg,
+                depthIndex: idx,
+            });
 
             entry.values[idx] = newValue;
 
             if (!lastCurveTraces) {
                 lastCurveTraces = {};
             }
-            let pts2 = lastCurveTraces[editCurveId];
-            if (!Array.isArray(pts2)) {
-                pts2 = [];
+            let pts = lastCurveTraces[editCurveId];
+            if (!Array.isArray(pts)) {
+                pts = [];
             }
 
-            if (pts2.length) {
-                let bestIdxPt = 0;
-                let bestDy = Math.abs(pts2[0][1] - yImg);
-                for (let i = 1; i < pts2.length; i++) {
-                    const dy = Math.abs(pts2[i][1] - yImg);
-                    if (dy < bestDy) {
-                        bestDy = dy;
-                        bestIdxPt = i;
-                    }
-                }
-
-                if (bestDy <= 10) {
-                    pts2[bestIdxPt][0] = xImg;
-                } else {
-                    pts2.push([xImg, yImg]);
-                }
+            ensureTracePointsHaveDepthIndex(editCurveId);
+            const existingIdx = findPointIndexByDepthIndex(pts, idx);
+            if (existingIdx >= 0) {
+                pts[existingIdx][0] = clampedX;
+                pts[existingIdx][1] = yImg;
+                pts[existingIdx][2] = idx;
             } else {
-                pts2.push([xImg, yImg]);
+                pts.push([clampedX, yImg, idx]);
             }
+            lastCurveTraces[editCurveId] = pts;
 
-            lastCurveTraces[editCurveId] = pts2;
             renderCurveTraceOverlays(lastCurveTraces);
         }
 
@@ -1503,16 +2386,24 @@
                 return;
             }
 
-            const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+            ensureTracePointsHaveDepthIndex(editCurveId);
+
             const yPoint = pts[nearestIndex][1];
-            const depth = pixelToDepthFromConfig(yPoint, depthCfg);
-            if (!Number.isFinite(depth)) {
-                return;
-            }
-            const depthIdx = findNearestDepthIndex(depth, lastDigitizedDepth);
+            const depthIdx = (Array.isArray(pts[nearestIndex]) && Number.isInteger(pts[nearestIndex][2]))
+                ? pts[nearestIndex][2]
+                : (function () {
+                    const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+                    const depth = pixelToDepthFromConfig(yPoint, depthCfg);
+                    if (!Number.isFinite(depth)) {
+                        return -1;
+                    }
+                    return findNearestDepthIndex(depth, lastDigitizedDepth);
+                })();
             if (depthIdx < 0 || depthIdx >= entry.values.length) {
                 return;
             }
+
+            setDepthIndexPinned(editCurveId, depthIdx, false);
 
             const oldValue = entry.values[depthIdx];
             const oldTraceX = pts[nearestIndex][0];
@@ -1524,6 +2415,8 @@
                 oldValue: oldValue,
                 oldTraceX: oldTraceX,
                 yImg: yPoint,
+                depthIndex: depthIdx,
+                pointIndex: nearestIndex,
             });
 
             // Set LAS value to null so LAS rebuild uses the null sentinel
@@ -1542,7 +2435,168 @@
                 return;
             }
             const last = editUndoStack.pop();
-            const { curveKey, curveId, idx, oldValue, oldTraceX, yImg } = last;
+
+            if (last.type === 'drag_group_v2') {
+                const { curveKey, curveId, points, values } = last;
+
+                if (lastDigitizedCurves && lastDigitizedCurves[curveKey] && Array.isArray(lastDigitizedCurves[curveKey].values)) {
+                    const arr = lastDigitizedCurves[curveKey].values;
+                    if (Array.isArray(values)) {
+                        values.forEach(v => {
+                            if (v && Number.isInteger(v.idx) && v.idx >= 0 && v.idx < arr.length) {
+                                arr[v.idx] = v.oldValue;
+                            }
+                        });
+                    }
+                }
+
+                if (lastCurveTraces && lastCurveTraces[curveId] && Array.isArray(points)) {
+                    const pts = lastCurveTraces[curveId];
+                    ensureTracePointsHaveDepthIndex(curveId);
+                    points.forEach(p => {
+                        if (!p || !Number.isInteger(p.oldDepthIndex)) return;
+
+                        let i = findPointIndexByDepthIndex(pts, p.oldDepthIndex);
+                        if (i < 0 && Number.isInteger(p.pointIndex)) {
+                            const candidate = p.pointIndex;
+                            if (candidate >= 0 && candidate < pts.length) i = candidate;
+                        }
+
+                        if (i >= 0 && i < pts.length) {
+                            pts[i][0] = p.oldX;
+                            pts[i][1] = p.oldY;
+                            pts[i][2] = p.oldDepthIndex;
+                        } else {
+                            pts.push([p.oldX, p.oldY, p.oldDepthIndex]);
+                        }
+                    });
+                    pts.sort((a, b) => a[1] - b[1]);
+                    renderCurveTraceOverlays(lastCurveTraces);
+                }
+
+                showStatus('Undo: restored drag.', 'info');
+                return;
+            }
+
+            // Handle Drag Group Undo (multi-point rubber-band edit)
+            if (last.type === 'drag_group') {
+                const { curveKey, curveId, neighbors } = last;
+
+                if (lastDigitizedCurves && lastDigitizedCurves[curveKey] && Array.isArray(lastDigitizedCurves[curveKey].values)) {
+                    const values = lastDigitizedCurves[curveKey].values;
+                    neighbors.forEach(n => {
+                        if (n.depthIndex >= 0 && n.depthIndex < values.length) {
+                            values[n.depthIndex] = n.oldValue;
+                        }
+                    });
+                }
+
+                if (lastCurveTraces && lastCurveTraces[curveId]) {
+                    const pts = lastCurveTraces[curveId];
+                    if (Array.isArray(pts)) {
+                        neighbors.forEach(n => {
+                            const oldX = n.oldTraceX;
+                            const oldY = n.oldY;
+
+                            if (pts[n.pointIndex]) {
+                                pts[n.pointIndex][0] = oldX;
+                                pts[n.pointIndex][1] = oldY;
+                            } else {
+                                let bestIdxPt = -1;
+                                let bestDy = Infinity;
+                                for (let i = 0; i < pts.length; i++) {
+                                    const dy = Math.abs(pts[i][1] - oldY);
+                                    if (dy < bestDy) { bestDy = dy; bestIdxPt = i; }
+                                }
+                                if (bestIdxPt >= 0 && bestDy <= 10) {
+                                    pts[bestIdxPt][0] = oldX;
+                                    pts[bestIdxPt][1] = oldY;
+                                } else {
+                                    pts.push([oldX, oldY]);
+                                }
+                            }
+                        });
+                        pts.sort((a, b) => a[1] - b[1]);
+                    }
+                    renderCurveTraceOverlays(lastCurveTraces);
+                }
+
+                showStatus(`Undo: restored drag of ${neighbors.length} points.`, 'info');
+                return;
+            }
+
+            // Handle Bulk Undo (Eraser)
+            if (last.type === 'bulk_delete') {
+                const { curveId, items } = last;
+                const curveKey = last.curveKey || editCurveDataKey || curveId;
+                
+                let restoredCount = 0;
+                
+                // Restore LAS values
+                if (lastDigitizedCurves && lastDigitizedCurves[curveKey] && Array.isArray(lastDigitizedCurves[curveKey].values)) {
+                    items.forEach(item => {
+                        lastDigitizedCurves[curveKey].values[item.idx] = item.oldValue;
+                    });
+                }
+                
+                // Restore trace points
+                if (lastCurveTraces && lastCurveTraces[curveId]) {
+                    let pts = lastCurveTraces[curveId];
+                    if (Array.isArray(pts)) {
+                        ensureTracePointsHaveDepthIndex(curveId);
+                        items.forEach(item => {
+                            const idx = (item && Number.isInteger(item.idx))
+                                ? item.idx
+                                : (item && Array.isArray(item.pt) && Number.isInteger(item.pt[2]) ? item.pt[2] : -1);
+                            const pt = (item && Array.isArray(item.pt)) ? item.pt : null;
+                            const px = (pt && Number.isFinite(pt[0])) ? pt[0] : null;
+                            const py = (pt && Number.isFinite(pt[1])) ? pt[1] : null;
+                            if (idx < 0 || px == null || py == null) return;
+
+                            const existingIdx = findPointIndexByDepthIndex(pts, idx);
+                            if (existingIdx >= 0) {
+                                pts[existingIdx][0] = px;
+                                pts[existingIdx][1] = py;
+                                pts[existingIdx][2] = idx;
+                            } else {
+                                pts.push([px, py, idx]);
+                            }
+                            restoredCount++;
+                        });
+
+                        // Sort by Y to maintain line continuity
+                        pts.sort((a, b) => a[1] - b[1]);
+
+                        // Deduplicate by depthIndex and drop near-identical duplicates
+                        const seenDepthIdx = new Set();
+                        const cleanPts = [];
+                        for (let i = 0; i < pts.length; i++) {
+                            const pt = pts[i];
+                            if (!Array.isArray(pt) || pt.length < 2) continue;
+                            const dIdx = (pt.length >= 3 && Number.isInteger(pt[2])) ? pt[2] : null;
+                            if (dIdx != null) {
+                                if (seenDepthIdx.has(dIdx)) continue;
+                                seenDepthIdx.add(dIdx);
+                            }
+                            if (cleanPts.length) {
+                                const prev = cleanPts[cleanPts.length - 1];
+                                const dx = pt[0] - prev[0];
+                                const dy = pt[1] - prev[1];
+                                if (dx * dx + dy * dy <= 1e-6) continue;
+                            }
+                            cleanPts.push(pt);
+                        }
+                        pts = cleanPts;
+                        lastCurveTraces[curveId] = pts;
+                    }
+                    renderCurveTraceOverlays(lastCurveTraces);
+                }
+                showStatus(`Undo: restored ${restoredCount} points.`, 'info');
+                return;
+            }
+
+            // Handle Single Point Undo
+            const { curveKey, curveId, idx, oldValue, oldTraceX, yImg, pointIndex } = last;
 
             // Restore the LAS value
             if (lastDigitizedCurves && lastDigitizedCurves[curveKey] && Array.isArray(lastDigitizedCurves[curveKey].values)) {
@@ -1553,21 +2607,36 @@
             if (lastCurveTraces && lastCurveTraces[curveId]) {
                 const pts = lastCurveTraces[curveId];
                 if (Array.isArray(pts) && pts.length) {
-                    // Find the point at yImg
-                    let bestIdxPt = -1;
+                    ensureTracePointsHaveDepthIndex(curveId);
+
+                    let bestIdxPt = (Number.isInteger(pointIndex) && pointIndex >= 0 && pointIndex < pts.length)
+                        ? pointIndex
+                        : findPointIndexByDepthIndex(pts, idx);
+
                     let bestDy = Infinity;
-                    for (let i = 0; i < pts.length; i++) {
-                        const dy = Math.abs(pts[i][1] - yImg);
-                        if (dy < bestDy) { bestDy = dy; bestIdxPt = i; }
+                    if (bestIdxPt < 0) {
+                        // Find the point at yImg as a last resort
+                        for (let i = 0; i < pts.length; i++) {
+                            const dy = Math.abs(pts[i][1] - yImg);
+                            if (dy < bestDy) { bestDy = dy; bestIdxPt = i; }
+                        }
+                    } else {
+                        bestDy = Math.abs(pts[bestIdxPt][1] - yImg);
                     }
                     if (bestIdxPt >= 0 && bestDy <= 10) {
                         if (oldTraceX !== null) {
                             // Restore old X
                             pts[bestIdxPt][0] = oldTraceX;
+                            pts[bestIdxPt][2] = idx;
                         } else {
                             // Point was newly added, remove it
                             pts.splice(bestIdxPt, 1);
                         }
+                    } else if (oldTraceX !== null) {
+                        // Deleted point had no current visual match; re-create it
+                        pts.push([oldTraceX, yImg, idx]);
+                        // Resort to keep order
+                        pts.sort((a, b) => a[1] - b[1]);
                     }
                 }
                 renderCurveTraceOverlays(lastCurveTraces);
@@ -1584,26 +2653,34 @@
 
             let pts = lastCurveTraces && lastCurveTraces[editCurveId];
             const entry = lastDigitizedCurves[curveKey];
-            if (!Array.isArray(pts) || !Array.isArray(entry.values)) return false;
+            if (!Array.isArray(pts) || !Array.isArray(entry.values)) {
+                return false;
+            }
 
-            // Deduplicate: keep only ONE point per Y value (the first one encountered)
-            const seenY = new Set();
-            const uniquePts = [];
-            for (let i = 0; i < pts.length; i++) {
-                const pt = pts[i];
-                if (!Array.isArray(pt) || pt.length < 2) continue;
-                const yKey = Math.round(pt[1]);
-                if (!seenY.has(yKey)) {
-                    seenY.add(yKey);
-                    uniquePts.push([pt[0], pt[1]]);
+            ensureTracePointsHaveDepthIndex(editCurveId);
+
+            // Sort by Y for sequential access (important for line drawing)
+            pts.sort((a, b) => a[1] - b[1]);
+
+            // Safe Deduplication: Remove exact duplicates or extremely close points
+            // that cause "ghost line" artifacts when one is moved.
+            // We use a very tight threshold (0.1px) so we don't merge valid dense points.
+            const cleanPts = [];
+            if (pts.length > 0) {
+                cleanPts.push(pts[0]);
+                for (let i = 1; i < pts.length; i++) {
+                    const prev = cleanPts[cleanPts.length - 1];
+                    const curr = pts[i];
+                    const dx = curr[0] - prev[0];
+                    const dy = curr[1] - prev[1];
+                    // Keep if distance > near-exact duplicate threshold
+                    if (dx*dx + dy*dy > 1e-6) { 
+                        cleanPts.push(curr);
+                    }
                 }
             }
-            // Replace the curve trace with deduplicated points
-            pts = uniquePts;
+            pts = cleanPts;
             lastCurveTraces[editCurveId] = pts;
-
-            // Sort by Y for sequential access
-            pts.sort((a, b) => a[1] - b[1]);
 
             // Find the closest point to where user clicked
             let nearestIdx = -1;
@@ -1632,10 +2709,13 @@
                 const targetTrack = tracks.find(t => t.id === editCurveId);
                 if (!targetTrack) return false;
 
-                // Build minimal neighbor set: center ±1 (3 points max)
+                // Build neighbor set with wider window for smooth Gaussian falloff
+                // Wider window (±8) prevents kinks at the boundary of the edit region
                 const neighbors = [];
                 let centerDepthIdx = -1;
-                for (let offset = -1; offset <= 1; offset++) {
+                const smoothMode = document.getElementById('smoothEditToggle')?.checked;
+                const windowRadius = smoothMode ? 8 : 3;
+                for (let offset = -windowRadius; offset <= windowRadius; offset++) {
                     const idx = nearestIdx + offset;
                     if (idx < 0 || idx >= pts.length) continue;
 
@@ -1647,6 +2727,8 @@
                     const dIdx = findNearestDepthIndex(depth, lastDigitizedDepth);
                     if (dIdx < 0 || dIdx >= entry.values.length) continue;
 
+                    pts[idx][2] = dIdx;
+
                     if (idx === nearestIdx) {
                         centerDepthIdx = dIdx;
                     }
@@ -1657,16 +2739,6 @@
                         originalX: ptX,
                         originalY: ptY,
                         originalValue: entry.values[dIdx],
-                    });
-
-                    // Save undo info
-                    editUndoStack.push({
-                        curveKey: curveKey,
-                        curveId: editCurveId,
-                        idx: dIdx,
-                        oldValue: entry.values[dIdx],
-                        oldTraceX: ptX,
-                        yImg: ptY,
                     });
                 }
 
@@ -1697,6 +2769,7 @@
         let _dragUpdatePending = false;
         let _dragPendingX = null;
         let _dragPendingY = null;
+        let _lastDragRenderMs = 0;
 
         function handleCurveEditDragMove(xImg, yImg) {
             if (!editMode || !editDragState) return;
@@ -1722,17 +2795,72 @@
                     // Update curve position and re-render live during drag
                     _doDragUpdate();
                     if (lastCurveTraces) {
-                        renderCurveTraceOverlays(lastCurveTraces);
+                        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+                        if (now - _lastDragRenderMs >= 50) {
+                            _lastDragRenderMs = now;
+                            renderCurveTraceOverlays(lastCurveTraces, { focusCurveId: editDragState.curveId, fastMode: true });
+                        }
                     }
                 }
             });
         }
         
+        // Compute a local median spacing in depth units (ft) from a sorted depth array
+        function _computeLocalDepthSpacing(depths, indices) {
+            if (!Array.isArray(depths) || depths.length < 2 || !Array.isArray(indices)) return 1.0;
+            const vals = [];
+            indices.forEach(i => {
+                if (i >= 0 && i + 1 < depths.length) {
+                    vals.push(Math.abs(depths[i + 1] - depths[i]));
+                }
+            });
+            if (!vals.length) return 1.0;
+            vals.sort((a, b) => a - b);
+            const mid = Math.floor(vals.length / 2);
+            return vals.length % 2 ? vals[mid] : 0.5 * (vals[mid - 1] + vals[mid]);
+        }
+
+        // Light local smoothing after a drag to remove kinks while preserving spikes
+        function _applyPostDragSmooth(centerIndex, pts, entry, targetTrack) {
+            if (!Array.isArray(pts) || !entry || !Array.isArray(entry.values)) return;
+            const windowRadius = 3; // total window size = 7
+            const curveId = editCurveId;
+            const smoothed = new Map();
+            for (let offset = -windowRadius; offset <= windowRadius; offset++) {
+                const idx = centerIndex + offset;
+                if (idx < 0 || idx >= pts.length) continue;
+
+                const depthIdx = (Array.isArray(pts[idx]) && Number.isInteger(pts[idx][2])) ? pts[idx][2] : -1;
+                if (curveId && isDepthIndexPinned(curveId, depthIdx)) continue;
+
+                const prevX = idx > 0 ? pts[idx - 1][0] : pts[idx][0];
+                const currX = pts[idx][0];
+                const nextX = idx + 1 < pts.length ? pts[idx + 1][0] : pts[idx][0];
+                // simple triangular kernel (0.25, 0.5, 0.25)
+                const newX = prevX * 0.25 + currX * 0.5 + nextX * 0.25;
+                smoothed.set(idx, newX);
+            }
+            smoothed.forEach((newX, idx) => {
+                const depthIdx = (Array.isArray(pts[idx]) && Number.isInteger(pts[idx][2])) ? pts[idx][2] : -1;
+                if (curveId && isDepthIndexPinned(curveId, depthIdx)) return;
+                pts[idx][0] = newX;
+                const newVal = pixelToTrackValue(newX, targetTrack);
+                if (Number.isFinite(newVal)) {
+                    const depthIdx = (Array.isArray(pts[idx]) && Number.isInteger(pts[idx][2])) ? pts[idx][2] : -1;
+                    if (depthIdx >= 0 && depthIdx < entry.values.length) entry.values[depthIdx] = newVal;
+                }
+            });
+        }
+
         function _doDragUpdate() {
-            if (!editMode || !editDragState) return;
+            if (!editMode || !editDragState) {
+                // console.log('_doDragUpdate: early return - editMode:', editMode, 'editDragState:', !!editDragState);
+                return;
+            }
             const state = editDragState;
             const xImg = state.currentX;
             const yImg = state.currentY;
+            // console.log('_doDragUpdate: xImg=', xImg, 'yImg=', yImg);
             if (xImg == null || yImg == null) return;
             const curveKey = state.curveKey || state.curveId;
             if (!curveKey || !lastDigitizedCurves || !lastDigitizedCurves[curveKey]) return;
@@ -1756,13 +2884,39 @@
             const deltaX = xImg - centerN.originalX;
             const deltaY = yImg - centerN.originalY;
 
-            // Move each neighbor with weight: center=100%, ±1=20% (very light rubber-band)
+            // Check smoothing toggle
+            const smoothMode = document.getElementById('smoothEditToggle')?.checked;
+
+            // Depth-aware Gaussian falloff: cover roughly ±5–10 ft instead of fixed point count
+            const centerDepth = Number.isFinite(centerN.depthIndex) && Array.isArray(lastDigitizedDepth)
+                ? lastDigitizedDepth[centerN.depthIndex]
+                : null;
+            const localSpacing = Array.isArray(lastDigitizedDepth)
+                ? _computeLocalDepthSpacing(lastDigitizedDepth, neighbors.map(n => n.depthIndex))
+                : 1.0;
+            // sigma in depth units (ft). Wider when smoothMode is on.
+            const sigmaDepth = smoothMode ? Math.max(5.0, localSpacing * 6.0) : Math.max(1.0, localSpacing * 2.0);
+            // Reduce Y motion when smoothing is enabled to avoid stair-steps; keep X dominant.
+            const yWeight = smoothMode ? 0.2 : 1.0;
+
+            // Move neighbors with true Gaussian falloff for kink-free edits
             neighbors.forEach(n => {
-                const dist = Math.abs(n.pointIndex - centerIndex);
-                const weight = dist === 0 ? 1.0 : 0.2;
+                if (isDepthIndexPinned(state.curveId, n.depthIndex) && n.pointIndex !== centerIndex) {
+                    return;
+                }
+                const depth = (Array.isArray(lastDigitizedDepth) && n.depthIndex >= 0 && n.depthIndex < lastDigitizedDepth.length)
+                    ? lastDigitizedDepth[n.depthIndex]
+                    : null;
+                const depthDelta = (centerDepth != null && depth != null) ? Math.abs(depth - centerDepth) : Math.abs(n.pointIndex - centerIndex) * localSpacing;
+
+                // Gaussian weight: exp(-Δdepth²/(2σ²))
+                const weight = Math.exp(-(depthDelta * depthDelta) / (2 * sigmaDepth * sigmaDepth));
+                
+                // Skip negligible weights for performance
+                if (weight < 0.01) return;
 
                 let newX = n.originalX + deltaX * weight;
-                let newY = n.originalY + deltaY * weight;
+                let newY = n.originalY + deltaY * weight * yWeight;
 
                 if (imgW > 1) {
                     newX = Math.max(0, Math.min(imgW - 1, newX));
@@ -1775,6 +2929,11 @@
                 pts[n.pointIndex][0] = newX;
                 pts[n.pointIndex][1] = newY;
 
+                // Preserve the depth index mapping for this point
+                if (Number.isInteger(n.depthIndex)) {
+                    pts[n.pointIndex][2] = n.depthIndex;
+                }
+
                 // Update LAS value (only X affects the curve value)
                 const newVal = pixelToTrackValue(newX, targetTrack);
                 if (Number.isFinite(newVal) && n.depthIndex >= 0 && n.depthIndex < entry.values.length) {
@@ -1784,59 +2943,220 @@
         }
 
         // Snap-to-curve: find the curve color in a small region around the point
-        function snapToCurveColor(xImg, yImg, trackLeftX, trackRightX) {
+        function snapToCurveColor(xImg, yImg, trackLeftX, trackRightX, opts = {}) {
             const img = document.getElementById('imagePreview');
             if (!img) return { x: xImg, y: yImg };
+            const mode = (opts.mode || '').toLowerCase();
+            const railReject = opts.railReject !== false; // default on
+            const hotSide = (opts.hotSide || '').toLowerCase(); // 'left' or 'right'
             
             // Create a temporary canvas to sample pixels
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-            ctx.drawImage(img, 0, 0);
+            // We only need a small patch, not the whole image
+            const radius = 18;
+            const patchSize = radius * 2 + 1;
+            canvas.width = patchSize;
+            canvas.height = patchSize;
             
-            // Search in a small box around the point for curve-like colors
-            // (keep fairly tight so snap stays near the user's edit)
-            const searchRadius = 12;
-            const minX = Math.max(0, Math.floor(xImg - searchRadius));
-            const maxX = Math.min(canvas.width - 1, Math.ceil(xImg + searchRadius));
-            const minY = Math.max(0, Math.floor(yImg - searchRadius));
-            const maxY = Math.min(canvas.height - 1, Math.ceil(yImg + searchRadius));
+            // Draw only the relevant slice
+            // source x, y, w, h -> dest x, y, w, h
+            const sx = Math.max(0, Math.floor(xImg - radius));
+            const sy = Math.max(0, Math.floor(yImg - radius));
+            // Ensure we don't go out of bounds (though drawImage handles clipping usually)
+            
+            ctx.drawImage(img, sx, sy, patchSize, patchSize, 0, 0, patchSize, patchSize);
+            
+            // Search in this patch
+            // Adjust search loops to be 0..patchSize
+            const localX = xImg - sx;
+            const localY = yImg - sy;
             
             let bestX = xImg, bestY = yImg;
             let bestScore = -Infinity;
+            const topCandidates = [];
+            const maxCandidates = 12;
             
-            // Look for saturated colors (curves are usually colored lines)
-            for (let y = minY; y <= maxY; y++) {
-                for (let x = minX; x <= maxX; x++) {
-                    if (x < trackLeftX || x > trackRightX) continue;
+            const pData = ctx.getImageData(0, 0, patchSize, patchSize).data;
+            
+            // Precompute a simple vertical-run mask to reject rails/annotations
+            let verticalPenalty = Array(patchSize).fill(0);
+            if (railReject) {
+                // Column energy: sum of absolute differences down the column (low variation -> rail)
+                verticalPenalty = verticalPenalty.map((_, cx) => {
+                    let runScore = 0;
+                    for (let cy = 1; cy < patchSize; cy++) {
+                        const idx1 = ((cy - 1) * patchSize + cx) * 4;
+                        const idx2 = (cy * patchSize + cx) * 4;
+                        const dR = Math.abs(pData[idx2] - pData[idx1]);
+                        const dG = Math.abs(pData[idx2 + 1] - pData[idx1 + 1]);
+                        const dB = Math.abs(pData[idx2 + 2] - pData[idx1 + 2]);
+                        runScore += dR + dG + dB;
+                    }
+                    // Normalize and invert: lower variation -> higher penalty
+                    const norm = runScore / (patchSize - 1);
+                    return norm < 20 ? 0.8 : norm < 40 ? 0.4 : 0.0; // empirical thresholds
+                });
+            }
+
+            for (let y = 0; y < patchSize; y++) {
+                for (let x = 0; x < patchSize; x++) {
+                    const absX = sx + x;
+                    const absY = sy + y;
                     
-                    const pixel = ctx.getImageData(x, y, 1, 1).data;
-                    const r = pixel[0], g = pixel[1], b = pixel[2];
+                    if (absX < trackLeftX || absX > trackRightX) continue;
+
+                    const idx = (y * patchSize + x) * 4;
+                    const r = pData[idx];
+                    const g = pData[idx + 1];
+                    const b = pData[idx + 2];
                     
-                    // Calculate saturation and darkness (curves are colored, not white/gray)
+                    // Calculate saturation and darkness
                     const max = Math.max(r, g, b);
                     const min = Math.min(r, g, b);
                     const saturation = max > 0 ? (max - min) / max : 0;
                     const brightness = max / 255;
-                    // For GR, the curve is usually greenish: reward pixels where G dominates
                     const greenBoost = Math.max(0, (g - Math.max(r, b)) / 255);
+                    const redBoost = Math.max(0, (r - Math.max(g, b)) / 255);
+                    const blueBoost = Math.max(0, (b - Math.max(r, g)) / 255);
 
-                    // Score: prefer saturated, moderately bright, slightly greenish pixels
-                    // close to the original position
-                    const distFromOriginal = Math.sqrt((x - xImg) ** 2 + (y - yImg) ** 2);
-                    const proximityBonus = 1 - distFromOriginal / (searchRadius * 1.2);
-                    const score = saturation * 2 + greenBoost * 1.5 + (1 - brightness) * 0.5 + proximityBonus * 1.5;
+                    // Hard rejects to avoid rails/annotations/white areas
+                    if (saturation < 0.18) continue;
+                    if (brightness > 0.92 || brightness < 0.02) continue;
+
+                    const distFromOriginal = Math.sqrt((x - localX) ** 2 + (y - localY) ** 2);
+                    const proximityBonus = 1 - distFromOriginal / (radius * 1.2);
+
+                    // Mode-aware boosts
+                    let hueBoost = greenBoost * 1.5;
+                    if (mode === 'red') hueBoost = redBoost * 1.5;
+                    else if (mode === 'blue') hueBoost = blueBoost * 1.5;
+                    else if (mode === 'cyan') hueBoost = Math.max(0, ((g + b) * 0.5 - r) / 255) * 1.5;
+                    else if (mode === 'magenta') hueBoost = Math.max(0, ((r + b) * 0.5 - g) / 255) * 1.5;
+                    else if (mode === 'purple') hueBoost = Math.max(0, ((r + b) * 0.5 - g) / 255) * 1.2;
+                    else if (mode === 'yellow') hueBoost = Math.max(0, ((r + g) * 0.5 - b) / 255) * 1.4;
+                    else if (mode === 'orange') hueBoost = Math.max(0, ((r * 0.8 + g * 0.2) - b) / 255) * 1.3;
+
+                    // Hot-side bias: favor the outer edge of the crest (scale max side), gentle to stay near centerline
+                    const span = Math.max(1, trackRightX - trackLeftX);
+                    const fracAcrossTrack = Math.max(0, Math.min(1, (absX - trackLeftX) / span));
+                    let hotBias = 0;
+                    const hotBiasScale = 0.0; // zero bias to stay centered on ink
+                    if (hotSide === 'right') hotBias = fracAcrossTrack * hotBiasScale;
+                    else if (hotSide === 'left') hotBias = (1 - fracAcrossTrack) * hotBiasScale;
+
+                    // Higher weight on saturation + hue dominance; light penalty on brightness to avoid white rails
+                    // Rail penalty: discourage low-variation vertical columns
+                    const railPenalty = railReject ? verticalPenalty[x] : 0;
+
+                    // Measure local horizontal edge strength to favor ink centerline over rails
+                    let edgeBoost = 0;
+                    if (x > 0) {
+                        const neighborIdx = idx - 4;
+                        edgeBoost += Math.abs(r - pData[neighborIdx]) + Math.abs(g - pData[neighborIdx + 1]) + Math.abs(b - pData[neighborIdx + 2]);
+                    }
+                    if (x + 1 < patchSize) {
+                        const neighborIdx = idx + 4;
+                        edgeBoost += Math.abs(r - pData[neighborIdx]) + Math.abs(g - pData[neighborIdx + 1]) + Math.abs(b - pData[neighborIdx + 2]);
+                    }
+                    edgeBoost = Math.min(1, edgeBoost / (255 * 4)); // normalize 0..1
+
+                    const score = saturation * 2.2 + hueBoost + (1 - brightness) * 0.4 + proximityBonus * 1.2 + hotBias + edgeBoost * 0.6 - railPenalty;
                     
-                    if (saturation > 0.3 && brightness < 0.9 && score > bestScore) {
+                    if (score > bestScore) {
                         bestScore = score;
-                        bestX = x;
-                        bestY = y;
+                        bestX = absX;
+                        bestY = absY;
+                    }
+
+                    if (score > -Infinity) {
+                        if (topCandidates.length < maxCandidates) {
+                            topCandidates.push({ score, x: absX, y: absY });
+                        } else {
+                            let weakestIdx = 0;
+                            for (let i = 1; i < topCandidates.length; i++) {
+                                if (topCandidates[i].score < topCandidates[weakestIdx].score) weakestIdx = i;
+                            }
+                            if (score > topCandidates[weakestIdx].score) {
+                                topCandidates[weakestIdx] = { score, x: absX, y: absY };
+                            }
+                        }
                     }
                 }
             }
             
+            if (topCandidates.length) {
+                let sumScore = 0;
+                let accumX = 0;
+                let accumY = 0;
+                topCandidates.forEach((c) => {
+                    const w = Math.max(0.0001, c.score - (bestScore - 1.2)); // damp very low scorers
+                    sumScore += w;
+                    accumX += c.x * w;
+                    accumY += c.y * w;
+                });
+                if (sumScore > 0) {
+                    const avgX = accumX / sumScore;
+                    const avgY = accumY / sumScore;
+                    bestX = Math.max(trackLeftX, Math.min(trackRightX, avgX));
+                    bestY = avgY;
+                }
+            }
+
             return { x: bestX, y: bestY };
+        }
+
+        function showSnapPulse(xImg, yImg) {
+            const overlay = document.getElementById('overlay');
+            const img = document.getElementById('imagePreview');
+            if (!overlay || !img || !imageWidth || !imageHeight) return;
+            
+            const rect = img.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+            
+            // Convert image coords to DOM coords
+            // NOTE: The overlay CSS transform scales it, but here we are appending
+            // direct children to overlay. If overlay is scaled, children are scaled too.
+            // But our coordinate system logic (renderCurveTraceOverlays) does:
+            // xDom = xImg * (baseWidth / w)
+            // Let's reuse that scale factor.
+            
+            // Logic from renderCurveTraceOverlays:
+            // const z = zoomLevel || 1.0;
+            // const baseWidth = rect.width / z;
+            // const scaleX = baseWidth / imageWidth;
+            // But simpler: The overlay div is the container. Its size is "baseWidth".
+            // We just need % or px relative to that.
+            
+            // Simpler approach: use percentage which is scale-agnostic
+            const leftPct = (xImg / (imageWidth - 1)) * 100;
+            const topPct = (yImg / (imageHeight - 1)) * 100;
+            
+            const pulse = document.createElement('div');
+            pulse.className = 'pulse-ring';
+            pulse.style.left = `${leftPct}%`;
+            pulse.style.top = `${topPct}%`;
+            
+            overlay.appendChild(pulse);
+            
+            // Remove after animation
+            setTimeout(() => {
+                if (pulse.parentNode) pulse.remove();
+            }, 600);
+        }
+
+        function logCorrectionEvent(payload) {
+            try {
+                if (!payload || typeof payload !== 'object') return;
+                fetch('/api/log_correction', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                    keepalive: true,
+                }).catch(() => { /* ignore */ });
+            } catch (e) {
+                // ignore
+            }
         }
 
         // Apply snap-to-curve after drag ends using backend multi-scale detection
@@ -1847,6 +3167,14 @@
             if (!tracks || !tracks.length) return;
             const targetTrack = tracks.find(t => t.id === state.curveId);
             if (!targetTrack) return;
+            const trackModeForSnap = (function () {
+                try {
+                    const idx = targetTrack.index;
+                    const modeEl = document.getElementById(`mode${idx}`);
+                    if (modeEl && modeEl.value) return String(modeEl.value).toLowerCase();
+                } catch (e) { /* ignore */ }
+                return targetTrack.mode || 'green';
+            })();
             
             const curveKey = state.curveKey || state.curveId;
             if (!lastDigitizedCurves || !lastDigitizedCurves[curveKey]) return;
@@ -1854,10 +3182,48 @@
             
             if (!lastCurveTraces || !lastCurveTraces[state.curveId]) return;
             const pts = lastCurveTraces[state.curveId];
-            
-            const pIdx = state.pointIndex;
+
+            ensureTracePointsHaveDepthIndex(state.curveId);
+
+            const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+            let depthIndex = Number.isInteger(state.depthIndex) ? state.depthIndex : null;
+
+            if (!Number.isInteger(depthIndex)) {
+                const candidateIdx = state.pointIndex;
+                if (candidateIdx != null && candidateIdx >= 0 && candidateIdx < pts.length && Array.isArray(pts[candidateIdx])) {
+                    const d = pts[candidateIdx][2];
+                    if (Number.isInteger(d) && d >= 0) depthIndex = d;
+                }
+            }
+
+            if (!Number.isInteger(depthIndex) && depthCfg) {
+                const candidateIdx = state.pointIndex;
+                if (candidateIdx != null && candidateIdx >= 0 && candidateIdx < pts.length && Array.isArray(pts[candidateIdx])) {
+                    const y = pts[candidateIdx][1];
+                    const depth = pixelToDepthFromConfig(y, depthCfg);
+                    if (Number.isFinite(depth) && Array.isArray(lastDigitizedDepth)) {
+                        depthIndex = findNearestDepthIndex(depth, lastDigitizedDepth);
+                    }
+                }
+            }
+
+            let pIdx = (Number.isInteger(depthIndex) && depthIndex >= 0)
+                ? findPointIndexByDepthIndex(pts, depthIndex)
+                : -1;
+            if (pIdx < 0) {
+                pIdx = state.pointIndex;
+            }
             if (pIdx == null || pIdx < 0 || pIdx >= pts.length) return;
-            
+
+            if (!Number.isInteger(depthIndex) && Array.isArray(pts[pIdx]) && Number.isInteger(pts[pIdx][2])) {
+                depthIndex = pts[pIdx][2];
+            }
+            if (!Number.isInteger(depthIndex)) return;
+
+            if (isDepthIndexPinned(state.curveId, depthIndex)) {
+                return;
+            }
+
             const currentX = pts[pIdx][0];
             const currentY = pts[pIdx][1];
             
@@ -1865,7 +3231,7 @@
             const img = document.getElementById('imagePreview');
             if (!img || !img.src) {
                 // Fallback to simple color snap
-                const snapped = snapToCurveColor(currentX, currentY, targetTrack.leftX, targetTrack.rightX);
+                const snapped = snapToCurveColor(currentX, currentY, targetTrack.leftX, targetTrack.rightX, { mode: trackModeForSnap });
                 if (snapped.x !== currentX) {
                     pts[pIdx][0] = snapped.x;
                     const newVal = pixelToTrackValue(snapped.x, targetTrack);
@@ -1876,61 +3242,227 @@
                 return;
             }
             
+            // --- Optimization: Client-side crop ---
+            // Extract a small image slice (track width x 60px height) to send to backend
+            // This avoids sending the full 20MB+ image for a single point edit.
+            
+            const winSize = 160; // more vertical context improves path stability on noisy/thick ink
+            const halfWin = winSize / 2;
+            
+            // Bounds for the crop
+            const cropLeft = Math.max(0, Math.floor(targetTrack.leftX));
+            const cropRight = Math.min(imageWidth || img.naturalWidth, Math.ceil(targetTrack.rightX));
+            const cropTop = Math.max(0, Math.floor(currentY - halfWin));
+            const cropBottom = Math.min(imageHeight || img.naturalHeight, Math.ceil(currentY + halfWin));
+            
+            const cropW = cropRight - cropLeft;
+            const cropH = cropBottom - cropTop;
+            
+            if (cropW <= 0 || cropH <= 0) return;
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = cropW;
+            canvas.height = cropH;
+            const ctx = canvas.getContext('2d');
+            
+            // Draw the slice from the source image
+            ctx.drawImage(img, 
+                cropLeft, cropTop, cropW, cropH, 
+                0, 0, cropW, cropH
+            );
+            
+            const usePngCrop = trackModeForSnap !== 'black';
+            const cropDataUrl = usePngCrop ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.85);
+            
+            // Calculate relative Y of the edit point within this crop
+            const relativeEditY = Math.round(currentY - cropTop);
+
+            const invertBtn = document.getElementById('btnFilterInvert');
+            const contrastBtn = document.getElementById('btnFilterContrast');
+            const uiFilters = {
+                invert: !!(invertBtn && invertBtn.classList.contains('active')),
+                contrast: !!(contrastBtn && contrastBtn.classList.contains('active')),
+            };
+
+            const distSelectForReq = document.getElementById('snapMaxDistanceSelect');
+            const selectedDistForReq = distSelectForReq ? Number(distSelectForReq.value) : 15;
+            const requestMaxSnapDist = Math.min(Math.max(selectedDistForReq || 15, 4), 40);
+
             // Call backend for multi-scale refinement
             try {
                 const response = await fetch('/refine_edit', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        image: img.src,
+                        image: cropDataUrl,
+                        isCrop: true,
+                        cropOriginX: cropLeft,
+                        editRelativeY: relativeEditY,
+                        uiFilters: uiFilters,
+                        maxSnapDist: requestMaxSnapDist,
                         track: {
                             leftX: targetTrack.leftX,
                             rightX: targetTrack.rightX,
-                            leftValue: targetTrack.leftValue,
-                            rightValue: targetTrack.rightValue,
+                            leftValue: targetTrack.scaleMin,
+                            rightValue: targetTrack.scaleMax,
                         },
-                        editY: Math.round(currentY),
+                        editY: Math.round(currentY), // Sent for reference/fallback
                         editX: currentX,
-                        windowSize: 60,  // 60px vertical window around edit
-                        curveType: targetTrack.curveType || 'GR',
-                        mode: targetTrack.mode || 'green',
+                        windowSize: winSize,
+                        curveType: (function () {
+                            try {
+                                const idx = targetTrack.index;
+                                const typeEl = document.getElementById(`type${idx}`);
+                                if (typeEl && typeEl.value) return String(typeEl.value).toUpperCase();
+                            } catch (e) { /* ignore */ }
+                            return (targetTrack.name || targetTrack.id || 'GR');
+                        })(),
+                        mode: trackModeForSnap,
                     }),
                 });
                 
                 const result = await response.json();
                 
                 if (result.success && Number.isFinite(result.refinedX)) {
-                    // Only apply if confidence is reasonable and position changed
+                    // Only apply if confidence is reasonable AND the suggested
+                    // snap is close to where the user actually dropped the
+                    // point. This prevents the backend from yanking large
+                    // manual edits back onto the original curve.
                     const refinedX = result.refinedX;
                     const conf = result.confidence || 0;
-                    
-                    // Apply refinement if confidence > 0.1 or if it's close to user's position
                     const dist = Math.abs(refinedX - currentX);
-                    if (conf > 0.1 || dist < 15) {
+
+                    // User-tunable snap distance (center point)
+                    const distSelect = document.getElementById('snapMaxDistanceSelect');
+                    const selectedDist = distSelect ? Number(distSelect.value) : 15;
+                    const maxSnapDist = Math.min(Math.max(selectedDist || 15, 4), 40); // clamp 4..40
+                    const minConf = 0.24;   // slightly more permissive; final gate still checks distance
+                    const closeDist = 3;    // always accept very-close refinements
+
+                    const neighborMaxDist = (function (mode) {
+                        if (mode === 'red') return 5;
+                        if (mode === 'blue' || mode === 'green') return 6;
+                        return 7;
+                    })(trackModeForSnap);
+
+                    if ((conf >= minConf || dist <= closeDist) && dist <= maxSnapDist) {
+                        const beforeX = currentX;
+                        const beforeY = currentY;
                         pts[pIdx][0] = refinedX;
+                        pts[pIdx][2] = depthIndex;
                         
+                        // Show visual feedback
+                        showSnapPulse(refinedX, currentY);
+
                         // Update the LAS value
                         const newVal = pixelToTrackValue(refinedX, targetTrack);
-                        if (Number.isFinite(newVal) && state.depthIndex >= 0 && state.depthIndex < entry.values.length) {
-                            entry.values[state.depthIndex] = newVal;
+                        if (Number.isFinite(newVal) && depthIndex >= 0 && depthIndex < entry.values.length) {
+                            entry.values[depthIndex] = newVal;
                         }
+
+                        logCorrectionEvent({
+                            type: 'snap_ai',
+                            curve_id: targetTrack.id,
+                            curve_index: targetTrack.index,
+                            mode: trackModeForSnap,
+                            track: { leftX: targetTrack.leftX, rightX: targetTrack.rightX, leftValue: targetTrack.scaleMin, rightValue: targetTrack.scaleMax },
+                            depth_index: depthIndex,
+                            before: { x: beforeX, y: beforeY },
+                            after: { x: refinedX, y: currentY },
+                            refine: { refinedX: refinedX, confidence: conf, dist: dist },
+                            image: cropDataUrl,
+                        });
                         
-                        // Re-render to show the refined position
-                        if (lastCurveTraces) {
-                            renderCurveTraceOverlays(lastCurveTraces);
+                        // NEW: Snap neighbors using the returned path segment
+                        // This ensures "lines between points go on the existing lines"
+                        if (result.refinedPath && Array.isArray(result.refinedPath)) {
+                            const maxNeighborDY = 35; // only adjust local neighborhood around the edit
+                            const neighborMinConf = Math.max(minConf, 0.30);
+                            result.refinedPath.forEach(pt => {
+                                // pt is { offsetY, x, confidence }
+                                if (pt.confidence < neighborMinConf) return;
+                                
+                                const absY = cropTop + pt.offsetY;
+                                if (Math.abs(absY - currentY) > maxNeighborDY) return;
+                                const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+                                if (!depthCfg || !Array.isArray(lastDigitizedDepth) || !lastDigitizedDepth.length) return;
+
+                                const neighborDepthIdx = (function () {
+                                    const depth = pixelToDepthFromConfig(absY, depthCfg);
+                                    if (!Number.isFinite(depth)) return -1;
+                                    return findNearestDepthIndex(depth, lastDigitizedDepth);
+                                })();
+                                if (neighborDepthIdx < 0) return;
+
+                                if (isDepthIndexPinned(state.curveId, neighborDepthIdx)) return;
+
+                                const neighborIdx = findPointIndexByDepthIndex(pts, neighborDepthIdx);
+                                if (neighborIdx >= 0 && neighborIdx !== pIdx) {
+                                    if (Math.abs(pts[neighborIdx][0] - pt.x) <= neighborMaxDist) {
+                                        pts[neighborIdx][0] = pt.x;
+                                        pts[neighborIdx][2] = neighborDepthIdx;
+
+                                        const nVal = pixelToTrackValue(pt.x, targetTrack);
+                                        if (Number.isFinite(nVal) && neighborDepthIdx < entry.values.length) {
+                                            entry.values[neighborDepthIdx] = nVal;
+                                        }
+                                    }
+                                }
+                            });
                         }
+                    }
+                } else {
+                    console.warn('Backend refine_edit returned no refinement');
+                    // Fallback to simple color snap
+                    const snapped = snapToCurveColor(currentX, currentY, targetTrack.leftX, targetTrack.rightX, { mode: trackModeForSnap });
+                    if (snapped.x !== currentX) {
+                        const beforeX = currentX;
+                        const beforeY = currentY;
+                        pts[pIdx][0] = snapped.x;
+                        const newVal = pixelToTrackValue(snapped.x, targetTrack);
+                        if (Number.isFinite(newVal) && depthIndex >= 0 && depthIndex < entry.values.length) {
+                            entry.values[depthIndex] = newVal;
+                        }
+
+                        logCorrectionEvent({
+                            type: 'snap_fallback_no_refine',
+                            curve_id: targetTrack.id,
+                            curve_index: targetTrack.index,
+                            mode: trackModeForSnap,
+                            track: { leftX: targetTrack.leftX, rightX: targetTrack.rightX, leftValue: targetTrack.scaleMin, rightValue: targetTrack.scaleMax },
+                            depth_index: depthIndex,
+                            before: { x: beforeX, y: beforeY },
+                            after: { x: snapped.x, y: currentY },
+                            fallback: { reason: 'backend_no_refinement' },
+                            image: cropDataUrl,
+                        });
                     }
                 }
             } catch (err) {
                 console.warn('Refine edit failed, using simple snap:', err);
                 // Fallback to simple color snap
-                const snapped = snapToCurveColor(currentX, currentY, targetTrack.leftX, targetTrack.rightX);
+                const snapped = snapToCurveColor(currentX, currentY, targetTrack.leftX, targetTrack.rightX, { mode: trackModeForSnap });
                 if (snapped.x !== currentX) {
+                    const beforeX = currentX;
+                    const beforeY = currentY;
                     pts[pIdx][0] = snapped.x;
                     const newVal = pixelToTrackValue(snapped.x, targetTrack);
-                    if (Number.isFinite(newVal) && state.depthIndex >= 0 && state.depthIndex < entry.values.length) {
-                        entry.values[state.depthIndex] = newVal;
+                    if (Number.isFinite(newVal) && depthIndex >= 0 && depthIndex < entry.values.length) {
+                        entry.values[depthIndex] = newVal;
                     }
+
+                    logCorrectionEvent({
+                        type: 'snap_fallback_exception',
+                        curve_id: targetTrack.id,
+                        curve_index: targetTrack.index,
+                        mode: trackModeForSnap,
+                        track: { leftX: targetTrack.leftX, rightX: targetTrack.rightX, leftValue: targetTrack.scaleMin, rightValue: targetTrack.scaleMax },
+                        depth_index: depthIndex,
+                        before: { x: beforeX, y: beforeY },
+                        after: { x: snapped.x, y: currentY },
+                        fallback: { reason: 'exception', message: String(err && err.message ? err.message : err) },
+                        image: cropDataUrl,
+                    });
                 }
             }
         }
@@ -2045,21 +3577,6 @@
             numCurvesInputEl.addEventListener('input', clampAndRegenerateCurves);
         }
 
-        const hideTrackFillToggle = document.getElementById('hideTrackFillToggle');
-        if (hideTrackFillToggle) {
-            const overlayRoot = document.getElementById('overlay');
-            const applyTrackFillToggle = () => {
-                if (!overlayRoot) return;
-                if (hideTrackFillToggle.checked) {
-                    overlayRoot.classList.add('track-fill-disabled');
-                } else {
-                    overlayRoot.classList.remove('track-fill-disabled');
-                }
-            };
-            hideTrackFillToggle.addEventListener('change', applyTrackFillToggle);
-            applyTrackFillToggle();
-        }
-
         // Depth anchor & panel/region interaction on image
         const imagePreview = document.getElementById('imagePreview');
         const imageHitTarget = document.getElementById('overlay') || imagePreview;
@@ -2099,6 +3616,9 @@
             const xImg = Math.round(xNorm * (imageWidth - 1));
             const yImg = Math.round(yNorm * (imageHeight - 1));
 
+            lastMouseImgX = xImg;
+            lastMouseImgY = yImg;
+
             const depthCfg = getDepthConfigFromInputs();
             const depth = pixelToDepthFromConfig(yImg, depthCfg);
 
@@ -2130,7 +3650,8 @@
                             value = valueAtDepth1D(
                                 depth,
                                 lastDigitizedDepth,
-                                found.entry.values
+                                found.entry.values,
+                                lastNullValue
                             );
                         }
                     }
@@ -2175,11 +3696,32 @@
             }
         });
 
+        const viewerScrollEl = document.querySelector('.viewer-scroll');
+        let _curveOverlayRaf = null;
+        function scheduleCurveOverlayRedraw(optsFactory) {
+            if (!lastCurveTraces) return;
+            if (_curveOverlayRaf) return;
+            _curveOverlayRaf = window.requestAnimationFrame(() => {
+                _curveOverlayRaf = null;
+                if (!lastCurveTraces) return;
+                const opts = typeof optsFactory === 'function' ? optsFactory() : optsFactory;
+                renderCurveTraceOverlays(lastCurveTraces, opts);
+            });
+        }
+        if (viewerScrollEl) viewerScrollEl.addEventListener('scroll', () => {
+            scheduleCurveOverlayRedraw(() => (editMode && editCurveId)
+                ? { focusCurveId: editCurveId, fastMode: true }
+                : undefined);
+        }, { passive: true });
+        window.addEventListener('resize', () => scheduleCurveOverlayRedraw());
+
         // Marquee-style panel selection (click-drag-release) and curve edge picking
-        if (imageHitTarget) imageHitTarget.addEventListener('mousedown', (event) => {
+        if (imageHitTarget) imageHitTarget.addEventListener('dblclick', (event) => {
+            if (!editMode || !editCurveId) return;
             if (!imageWidth || !imageHeight || !imagePreview) return;
 
-            const rect = imagePreview.getBoundingClientRect();
+            const overlay = document.getElementById('overlay');
+            const rect = overlay ? overlay.getBoundingClientRect() : imagePreview.getBoundingClientRect();
             if (!rect.width || !rect.height) return;
 
             const x = event.clientX - rect.left;
@@ -2189,22 +3731,65 @@
             const xImg = Math.round(xNorm * (imageWidth - 1));
             const yImg = Math.round(yNorm * (imageHeight - 1));
 
+            togglePinAtImageCoords(xImg, yImg);
+            event.preventDefault();
+            event.stopPropagation();
+        });
+
+        if (imageHitTarget) imageHitTarget.addEventListener('mousedown', (event) => {
+            if (!imageWidth || !imageHeight || !imagePreview) return;
+
+            const overlay = document.getElementById('overlay');
+            const rect = overlay ? overlay.getBoundingClientRect() : imagePreview.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            // Account for zoom
+            const xNorm = Math.max(0, Math.min(1, x / rect.width));
+            const yNorm = Math.max(0, Math.min(1, y / rect.height));
+            const xImg = Math.round(xNorm * (imageWidth - 1));
+            const yImg = Math.round(yNorm * (imageHeight - 1));
+
             // When edit mode is enabled, clicks/drag adjust the selected curve
             // instead of starting new selections.
             if (editMode && editCurveId) {
                 if (event.button === 2) {
-                    // Right-click: delete nearest point
-                    handleCurveEditDelete(xImg, yImg);
-                } else if (event.button === 0) {
-                    // Left-click: start drag / nudge
-                    beginCurveEditInteraction(xImg, yImg);
+                    return;
+                }
+                // ERASER TOOL
+                if (activeTool === 'eraser' && event.button === 0) {
+                    eraserStart = { x: xImg, y: yImg, clientX: event.clientX, clientY: event.clientY };
+                    eraserBox = document.createElement('div');
+                    eraserBox.className = 'eraser-box';
+                    // Box is relative to overlay
+                    // Initial pos
+                    const leftPct = (xImg / imageWidth) * 100;
+                    const topPct = (yImg / imageHeight) * 100;
+                    eraserBox.style.left = `${leftPct}%`;
+                    eraserBox.style.top = `${topPct}%`;
+                    eraserBox.style.width = '0';
+                    eraserBox.style.height = '0';
+                    if (overlay) overlay.appendChild(eraserBox);
+                    
+                    event.preventDefault();
+                    return;
+                }
+                if (event.button === 0) {
+                    // Left-click: behavior depends on active tool
+                    if (activeTool === 'pointer') {
+                        // Start drag / nudge
+                        beginCurveEditInteraction(xImg, yImg);
+                    } else if (activeTool === 'addPoint') {
+                        // Explicitly add a control point at this bend
+                        handleCurveAddPoint(xImg, yImg);
+                    }
                 }
                 // Always block selection starts when edit mode is on
                 event.preventDefault();
                 return;
             }
 
-            // If user is in "pick curve edge" mode, set that curve's left/right X and exit.
             if (curveEdgePick && Number.isFinite(xImg)) {
                 const idx = curveEdgePick.curveIndex;
                 const edge = curveEdgePick.edge;
@@ -2246,26 +3831,52 @@
 
         // Track marquee drag while mouse is down
         document.addEventListener('mousemove', (event) => {
-            if (editMode && editDragState && imageWidth && imageHeight && imagePreview) {
-                const rect = imagePreview.getBoundingClientRect();
-                if (!rect.width || !rect.height) return;
-                const x = event.clientX - rect.left;
-                const y = event.clientY - rect.top;
-                const xNorm = Math.max(0, Math.min(1, x / rect.width));
-                const yNorm = Math.max(0, Math.min(1, y / rect.height));
-                const xImg = Math.round(xNorm * (imageWidth - 1));
-                const yImg = Math.round(yNorm * (imageHeight - 1));
-                handleCurveEditDragMove(xImg, yImg);
+            const overlay = document.getElementById('overlay');
+            const img = document.getElementById('imagePreview');
+            const rect = overlay ? overlay.getBoundingClientRect() : (img ? img.getBoundingClientRect() : null);
+            
+            if (!rect || !rect.width || !rect.height || !imageWidth || !imageHeight) return;
+
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            const xNorm = Math.max(0, Math.min(1, x / rect.width));
+            const yNorm = Math.max(0, Math.min(1, y / rect.height));
+            const xImg = Math.round(xNorm * (imageWidth - 1));
+            const yImg = Math.round(yNorm * (imageHeight - 1));
+            
+            // Update crosshair
+            updateCrosshair(xImg, yImg, rect, event);
+            
+            // Handle Eraser Drag
+            if (eraserStart && eraserBox) {
+                const x1 = Math.min(eraserStart.x, xImg);
+                const x2 = Math.max(eraserStart.x, xImg);
+                const y1 = Math.min(eraserStart.y, yImg);
+                const y2 = Math.max(eraserStart.y, yImg);
+                
+                const leftPct = (x1 / imageWidth) * 100;
+                const topPct = (y1 / imageHeight) * 100;
+                const wPct = ((x2 - x1) / imageWidth) * 100;
+                const hPct = ((y2 - y1) / imageHeight) * 100;
+                
+                eraserBox.style.left = `${leftPct}%`;
+                eraserBox.style.top = `${topPct}%`;
+                eraserBox.style.width = `${wPct}%`;
+                eraserBox.style.height = `${hPct}%`;
+                
                 event.preventDefault();
                 return;
             }
 
-            if (trackOverlayDrag && imageWidth && imageHeight && imagePreview) {
-                const rect = imagePreview.getBoundingClientRect();
-                if (!rect.width || !rect.height) return;
-                const x = event.clientX - rect.left;
-                const xNorm = Math.max(0, Math.min(1, x / rect.width));
-                const xImg = Math.round(xNorm * (imageWidth - 1));
+            if (editMode && editDragState) {
+                // Reuse calculated coords
+                handleCurveEditDragMove(xImg, yImg);
+                event.preventDefault();
+                return;
+            }
+            
+            // Existing logic for other drags
+            if (trackOverlayDrag) {
                 const idx = trackOverlayDrag.curveIndex;
                 const edge = trackOverlayDrag.edge;
                 const inputId = edge === 'right' ? `rightPx${idx}` : `leftPx${idx}`;
@@ -2279,17 +3890,7 @@
             }
 
             // Handle header selection drag
-            if (headerRegionDrag && headerSelectMode && headerRegionStart && imageWidth && imageHeight) {
-                const rect = imagePreview.getBoundingClientRect();
-                if (!rect.width || !rect.height) return;
-
-                const x = event.clientX - rect.left;
-                const y = event.clientY - rect.top;
-                const xNorm = Math.max(0, Math.min(1, x / rect.width));
-                const yNorm = Math.max(0, Math.min(1, y / rect.height));
-                const xImg = Math.round(xNorm * (imageWidth - 1));
-                const yImg = Math.round(yNorm * (imageHeight - 1));
-
+            if (headerRegionDrag && headerSelectMode && headerRegionStart) {
                 const left = Math.min(headerRegionStart.x, xImg);
                 const right = Math.max(headerRegionStart.x, xImg);
                 const top = Math.min(headerRegionStart.y, yImg);
@@ -2307,38 +3908,25 @@
             }
 
             // Handle panel selection drag
-            if (!primaryRegionDrag.active || primaryRegionDrag.edge !== 'marquee') return;
-            if (!panelSelectMode || !panelSelectStart || !imageWidth || !imageHeight) return;
+            if (primaryRegionDrag.active && primaryRegionDrag.edge === 'marquee' && panelSelectMode && panelSelectStart) {
+                const left = Math.min(panelSelectStart.x, xImg);
+                const right = Math.max(panelSelectStart.x, xImg);
+                const top = Math.min(panelSelectStart.y, yImg);
+                const bottom = Math.max(panelSelectStart.y, yImg);
 
-            const rect = imagePreview.getBoundingClientRect();
-            if (!rect.width || !rect.height) return;
+                primaryRegion = {
+                    left_px: left,
+                    right_px: right,
+                    top_px: top,
+                    bottom_px: bottom,
+                    track_indices: []
+                };
 
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
-            const xNorm = Math.max(0, Math.min(1, x / rect.width));
-            const yNorm = Math.max(0, Math.min(1, y / rect.height));
-            const xImg = Math.round(xNorm * (imageWidth - 1));
-            const yImg = Math.round(yNorm * (imageHeight - 1));
-
-            const left = Math.min(panelSelectStart.x, xImg);
-            const right = Math.max(panelSelectStart.x, xImg);
-            const top = Math.min(panelSelectStart.y, yImg);
-            const bottom = Math.max(panelSelectStart.y, yImg);
-
-            // Panel selection defines a full box in image pixels. We store both
-            // horizontal and vertical extents on primaryRegion so cropping can
-            // use the exact box, but we do NOT overwrite the depth inputs.
-            primaryRegion = {
-                left_px: left,
-                right_px: right,
-                top_px: top,
-                bottom_px: bottom,
-                track_indices: []
-            };
-
-            renderPrimaryRegionOverlay();
-            updateSelectionSummary();
+                renderPrimaryRegionOverlay();
+                updateSelectionSummary();
+            }
         });
+
 
         // Ctrl+Z to undo last curve edit
         document.addEventListener('keydown', (event) => {
@@ -2348,12 +3936,255 @@
                     undoLastCurveEdit();
                 }
             }
+
+            if (editMode && editCurveId && (event.key === 'p' || event.key === 'P')) {
+                const t = event.target;
+                const tag = (t && t.tagName) ? String(t.tagName).toLowerCase() : '';
+                if (tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable)) {
+                    return;
+                }
+                event.preventDefault();
+                if (editDragState && Number.isInteger(editDragState.depthIndex)) {
+                    const pinnedNow = toggleDepthIndexPinned(editCurveId, editDragState.depthIndex);
+                    if (lastCurveTraces) renderCurveTraceOverlays(lastCurveTraces);
+                    showStatus(pinnedNow ? 'Point pinned.' : 'Point unpinned.', 'info');
+                } else if (Number.isFinite(lastMouseImgX) && Number.isFinite(lastMouseImgY)) {
+                    togglePinAtImageCoords(lastMouseImgX, lastMouseImgY);
+                }
+            }
         });
 
-        document.addEventListener('mouseup', async () => {
+        document.addEventListener('mouseup', async (event) => {
+            // Handle Eraser Finalization
+            if (eraserStart) {
+                if (eraserBox) eraserBox.remove();
+                
+                // Calculate final box (re-calculate or store? Recalc is safer with event)
+                // We need image coords. Re-use logic or just use eraserStart and last known mouse?
+                // `event` gives us client coords.
+                const img = document.getElementById('imagePreview');
+                const overlay = document.getElementById('overlay');
+                const rect = overlay ? overlay.getBoundingClientRect() : (img ? img.getBoundingClientRect() : null);
+                
+                if (rect && rect.width && rect.height && imageWidth && imageHeight && editCurveId) {
+                    const x = event.clientX - rect.left;
+                    const y = event.clientY - rect.top;
+                    const xImg = Math.round(Math.max(0, Math.min(1, x / rect.width)) * (imageWidth - 1));
+                    const yImg = Math.round(Math.max(0, Math.min(1, y / rect.height)) * (imageHeight - 1));
+                    
+                    const x1 = Math.min(eraserStart.x, xImg);
+                    const x2 = Math.max(eraserStart.x, xImg);
+                    const y1 = Math.min(eraserStart.y, yImg);
+                    const y2 = Math.max(eraserStart.y, yImg);
+                    
+                    // Delete points in box
+                    const pts = lastCurveTraces[editCurveId];
+                    const curveKey = editCurveDataKey || editCurveId;
+                    const entry = curveKey && lastDigitizedCurves ? lastDigitizedCurves[curveKey] : null; // LAS data
+                    
+                    if (pts && Array.isArray(pts) && entry && Array.isArray(entry.values)) {
+                        const pointsToDelete = [];
+                        // Identify points to remove
+                        // We iterate backwards to remove safely, or filter
+                        // But we need to update LAS values too (by depth index)
+                        
+                        // First pass: collect indices
+                        // We store indices in the `pts` array.
+                        // Wait, `pts` is just [x, y]. We don't know the depth index directly unless we search or mapped it.
+                        // `pts` are usually sorted by depth? Not guaranteed but likely.
+                        // We need to map yImg -> depth index.
+                        
+                        // Optimization: Iterate through all points, check bounds.
+                        // If inside, find matching depth index and null it.
+                        // Also remove from `pts` for display.
+                        
+                        ensureTracePointsHaveDepthIndex(editCurveId);
+                        const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+                        const newPts = [];
+                        const deletedItems = []; // For undo
+                        
+                        pts.forEach((pt) => {
+                            const px = pt[0];
+                            const py = pt[1];
+                            if (!Number.isFinite(px) || !Number.isFinite(py)) {
+                                newPts.push(pt);
+                                return;
+                            }
+                            if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
+                                // This point is in the box. Delete it.
+                                // Find corresponding depth index for LAS data
+                                // We use the global depth config to map Y -> depth -> index
+                                let idx = (Array.isArray(pt) && Number.isInteger(pt[2])) ? pt[2] : -1;
+                                if (idx < 0 && depthCfg) {
+                                    const depth = pixelToDepthFromConfig(py, depthCfg);
+                                    if (Number.isFinite(depth)) {
+                                        idx = findNearestDepthIndex(depth, lastDigitizedDepth);
+                                    }
+                                }
+
+                                if (idx >= 0 && idx < entry.values.length) {
+                                    setDepthIndexPinned(editCurveId, idx, false);
+                                    // Save for undo
+                                    deletedItems.push({
+                                        idx: idx,
+                                        oldValue: entry.values[idx],
+                                        pt: [px, py, idx]
+                                    });
+                                    // Nullify
+                                    entry.values[idx] = null;
+                                    return;
+                                }
+                            }
+                            newPts.push(pt);
+                        });
+                        
+                        if (deletedItems.length > 0) {
+                            // Apply changes to trace array
+                            lastCurveTraces[editCurveId] = newPts;
+                            
+                            // Push bulk undo
+                            editUndoStack.push({
+                                type: 'bulk_delete',
+                                curveId: editCurveId,
+                                curveKey: curveKey,
+                                items: deletedItems
+                            });
+                            
+                            renderCurveTraceOverlays(lastCurveTraces);
+                            showStatus(`Erased ${deletedItems.length} points.`, 'info');
+                        }
+                    }
+                }
+                
+                eraserStart = null;
+                eraserBox = null;
+                return; // handled
+            }
+
             if (editDragState) {
                 // Apply the final drag delta once to update data
                 _doDragUpdate();
+
+                try {
+                    const state = editDragState;
+                    const curveKey = state ? (state.curveKey || state.curveId) : null;
+                    const curveId = state ? state.curveId : null;
+                    const pts = (curveId && lastCurveTraces) ? lastCurveTraces[curveId] : null;
+                    const entry = (curveKey && lastDigitizedCurves) ? lastDigitizedCurves[curveKey] : null;
+                    const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+                    const tracks = getTrackCalibrationsSnapshot();
+                    const targetTrack = tracks ? tracks.find(t => t.id === curveId) : null;
+
+                    if (state && curveKey && curveId && Array.isArray(pts) && entry && Array.isArray(entry.values) && depthCfg && targetTrack && Array.isArray(lastDigitizedDepth)) {
+                        ensureTracePointsHaveDepthIndex(curveId);
+
+                        const centerIdx = (Number.isInteger(state.centerIndex) ? state.centerIndex : state.pointIndex);
+
+                        const pointsUndo = [];
+                        const valuesUndoMap = new Map();
+
+                        const neighbors = Array.isArray(state.neighbors) ? state.neighbors : [];
+                        neighbors.forEach(n => {
+                            if (!n || !Number.isInteger(n.pointIndex)) return;
+                            pointsUndo.push({
+                                pointIndex: n.pointIndex,
+                                oldX: n.originalX,
+                                oldY: n.originalY,
+                                oldDepthIndex: n.depthIndex,
+                            });
+                            if (Number.isInteger(n.depthIndex)) {
+                                valuesUndoMap.set(n.depthIndex, n.originalValue);
+                            }
+                        });
+
+                        const toDelete = [];
+
+                        neighbors.forEach(n => {
+                            if (!n || !Number.isInteger(n.pointIndex)) return;
+                            const pIdx = n.pointIndex;
+                            if (pIdx < 0 || pIdx >= pts.length) return;
+
+                            const xNow = pts[pIdx][0];
+                            const yNow = pts[pIdx][1];
+                            const oldDepthIdx = (Array.isArray(pts[pIdx]) && Number.isInteger(pts[pIdx][2])) ? pts[pIdx][2] : n.depthIndex;
+
+                            const newDepthIdx = (function () {
+                                const depth = pixelToDepthFromConfig(yNow, depthCfg);
+                                if (!Number.isFinite(depth)) return -1;
+                                return findNearestDepthIndex(depth, lastDigitizedDepth);
+                            })();
+                            if (newDepthIdx < 0 || newDepthIdx >= entry.values.length) return;
+
+                            if (!valuesUndoMap.has(newDepthIdx)) {
+                                valuesUndoMap.set(newDepthIdx, entry.values[newDepthIdx]);
+                            }
+
+                            const existingIdx = findPointIndexByDepthIndex(pts, newDepthIdx);
+                            if (existingIdx >= 0 && existingIdx !== pIdx) {
+                                if (Number.isInteger(centerIdx) && pIdx === centerIdx) {
+                                    pts[pIdx][2] = newDepthIdx;
+                                    toDelete.push(existingIdx);
+                                } else {
+                                    pts[existingIdx][0] = xNow;
+                                    pts[existingIdx][1] = yNow;
+                                    pts[existingIdx][2] = newDepthIdx;
+                                    toDelete.push(pIdx);
+                                }
+                            } else {
+                                pts[pIdx][2] = newDepthIdx;
+                            }
+
+                            const newVal = pixelToTrackValue(xNow, targetTrack);
+                            if (Number.isFinite(newVal)) {
+                                entry.values[newDepthIdx] = newVal;
+                            }
+
+                            if (Number.isInteger(oldDepthIdx) && oldDepthIdx !== newDepthIdx && oldDepthIdx >= 0 && oldDepthIdx < entry.values.length) {
+                                if (!valuesUndoMap.has(oldDepthIdx)) {
+                                    valuesUndoMap.set(oldDepthIdx, entry.values[oldDepthIdx]);
+                                }
+                                entry.values[oldDepthIdx] = null;
+                            }
+                        });
+
+                        if (toDelete.length) {
+                            toDelete.sort((a, b) => b - a);
+                            toDelete.forEach(i => {
+                                if (i >= 0 && i < pts.length) pts.splice(i, 1);
+                            });
+                        }
+
+                        const valuesUndo = Array.from(valuesUndoMap.entries()).map(([idx, oldValue]) => ({ idx, oldValue }));
+                        editUndoStack.push({
+                            type: 'drag_group_v2',
+                            curveKey,
+                            curveId,
+                            points: pointsUndo,
+                            values: valuesUndo,
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Vertical remap finalize failed', e);
+                }
+
+                const smoothToggle = document.getElementById('smoothEditToggle');
+                if (smoothToggle && smoothToggle.checked) {
+                    try {
+                        const state = editDragState;
+                        if (state && Array.isArray(lastCurveTraces?.[state.curveId])) {
+                            const pts = lastCurveTraces[state.curveId];
+                            const curveKey = state.curveKey || state.curveId;
+                            const entry = curveKey && lastDigitizedCurves ? lastDigitizedCurves[curveKey] : null;
+                            const tracks = getTrackCalibrationsSnapshot();
+                            const targetTrack = tracks ? tracks.find(t => t.id === state.curveId) : null;
+                            if (entry && targetTrack) {
+                                _applyPostDragSmooth(state.centerIndex ?? state.pointIndex ?? 0, pts, entry, targetTrack);
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('Post-drag smooth failed', e);
+                    }
+                }
 
                 // Re-render the full overlay (including connecting line) now that drag is done
                 if (lastCurveTraces) {
@@ -2365,6 +4196,29 @@
                 if (snapToggle && snapToggle.checked && editDragState.curveId) {
                     // Save state before nulling since applySnapToCurve is async
                     const savedState = { ...editDragState };
+                    try {
+                        const curveId = savedState.curveId;
+                        const curveKey = savedState.curveKey || savedState.curveId;
+                        const pts = (curveId && lastCurveTraces) ? lastCurveTraces[curveId] : null;
+                        const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
+                        if (curveId && curveKey && Array.isArray(pts) && depthCfg && Array.isArray(lastDigitizedDepth)) {
+                            ensureTracePointsHaveDepthIndex(curveId);
+                            const yForSnap = Number.isFinite(savedState.currentY)
+                                ? savedState.currentY
+                                : (Number.isInteger(savedState.pointIndex) && pts[savedState.pointIndex] ? pts[savedState.pointIndex][1] : null);
+                            const depth = Number.isFinite(yForSnap) ? pixelToDepthFromConfig(yForSnap, depthCfg) : null;
+                            const dIdx = Number.isFinite(depth) ? findNearestDepthIndex(depth, lastDigitizedDepth) : -1;
+                            if (dIdx >= 0) {
+                                const pIdx = findPointIndexByDepthIndex(pts, dIdx);
+                                if (pIdx >= 0) {
+                                    savedState.depthIndex = dIdx;
+                                    savedState.pointIndex = pIdx;
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        // ignore
+                    }
                     editDragState = null;
                     try {
                         await applySnapToCurve(savedState);
@@ -2534,6 +4388,7 @@
             trackOverlayDrag = null;
             lastDigitizedDepth = null;
             lastDigitizedCurves = null;
+            if (pinnedDepthIndices) pinnedDepthIndices.clear();
 
             clearPrimaryRegionOverlay();
             clearHeaderRegionOverlay();
@@ -2580,6 +4435,7 @@
                         imageWidth = imgEl.naturalWidth;
                         imageHeight = imgEl.naturalHeight;
                         renderDepthOverlays();
+                        updateDisplayBaseScale();
                         applyZoom();
                     };
                     imgEl.src = data.image;
@@ -2769,7 +4625,7 @@
                         }
                         if (t.color_hint) {
                             const modeEl = document.getElementById(`mode${i}`);
-                            if (modeEl && ['black', 'red', 'blue', 'green'].includes(t.color_hint)) {
+                            if (modeEl && ['black', 'auto', 'red', 'blue', 'green', 'cyan', 'magenta', 'yellow', 'orange', 'purple'].includes(t.color_hint)) {
                                 modeEl.value = t.color_hint;
                             }
                         }
@@ -3106,7 +4962,7 @@
                     let appliedMode = null;
                     if (modeEl && c.mode) {
                         const mv = String(c.mode).toLowerCase();
-                        if (['black', 'red', 'blue', 'green'].includes(mv)) {
+                        if (['black', 'auto', 'red', 'blue', 'green', 'cyan', 'magenta', 'yellow', 'orange', 'purple'].includes(mv)) {
                             modeEl.value = mv;
                             appliedMode = mv;
                         }
@@ -3115,7 +4971,7 @@
                     // 2) If AI did not specify a usable mode, derive one from mnemonic
                     if (modeEl && !appliedMode) {
                         const mapped = modeFromMnemonic(mnemonic);
-                        if (mapped && ['black', 'red', 'blue', 'green'].includes(mapped)) {
+                        if (mapped && ['black', 'auto', 'red', 'blue', 'green', 'cyan', 'magenta', 'yellow', 'orange', 'purple'].includes(mapped)) {
                             modeEl.value = mapped;
                         }
                     }
@@ -3238,6 +5094,7 @@
                         renderDepthOverlays();
                         clearPrimaryRegionOverlay();
                         refreshTrackOverlaysFromCurves();
+                        updateDisplayBaseScale();
                         applyZoom();
                     };
                     imgEl.src = uploadedImage;
@@ -3661,6 +5518,24 @@
                             <input type="number" id="rightPx${i}" placeholder="Right X" value="${rightPx}">
                         </div>
                         <div class="field">
+                            <label for="xOffset${i}">X offset (px)</label>
+                            <input type="number" id="xOffset${i}" placeholder="0" step="0.1" value="0">
+                        </div>
+                        <div class="field">
+                            <label for="curveShift${i}">Curve X shift (px)</label>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <input type="number" id="curveShift${i}" placeholder="0" step="0.1" value="0" style="flex: 1;">
+                                <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="applyCurveXShiftForCurve(${i})">Apply</button>
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label for="curveShiftY${i}">Curve Y shift (px)</label>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <input type="number" id="curveShiftY${i}" placeholder="0" step="0.1" value="0" style="flex: 1;">
+                                <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="applyCurveYShiftForCurve(${i})">Apply</button>
+                            </div>
+                        </div>
+                        <div class="field">
                             <label for="leftVal${i}">Left scale value</label>
                             <input type="number" id="leftVal${i}" placeholder="Left value" step="0.01" value="${leftScaleDefault}">
                         </div>
@@ -3672,9 +5547,15 @@
                             <label for="mode${i}">Curve color / mode</label>
                             <select id="mode${i}">
                                 <option value="black" ${recommendedMode === 'black' ? 'selected' : ''}>Black</option>
+                                <option value="auto" ${recommendedMode === 'auto' ? 'selected' : ''}>Auto</option>
                                 <option value="red" ${recommendedMode === 'red' ? 'selected' : ''}>Red</option>
                                 <option value="blue" ${recommendedMode === 'blue' ? 'selected' : ''}>Blue</option>
                                 <option value="green" ${recommendedMode === 'green' ? 'selected' : ''}>Green</option>
+                                <option value="cyan" ${recommendedMode === 'cyan' ? 'selected' : ''}>Cyan</option>
+                                <option value="magenta" ${recommendedMode === 'magenta' ? 'selected' : ''}>Magenta</option>
+                                <option value="yellow" ${recommendedMode === 'yellow' ? 'selected' : ''}>Yellow</option>
+                                <option value="orange" ${recommendedMode === 'orange' ? 'selected' : ''}>Orange</option>
+                                <option value="purple" ${recommendedMode === 'purple' ? 'selected' : ''}>Purple</option>
                             </select>
                         </div>
                         <div class="field">
@@ -3690,6 +5571,26 @@
                             <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em; margin-top: 4px;" onclick="applyHeaderScaleForCurve(${i})">Use header key scale</button>
                         </div>
                     </div>
+                    <div class="grid" style="margin-top: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;">
+                        <div class="field">
+                            <label for="lineColor${i}">Overlay line color</label>
+                            <input type="color" id="lineColor${i}" value="#ff00ff">
+                        </div>
+                        <div class="field">
+                            <label for="pointColor${i}">Overlay point color</label>
+                            <input type="color" id="pointColor${i}" value="#00ffff">
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top: 8px;">
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem;">
+                            <input type="checkbox" id="showTrace${i}" checked>
+                            Show overlay trace
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem;">
+                            <input type="checkbox" id="hideTrackFill${i}">
+                            Hide colored track fill (show dashed edges only)
+                        </label>
+                    </div>
                 `;
                 container.appendChild(curveDiv);
 
@@ -3701,6 +5602,13 @@
                 const modeEl = document.getElementById(`mode${i}`);
                 const leftPxEl = document.getElementById(`leftPx${i}`);
                 const rightPxEl = document.getElementById(`rightPx${i}`);
+                const xOffsetEl = document.getElementById(`xOffset${i}`);
+                const curveShiftEl = document.getElementById(`curveShift${i}`);
+                const curveShiftYEl = document.getElementById(`curveShiftY${i}`);
+                const lineColorEl = document.getElementById(`lineColor${i}`);
+                const pointColorEl = document.getElementById(`pointColor${i}`);
+                const showTraceEl = document.getElementById(`showTrace${i}`);
+                const hideFillEl = document.getElementById(`hideTrackFill${i}`);
 
                 // When a Left/Right pixel input gains focus, arm a one-click
                 // picker so the next click on the log sets that edge for this
@@ -3735,6 +5643,33 @@
                     });
                 }
 
+                if (xOffsetEl) {
+                    xOffsetEl.addEventListener('input', () => {
+                        refreshTrackOverlaysFromCurves();
+                        renderCurveListView();
+                    });
+                    xOffsetEl.addEventListener('change', () => {
+                        refreshTrackOverlaysFromCurves();
+                        renderCurveListView();
+                    });
+                }
+
+                if (curveShiftEl) {
+                    curveShiftEl.addEventListener('keydown', (ev) => {
+                        if (ev && ev.key === 'Enter') {
+                            applyCurveXShiftForCurve(i);
+                        }
+                    });
+                }
+
+                if (curveShiftYEl) {
+                    curveShiftYEl.addEventListener('keydown', (ev) => {
+                        if (ev && ev.key === 'Enter') {
+                            applyCurveYShiftForCurve(i);
+                        }
+                    });
+                }
+
                 if (modeEl) {
                     const applyCardTheme = () => {
                         const val = (modeEl.value || '').toLowerCase();
@@ -3758,6 +5693,28 @@
                         applyCardTheme();
                         refreshTrackOverlaysFromCurves();
                         renderCurveListView();
+                    });
+                }
+
+                if (hideFillEl) {
+                    hideFillEl.addEventListener('change', () => {
+                        refreshTrackOverlaysFromCurves();
+                    });
+                }
+
+                [lineColorEl, pointColorEl].forEach((el) => {
+                    if (!el) return;
+                    el.addEventListener('input', () => {
+                        if (lastCurveTraces) renderCurveTraceOverlays(lastCurveTraces);
+                    });
+                    el.addEventListener('change', () => {
+                        if (lastCurveTraces) renderCurveTraceOverlays(lastCurveTraces);
+                    });
+                });
+
+                if (showTraceEl) {
+                    showTraceEl.addEventListener('change', () => {
+                        if (lastCurveTraces) renderCurveTraceOverlays(lastCurveTraces);
                     });
                 }
 
@@ -4201,6 +6158,10 @@
                     box.classList.add('ai-track-overlay-black');
                 }
 
+                if (t && t.hide_fill) {
+                    box.classList.add('track-fill-disabled');
+                }
+
                 if (t.name) {
                     box.title = `AI track: ${t.name}`;
                 }
@@ -4235,13 +6196,19 @@
             for (let i = 0; i < numCurves; i++) {
                 const leftPxEl = document.getElementById(`leftPx${i}`);
                 const rightPxEl = document.getElementById(`rightPx${i}`);
+                const xOffsetEl = document.getElementById(`xOffset${i}`);
                 const modeEl = document.getElementById(`mode${i}`);
+                const hideFillEl = document.getElementById(`hideTrackFill${i}`);
                 if (!leftPxEl || !rightPxEl) continue;
                 const leftPx = parseFloat(leftPxEl.value);
                 const rightPx = parseFloat(rightPxEl.value);
-                if (!Number.isFinite(leftPx) || !Number.isFinite(rightPx) || rightPx <= leftPx) continue;
+                const xOffset = xOffsetEl ? (parseFloat(xOffsetEl.value) || 0) : 0;
+                const leftPxAdj = leftPx + xOffset;
+                const rightPxAdj = rightPx + xOffset;
+                if (!Number.isFinite(leftPxAdj) || !Number.isFinite(rightPxAdj) || rightPxAdj <= leftPxAdj) continue;
                 const mode = modeEl && modeEl.value ? String(modeEl.value).toLowerCase() : '';
-                boxes.push({ left_px: leftPx, right_px: rightPx, curve_index: i, mode: mode });
+                const hideFill = !!(hideFillEl && hideFillEl.checked);
+                boxes.push({ left_px: leftPxAdj, right_px: rightPxAdj, curve_index: i, mode: mode, hide_fill: hideFill });
             }
             if (!boxes.length) {
                 clearTrackOverlays();
@@ -4369,9 +6336,8 @@
             
             const w = imageWidth || img.naturalWidth || 1;
             const h = imageHeight || img.naturalHeight || 1;
-            const z = zoomLevel || 1.0;
-            const scaleX = (rect.width / z) / w;
-            const scaleY = (rect.height / z) / h;
+            const scaleX = rect.width / w;
+            const scaleY = rect.height / h;
             
             const points = lastCurveTraces[curveId] || [];
             const dots = overlay.querySelectorAll('.curve-trace-dot');
@@ -4405,14 +6371,80 @@
             }
         }
 
-        function renderCurveTraceOverlays(curveTraces) {
+        function toggleOverlayVisibility() {
+            // Make overlay modes mutually exclusive and ensure they actually take effect.
+            // Compact/Crisp should override High contrast.
+            try {
+                const chkHighContrast = document.getElementById('highContrastOverlay');
+                const chkCrisp = document.getElementById('crispOverlay');
+                const chkCompact = document.getElementById('compactOverlay');
+
+                if (chkCompact && chkCompact.checked) {
+                    if (chkCrisp) chkCrisp.checked = false;
+                    if (chkHighContrast) chkHighContrast.checked = false;
+                } else if (chkCrisp && chkCrisp.checked) {
+                    if (chkHighContrast) chkHighContrast.checked = false;
+                }
+            } catch (e) {
+                // ignore
+            }
+
+            // Force redraw with current checkbox states
+            if (window.lastCurveTraces) {
+                renderCurveTraceOverlays(window.lastCurveTraces);
+            } else if (typeof lastCurveTraces !== 'undefined' && lastCurveTraces) {
+                renderCurveTraceOverlays(lastCurveTraces);
+            }
+        }
+
+        function renderCurveTraceOverlays(curveTraces, opts) {
             const overlay = document.getElementById('overlay');
             const img = document.getElementById('imagePreview');
             const canvas = document.getElementById('curveCanvas');
+
+            const focusCurveId = opts && opts.focusCurveId ? String(opts.focusCurveId) : null;
+            const fastMode = !!(opts && opts.fastMode);
+            
+            // Check visibility flags robustly
+            let showLine = true;
+            const chkLine = document.getElementById('showLine');
+            if (chkLine) showLine = chkLine.checked;
+
+            let showPoints = true;
+            const chkPoints = document.getElementById('showPoints');
+            if (chkPoints) showPoints = chkPoints.checked;
+
+            let highContrastOverlay = true;
+            const chkHighContrast = document.getElementById('highContrastOverlay');
+            if (chkHighContrast) highContrastOverlay = chkHighContrast.checked;
+
+            let crispOverlay = false;
+            const chkCrisp = document.getElementById('crispOverlay');
+            if (chkCrisp) crispOverlay = chkCrisp.checked;
+
+            let compactOverlay = false;
+            const chkCompact = document.getElementById('compactOverlay');
+            if (chkCompact) compactOverlay = chkCompact.checked;
+
+            // Enforce precedence: compact > crisp > high-contrast.
+            // This prevents the default high-contrast style from masking crisp/compact.
+            if (compactOverlay) {
+                crispOverlay = false;
+                highContrastOverlay = false;
+            } else if (crispOverlay) {
+                highContrastOverlay = false;
+            }
+
             if (!overlay || !img || !curveTraces || !canvas) {
                 clearCurveTraceOverlays();
                 return;
             }
+
+            const legacyDots = overlay.querySelectorAll('.curve-trace-dot');
+            legacyDots.forEach((el) => el.remove());
+            const legacyChains = overlay.querySelectorAll('.curve-trace-chain');
+            legacyChains.forEach((el) => el.remove());
+
 
             const rect = img.getBoundingClientRect();
             if (!rect.width || !rect.height) {
@@ -4433,75 +6465,359 @@
                 imageHeight = h;
             }
 
-            const z = zoomLevel || 1.0;
-            const baseWidth = rect.width / z;
-            const baseHeight = rect.height / z;
-            const scaleX = baseWidth / w;
-            const scaleY = baseHeight / h;
+            const scrollEl = canvas.closest('.viewer-scroll');
+            let viewLeft = 0;
+            let viewTop = 0;
+            let baseWidth = rect.width;
+            let baseHeight = rect.height;
+            const visibleMarginPx = 60;
+            if (scrollEl) {
+                viewLeft = Number(scrollEl.scrollLeft) || 0;
+                viewTop = Number(scrollEl.scrollTop) || 0;
+                baseWidth = Number(scrollEl.clientWidth) || rect.width;
+                baseHeight = Number(scrollEl.clientHeight) || rect.height;
+                if (rect.width) baseWidth = Math.min(baseWidth, rect.width);
+                if (rect.height) baseHeight = Math.min(baseHeight, rect.height);
+                const maxLeft = Math.max(0, rect.width - baseWidth);
+                const maxTop = Math.max(0, rect.height - baseHeight);
+                viewLeft = Math.max(0, Math.min(viewLeft, maxLeft));
+                viewTop = Math.max(0, Math.min(viewTop, maxTop));
+            }
+            
+            const viewBottom = viewTop + baseHeight;
+            const viewRight = viewLeft + baseWidth;
 
-            // Resize the canvas to the unscaled base size; the overlay's CSS
-            // transform will scale it together with the image.
-            canvas.width = baseWidth;
-            canvas.height = baseHeight;
+            // Account for device pixel ratio AND zoom for crisp rendering
+            const dpr = window.devicePixelRatio || 1;
+            let renderScale = dpr;
+
+            // Safety caps: prevent huge canvases (long logs + high zoom can explode).
+            // NOTE: We must allow renderScale < 1, otherwise a very large CSS-sized
+            // canvas will still allocate an enormous internal bitmap and crash/blank.
+            const maxDim = 8192;
+            const maxPixels = 16000000;
+            if (baseWidth > 0 && baseHeight > 0) {
+                const capDimScale = Math.min(maxDim / baseWidth, maxDim / baseHeight);
+                const capPixScale = Math.sqrt(maxPixels / (baseWidth * baseHeight));
+                const capScale = Math.min(capDimScale, capPixScale);
+                if (Number.isFinite(capScale) && capScale > 0) {
+                    renderScale = Math.min(renderScale, capScale);
+                }
+            }
+            if (!Number.isFinite(renderScale) || renderScale <= 0) {
+                renderScale = 1;
+            }
+            
+            // Set canvas internal resolution higher for crisp lines
+            const desiredCanvasW = Math.max(1, Math.round(baseWidth * renderScale));
+            const desiredCanvasH = Math.max(1, Math.round(baseHeight * renderScale));
+            if (canvas.width !== desiredCanvasW) canvas.width = desiredCanvasW;
+            if (canvas.height !== desiredCanvasH) canvas.height = desiredCanvasH;
+            // CSS size stays at base size (already zoomed via element sizing)
             canvas.style.width = baseWidth + 'px';
             canvas.style.height = baseHeight + 'px';
+            canvas.style.left = viewLeft + 'px';
+            canvas.style.top = viewTop + 'px';
 
             const ctx = canvas.getContext('2d');
             if (!ctx) {
                 return;
             }
+
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const sx = baseWidth > 0 ? (canvas.width / baseWidth) : 1;
+            const sy = baseHeight > 0 ? (canvas.height / baseHeight) : 1;
+            ctx.setTransform(sx, 0, 0, sy, 0, 0);
+            const _snapCoord = (v, s, halfPx) => {
+                const vv = Number(v);
+                const ss = Number(s);
+                if (!Number.isFinite(vv) || !Number.isFinite(ss) || ss <= 0) return v;
+                const px = vv * ss;
+                if (halfPx) {
+                    return (Math.round(px - 0.5) + 0.5) / ss;
+                }
+                return Math.round(px) / ss;
+            };
+            
+            // Calculate scale from image coords to base canvas coords
+            const scaleX = rect.width / w;
+            const scaleY = rect.height / h;
 
             ctx.lineJoin = 'round';
             ctx.lineCap = 'round';
+            // Note: line/arc AA is browser-controlled, but we can avoid additional
+            // blur from fractional device-pixel widths by quantizing widths in crisp mode.
+
+            const tracks = (typeof getTrackCalibrationsSnapshot === 'function')
+                ? getTrackCalibrationsSnapshot()
+                : null;
 
             const curveNames = Object.keys(curveTraces);
             for (const name of curveNames) {
                 const points = curveTraces[name] || [];
                 if (!points.length) continue;
 
+                // Per-curve visibility toggle (defaults to visible)
+                if (tracks && Array.isArray(tracks)) {
+                    const track = tracks.find(t => t && t.id === name);
+                    const idx = track && Number.isInteger(track.index) ? track.index : null;
+                    if (idx != null) {
+                        const showEl = document.getElementById(`showTrace${idx}`);
+                        if (showEl && showEl.checked === false) {
+                            continue;
+                        }
+                    }
+                }
+
+                let lineCoreColor = '#ff00ff';
+                let pointFillColor = '#00ffff';
+                if (tracks && Array.isArray(tracks)) {
+                    const track = tracks.find(t => t && t.id === name);
+                    const idx = track && Number.isInteger(track.index) ? track.index : null;
+                    if (idx != null) {
+                        const lineEl = document.getElementById(`lineColor${idx}`);
+                        const ptEl = document.getElementById(`pointColor${idx}`);
+                        if (lineEl && lineEl.value) lineCoreColor = String(lineEl.value);
+                        if (ptEl && ptEl.value) pointFillColor = String(ptEl.value);
+                    }
+                }
+
+                // In fast drag mode, keep the active curve detailed and draw other curves
+                // in a very lightweight way so they don't "disappear".
+                const isFocus = focusCurveId && name === focusCurveId;
+                const fastForThisCurve = fastMode && !isFocus;
+
                 // Sort points by Y (depth) so chain follows the curve properly
-                const sortedPoints = points
-                    .filter(pt => Array.isArray(pt) && pt.length >= 2)
-                    .slice()
-                    .sort((a, b) => a[1] - b[1]);
+                let sortedPoints = points
+                    .filter(pt => Array.isArray(pt) && pt.length >= 2);
+
+                // Even in fast mode, we sort so the polyline is stable (otherwise it can look
+                // like segments are missing due to out-of-order points).
+                sortedPoints = sortedPoints.slice().sort((a, b) => a[1] - b[1]);
+
+                // Aggressive decimation for non-focused curves in fast mode.
+                if (fastForThisCurve) {
+                    const step = Math.max(2, Math.ceil(sortedPoints.length / 120));
+                    const decimated = [];
+                    for (let i = 0; i < sortedPoints.length; i += step) decimated.push(sortedPoints[i]);
+                    // Ensure last point is included for continuity
+                    if (sortedPoints.length && decimated[decimated.length - 1] !== sortedPoints[sortedPoints.length - 1]) {
+                        decimated.push(sortedPoints[sortedPoints.length - 1]);
+                    }
+                    sortedPoints = decimated;
+                }
+                const minVisibleY = Math.max(0, (viewTop - visibleMarginPx) / scaleY);
+                const maxVisibleY = Math.min(h, (viewBottom + visibleMarginPx) / scaleY);
+                sortedPoints = sortedPoints.filter((pt) => {
+                    if (!Array.isArray(pt) || pt.length < 2) return false;
+                    const y = pt[1];
+                    if (y < minVisibleY || y > maxVisibleY) return false;
+                    const x = pt[0];
+                    const xDom = x * scaleX;
+                    return xDom >= (viewLeft - visibleMarginPx) && xDom <= (viewRight + visibleMarginPx);
+                });
                 if (sortedPoints.length < 2) continue;
 
                 // Draw chain
-                ctx.beginPath();
-                let first = true;
-                for (let i = 0; i < sortedPoints.length; i++) {
-                    const xImg = sortedPoints[i][0];
-                    const yImg = sortedPoints[i][1];
-                    const xDom = xImg * scaleX;
-                    const yDom = yImg * scaleY;
-                    if (first) {
-                        ctx.moveTo(xDom, yDom);
-                        first = false;
+                if (showLine) {
+                    ctx.beginPath();
+
+                    let first = true;
+                    let prevXImg = null;
+                    let prevYImg = null;
+                    for (let i = 0; i < sortedPoints.length; i++) {
+                        const xImg = sortedPoints[i][0];
+                        const yImg = sortedPoints[i][1];
+                        const xDom = (xImg * scaleX) - viewLeft;
+                        const yDom = (yImg * scaleY) - viewTop;
+                        if (first) {
+                            ctx.moveTo(xDom, yDom);
+                            prevXImg = xImg;
+                            prevYImg = yImg;
+                            first = false;
+                        } else {
+                            ctx.lineTo(xDom, yDom);
+                            prevXImg = xImg;
+                            prevYImg = yImg;
+                        }
+                    }
+                    // Draw the editable curve with high contrast: white outline + magenta core
+                    // Use slider values for line width
+                    const lineW = Math.max(0.1, overlayLineWidth || 4);
+                    if (highContrastOverlay) {
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = lineW;
+                        ctx.stroke();
+                        ctx.strokeStyle = '#000000';
+                        ctx.lineWidth = Math.max(0.1, lineW * 0.85);
+                        ctx.stroke();
+                        ctx.strokeStyle = lineCoreColor;
+                        ctx.lineWidth = Math.max(0.1, lineW * 0.65);
+                        ctx.stroke();
+                    } else if (compactOverlay) {
+                        // Compact: 1 device-pixel hairline so ink remains visible on both sides
+                        const hairline = Math.max(0.1, 1 / Math.max(1, sx));
+                        try {
+                            ctx.beginPath();
+                            for (let i = 0; i < sortedPoints.length; i++) {
+                                const xImg = sortedPoints[i][0];
+                                const yImg = sortedPoints[i][1];
+                                let xDom = (xImg * scaleX) - viewLeft;
+                                let yDom = (yImg * scaleY) - viewTop;
+                                xDom = _snapCoord(xDom, sx, true);
+                                yDom = _snapCoord(yDom, sy, true);
+                                if (i === 0) ctx.moveTo(xDom, yDom);
+                                else ctx.lineTo(xDom, yDom);
+                            }
+                        } catch (e) {
+                        }
+                        ctx.strokeStyle = lineCoreColor;
+                        ctx.globalAlpha = 1.0;
+                        ctx.lineWidth = hairline;
+                        ctx.stroke();
+                    } else if (crispOverlay) {
+                        // Crisp: solid single stroke, quantized to whole device pixels
+                        const quantPx = 0.5;
+                        const dpr = window.devicePixelRatio || 1;
+                        const lineWpx = Math.max(quantPx, Math.round((lineW * dpr) / quantPx) * quantPx);
+                        const useHalf = (Math.round(lineWpx * 2) % 4) !== 0;
+                        try {
+                            ctx.beginPath();
+                            for (let i = 0; i < sortedPoints.length; i++) {
+                                const xImg = sortedPoints[i][0];
+                                const yImg = sortedPoints[i][1];
+                                let xDom = (xImg * scaleX) - viewLeft;
+                                let yDom = (yImg * scaleY) - viewTop;
+                                xDom = _snapCoord(xDom, sx, useHalf);
+                                yDom = _snapCoord(yDom, sy, useHalf);
+                                if (i === 0) ctx.moveTo(xDom, yDom);
+                                else ctx.lineTo(xDom, yDom);
+                            }
+                        } catch (e) {
+                        }
+                        ctx.save();
+                        ctx.globalAlpha = 1.0;
+                        ctx.lineJoin = 'miter';
+                        ctx.lineCap = 'butt';
+                        // Dual-outline for visibility on both dark and light backgrounds.
+                        const outlineWhitePx = lineWpx + 1.0;
+                        const outlineBlackPx = lineWpx + 0.5;
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = Math.max(0.1, outlineWhitePx / dpr);
+                        ctx.stroke();
+                        ctx.strokeStyle = '#000000';
+                        ctx.lineWidth = Math.max(0.1, outlineBlackPx / dpr);
+                        ctx.stroke();
+                        ctx.strokeStyle = lineCoreColor;
+                        ctx.lineWidth = Math.max(0.1, lineWpx / dpr);
+                        ctx.stroke();
+                        ctx.restore();
                     } else {
-                        ctx.lineTo(xDom, yDom);
+                        // Subtle but clear: soft halo + solid core
+                        ctx.save();
+                        ctx.globalAlpha = 0.25;
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = Math.max(0.1, lineW * 1.6);
+                        ctx.stroke();
+                        ctx.globalAlpha = 0.9;
+                        ctx.strokeStyle = lineCoreColor;
+                        ctx.lineWidth = Math.max(0.1, lineW * 0.85);
+                        ctx.stroke();
+                        ctx.restore();
                     }
                 }
-                // Draw the editable curve with a dark outline and bright core
-                ctx.strokeStyle = '#000000';   // black outline
-                ctx.lineWidth = 1.1;
-                ctx.stroke();
-                ctx.strokeStyle = '#facc15';   // bright yellow center
-                ctx.lineWidth = 0.6;
-                ctx.stroke();
 
-                // Draw small dots every few samples for visual feedback
-                ctx.fillStyle = 'rgba(249, 115, 22, 0.9)';
-                const step = 2;  // draw every 2nd point
-                const r = 0.8;   // slightly smaller radius for less chunky points
-                for (let i = 0; i < sortedPoints.length; i += step) {
-                    const xImg = sortedPoints[i][0];
-                    const yImg = sortedPoints[i][1];
-                    const xDom = xImg * scaleX;
-                    const yDom = yImg * scaleY;
-                    ctx.beginPath();
-                    ctx.arc(xDom, yDom, r, 0, Math.PI * 2);
-                    ctx.fill();
+                // Draw dots with outline for visibility
+                // Use slider value for point size
+                if (showPoints && !fastForThisCurve) {
+                    const step = fastMode ? Math.max(3, Math.ceil(sortedPoints.length / 300)) : 3;
+                    const r = Math.max(0.1, overlayPointSize || 1.2);
+                    for (let i = 0; i < sortedPoints.length; i += step) {
+                        const xImg = sortedPoints[i][0];
+                        const yImg = sortedPoints[i][1];
+                        const dIdx = (Array.isArray(sortedPoints[i]) && Number.isInteger(sortedPoints[i][2])) ? sortedPoints[i][2] : null;
+                        const isPinned = (dIdx != null) ? isDepthIndexPinned(name, dIdx) : false;
+                        let xDom = (xImg * scaleX) - viewLeft;
+                        let yDom = (yImg * scaleY) - viewTop;
+                        if (highContrastOverlay) {
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, r + 0.4, 0, Math.PI * 2);
+                            ctx.fillStyle = '#000000';
+                            ctx.fill();
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, r, 0, Math.PI * 2);
+                            ctx.fillStyle = pointFillColor;
+                            ctx.fill();
+                        } else if (compactOverlay) {
+                            // Compact: hollow ring markers (minimizes ink occlusion)
+                            const ringW = Math.max(0.1, 1 / Math.max(1, sx));
+                            const rPx = Math.max(2, Math.round(r * sx));
+                            const rBase = Math.max(0.1, rPx / sx);
+                            xDom = _snapCoord(xDom, sx, true);
+                            yDom = _snapCoord(yDom, sy, true);
+                            ctx.save();
+                            ctx.globalAlpha = 1.0;
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, rBase, 0, Math.PI * 2);
+                            ctx.strokeStyle = pointFillColor;
+                            ctx.lineWidth = ringW;
+                            ctx.stroke();
+                            ctx.restore();
+                        } else if (crispOverlay) {
+                            const quantPx = 0.5;
+                            const dpr = window.devicePixelRatio || 1;
+                            const rPx = Math.max(quantPx, Math.round((r * dpr) / quantPx) * quantPx);
+                            const rBase = Math.max(0.1, rPx / dpr);
+                            const useHalf = (Math.round(rPx * 2) % 4) !== 0;
+                            xDom = _snapCoord(xDom, sx, useHalf);
+                            yDom = _snapCoord(yDom, sy, useHalf);
+                            ctx.save();
+                            ctx.globalAlpha = 1.0;
+                            const ringWhitePx = rPx + 1.0;
+                            const ringBlackPx = rPx + 0.5;
+                            const ringWhiteBase = Math.max(0.1, ringWhitePx / dpr);
+                            const ringBlackBase = Math.max(0.1, ringBlackPx / dpr);
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, ringWhiteBase, 0, Math.PI * 2);
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fill();
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, ringBlackBase, 0, Math.PI * 2);
+                            ctx.fillStyle = '#000000';
+                            ctx.fill();
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, rBase, 0, Math.PI * 2);
+                            ctx.fillStyle = pointFillColor;
+                            ctx.fill();
+                            ctx.restore();
+                        } else {
+                            // Subtle but clear: small light halo + solid dot
+                            ctx.save();
+                            ctx.globalAlpha = 0.35;
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, r + 0.35, 0, Math.PI * 2);
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fill();
+                            ctx.globalAlpha = 0.9;
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, r, 0, Math.PI * 2);
+                            ctx.fillStyle = pointFillColor;
+                            ctx.fill();
+                            ctx.restore();
+                        }
+
+                        if (isPinned) {
+                            ctx.save();
+                            ctx.globalAlpha = 1.0;
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, r + 2.2, 0, Math.PI * 2);
+                            ctx.strokeStyle = '#ffd000';
+                            ctx.lineWidth = Math.max(0.1, 1.2 / Math.max(1, sx));
+                            ctx.stroke();
+                            ctx.restore();
+                        }
+                    }
                 }
             }
         }
@@ -4653,12 +6969,46 @@
 
         attachDepthFieldListeners();
 
+        let processingStartTime = null;
+        let processingTimerInterval = null;
+        let lastProcessingTime = null;
+        
+        function startProcessingTimer() {
+            processingStartTime = Date.now();
+            updateProcessingTimer();
+            processingTimerInterval = setInterval(updateProcessingTimer, 100);
+        }
+        
+        function updateProcessingTimer() {
+            if (!processingStartTime) return;
+            const elapsed = (Date.now() - processingStartTime) / 1000;
+            showStatus(`🔄 Processing... ${elapsed.toFixed(1)}s`, 'info');
+        }
+        
+        function stopProcessingTimer() {
+            if (processingTimerInterval) {
+                clearInterval(processingTimerInterval);
+                processingTimerInterval = null;
+            }
+            if (processingStartTime) {
+                lastProcessingTime = (Date.now() - processingStartTime) / 1000;
+            }
+            processingStartTime = null;
+        }
+        
+        function getProcessingTimeString() {
+            if (lastProcessingTime !== null) {
+                return ` (${lastProcessingTime.toFixed(1)}s)`;
+            }
+            return '';
+        }
+
         async function runDigitization() {
             const btn = document.getElementById('digitizeBtn');
             const downloadBtn = document.getElementById('downloadLasBtn');
             if (btn) btn.disabled = true;
             if (downloadBtn) downloadBtn.disabled = true;
-            showStatus('🔄 Processing...', 'info');
+            startProcessingTimer();
 
             try {
                 const depthCfg = getDepthConfigFromInputs();
@@ -4687,6 +7037,7 @@
                 };
 
                 const numCurves = parseInt(document.getElementById('numCurves').value);
+                const usedMnemonics = {};
                 for (let i = 0; i < numCurves; i++) {
                     const type = document.getElementById(`type${i}`).value;
                     const displayName = document.getElementById(`name${i}`).value;
@@ -4698,13 +7049,26 @@
                     const lasMnemonic = lasMnemonicInput || (defaults.mnemonic || (displayName ? displayName.toUpperCase() : `CURVE${i + 1}`));
                     const lasUnit = lasUnitInput || (defaults.unit || displayUnit);
 
+                    // Ensure unique LAS mnemonic (required for LAS + avoids trace-key collisions)
+                    let mnemonicKey = String(lasMnemonic || '').toUpperCase().trim();
+                    if (!mnemonicKey) mnemonicKey = `CURVE${i + 1}`;
+                    if (usedMnemonics[mnemonicKey]) {
+                        const n = usedMnemonics[mnemonicKey] + 1;
+                        usedMnemonics[mnemonicKey] = n;
+                        mnemonicKey = `${mnemonicKey}_${n}`;
+                        const mnEl = document.getElementById(`lasMnemonic${i}`);
+                        if (mnEl) mnEl.value = mnemonicKey;
+                    } else {
+                        usedMnemonics[mnemonicKey] = 1;
+                    }
+
                     config.curves.push({
                         type: type,
                         display_name: displayName,
                         display_unit: displayUnit,
-                        name: lasMnemonic,
+                        name: mnemonicKey,
                         unit: lasUnit,
-                        las_mnemonic: lasMnemonic,
+                        las_mnemonic: mnemonicKey,
                         las_unit: lasUnit,
                         left_px: parseInt(document.getElementById(`leftPx${i}`).value),
                         right_px: parseInt(document.getElementById(`rightPx${i}`).value),
@@ -4716,6 +7080,13 @@
 
                 saveDepthConfigToSession();
                 renderDepthOverlays();
+
+                const invertBtn = document.getElementById('btnFilterInvert');
+                const contrastBtn = document.getElementById('btnFilterContrast');
+                const previewFilters = {
+                    invert: !!(invertBtn && invertBtn.classList.contains('active')),
+                    contrast: !!(contrastBtn && contrastBtn.classList.contains('active')),
+                };
                 const response = await fetch('/digitize', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -4723,10 +7094,34 @@
                         image: uploadedImage,
                         config: config,
                         detected_text: detectedText || null,
+                        preview_filters: previewFilters,
                     }),
                 });
 
-                const data = await response.json();
+                let data = null;
+                let rawText = null;
+                try {
+                    rawText = await response.text();
+                } catch (err) {
+                    rawText = null;
+                }
+
+                if (rawText) {
+                    try {
+                        data = JSON.parse(rawText);
+                    } catch (err) {
+                        data = null;
+                    }
+                }
+
+                if (!response.ok) {
+                    const message = (data && (data.error || data.message))
+                        ? (data.error || data.message)
+                        : (rawText ? rawText.slice(0, 800) : `HTTP ${response.status}`);
+                    const tb = (data && data.traceback) ? `\n\n${data.traceback}` : '';
+                    showStatus(`❌ Digitize failed (${response.status}): ${message}${tb}`, 'error');
+                    return;
+                }
 
                 if (data.success) {
                     // Store digitized data for cursor readout and later download
@@ -4745,13 +7140,14 @@
 
                     let statusType = 'success';
                     let message;
+                    const timeStr = getProcessingTimeString();
                     if (data.validation && data.validation.passed) {
-                        message = `✅ Digitization complete. LAS is ready to download. ${data.validation.message}`;
+                        message = `✅ Digitization complete${timeStr}. LAS is ready to download. ${data.validation.message}`;
                     } else if (data.validation) {
                         statusType = 'info';
-                        message = `⚠️ Digitization complete, but validation reported: ${data.validation.message}`;
+                        message = `⚠️ Digitization complete${timeStr}, but validation reported: ${data.validation.message}`;
                     } else {
-                        message = '✅ Success! Digitization complete. Use "Download LAS" to save the file.';
+                        message = `✅ Success! Digitization complete${timeStr}. Use "Download LAS" to save the file.`;
                     }
 
                     if (data.depth_warnings && data.depth_warnings.length) {
@@ -4773,12 +7169,15 @@
                     if (data.curve_traces && typeof data.curve_traces === 'object') {
                         const traces = data.curve_traces;
                         lastCurveTraces = traces;
+                        curveIndexToTraceKey = {};
                         const emptyTraceCurves = [];
 
                         if (config && Array.isArray(config.curves)) {
-                            for (const c of config.curves) {
-                                const key = (c.las_mnemonic || c.name || '').toString();
+                            for (let i = 0; i < config.curves.length; i++) {
+                                const c = config.curves[i];
+                                const key = (c && (c.las_mnemonic || c.name) ? (c.las_mnemonic || c.name) : '').toString();
                                 if (!key) continue;
+                                curveIndexToTraceKey[i] = key;
                                 const pts = traces[key];
                                 if (!pts || !Array.isArray(pts) || pts.length === 0) {
                                     const label = c.display_name || key;
@@ -4825,6 +7224,7 @@
                     editMode = false;
                     editCurveId = null;
                     editUndoStack = [];  // Clear undo history for fresh digitization
+                    if (pinnedDepthIndices) pinnedDepthIndices.clear();
                     setEditModeUI();
 
                     // Turn off selection modes after digitization so green band doesn't interfere
@@ -4835,11 +7235,13 @@
 
                     showStatus(message, statusType);
                 } else {
-                    showStatus('❌ Error during digitization', 'error');
+                    const msg = (data && (data.error || data.message)) ? (data.error || data.message) : 'Error during digitization';
+                    showStatus('❌ ' + msg, 'error');
                 }
             } catch (error) {
                 showStatus('❌ Error: ' + error.message, 'error');
             } finally {
+                stopProcessingTimer();
                 if (btn) btn.disabled = false;
                 const downloadBtn = document.getElementById('downloadLasBtn');
                 if (downloadBtn && lastLasContent) {
@@ -5167,18 +7569,14 @@
                 }
 
                 const vals = entry.values;
-                let count = 0;
+                const count = vals.length;
                 let nullCount = 0;
                 let minVal = null;
                 let maxVal = null;
 
                 for (let i = 0; i < vals.length; i++) {
                     const v = vals[i];
-                    if (!Number.isFinite(v)) {
-                        continue;
-                    }
-                    count++;
-                    if (nullSentinel != null && v === nullSentinel) {
+                    if (v == null || !Number.isFinite(v) || (nullSentinel != null && v === nullSentinel)) {
                         nullCount++;
                         continue;
                     }
@@ -5186,7 +7584,7 @@
                     if (maxVal === null || v > maxVal) maxVal = v;
                 }
 
-                if (!count) {
+                if (!count || nullCount >= count) {
                     curveRows.push(`<li>${key}: all null or invalid samples</li>`);
                     return;
                 }
