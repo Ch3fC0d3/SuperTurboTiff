@@ -27,7 +27,17 @@ load_dotenv()  # Load .env
 load_dotenv('.env.local', override=True)  # Load .env.local (overrides .env)
 
 from flask import Flask, render_template, request, jsonify, send_file
+import math
 import os
+import random
+import re
+import shutil
+import string
+import tempfile
+import textwrap
+import time
+import heapq
+from collections import defaultdict
 import cv2
 import numpy as np
 import fast_tracer
@@ -1859,66 +1869,76 @@ def trace_curve_with_dp(
         'SP': (-200, 100),
     }
     
-    # Convert mask to probability (0-1) and build a log-based data cost.
-    # This matches the pattern prob = preprocess_curve_track(...);
-    # trace_curve_with_dp(prob, ...) where high prob → low cost.
+    # Convert mask to probability (0-1)
     prob = curve_mask.astype(np.float32) / 255.0
-    eps = 1e-6
-    cost = -np.log(prob + eps)
 
-    # Penalize columns that behave like vertical "rails" (on for many rows).
-    # True log curves wiggle left/right, so their per-column average is
-    # typically modest. Continuous vertical gridlines, in contrast, have a
-    # very high column mean and should be discouraged.
-    
-    # RAIL PENALTY PARAMETERS (tunable)
-    rail_threshold = 0.10          # Columns with >10% of rows lit are suspicious (raised from 2% to protect steep curves)
-    rail_penalty_strength = 20.0   # Base penalty multiplier for rail-like columns
-    rail_shape_penalty_val = 20.0  # Extra penalty for low-variance (flat) columns
-    rail_std_threshold = 0.02      # Columns with std < this are considered flat
-    
-    # EDGE PENALTY PARAMETERS (tunable) - prevents hugging track edges
-    edge_margin_pct = 0.08         # Penalize outer 8% of track width on each side
-    edge_penalty_strength = 3.0    # Penalty for being at track edges
-    
-    if h >= 20 and w >= 4:
-        # Smooth the probability map horizontally to catch wobbling vertical lines
-        col_mean = prob.mean(axis=0)
-        # Simple 3-pixel moving average for column stats
-        col_mean_smooth = np.convolve(col_mean, np.ones(3)/3, mode='same')
-        
-        col_std = prob.std(axis=0)
-        
-        # Rail penalty: ramps up for columns that are on for many rows
-        # Use smoothed mean to catch lines that wobble between 2-3 pixels
-        # MASSIVE penalty (10000) to essentially ban these columns
-        rail_penalty = 10000.0 * (col_mean_smooth > rail_threshold).astype(np.float32)
-        
-        # MASK RAIL PENALTY AT EDGES
-        # Gamma Ray curves often touch the chart borders (left/right).
-        # We must NOT apply the rail penalty to the extreme edges, or the tracer will stop short.
-        safe_margin = max(2, int(w * 0.02))  # Safe zone at 2% width on each side
-        rail_penalty[:safe_margin] = 0.0
-        rail_penalty[-safe_margin:] = 0.0
-        
-        # Extra penalty for flat columns (low variance = likely grid line)
-        rail_shape_penalty = np.zeros_like(rail_penalty)
-        # Also ban low-variance columns
-        rail_mask = (col_mean > rail_threshold) & (col_std < rail_std_threshold)
-        if np.any(rail_mask):
-            rail_shape_penalty[rail_mask] = 10000.0
-            
-        # Mask shape penalty at edges too
-        rail_shape_penalty[:safe_margin] = 0.0
-        rail_shape_penalty[-safe_margin:] = 0.0
-        
-        # Edge penalty: discourage hugging the track borders
-        # DISABLED: We want to allow hugging the borders if the curve goes there.
-        edge_penalty = np.zeros(w, dtype=np.float32)
-        
-        total_rail_penalty = rail_penalty + rail_shape_penalty + edge_penalty
-        if np.any(total_rail_penalty > 0):
-            cost += total_rail_penalty[np.newaxis, :]
+    def _morphological_skeleton(bin_img):
+        """Simple morphological skeletonization (Zhang-Suen style via erode-open)."""
+        size = np.size(bin_img)
+        skel = np.zeros_like(bin_img, dtype=np.uint8)
+        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        prev = None
+        iteration = 0
+        max_iter = 512  # safety
+        while True:
+            eroded = cv2.erode(bin_img, element)
+            temp = cv2.dilate(eroded, element)
+            temp = cv2.subtract(bin_img, temp)
+            skel = cv2.bitwise_or(skel, temp)
+            bin_img = eroded.copy()
+            iteration += 1
+            if cv2.countNonZero(bin_img) == 0 or iteration >= max_iter:
+                break
+            if prev is not None and np.array_equal(bin_img, prev):
+                break
+            prev = bin_img
+        return skel
+
+    # Live-wire style node score combining probability and centerline distance
+    bin_mask = prob > 0.10
+    skeleton_score = np.zeros_like(prob, dtype=np.float32)
+    if np.any(bin_mask):
+        try:
+            skel = _morphological_skeleton((bin_mask.astype(np.uint8) * 255))
+            if skel is not None and skel.size == prob.size:
+                skel_f = skel.astype(np.float32) / 255.0
+                # Feather skeleton to nearby pixels so DP can stay on the ridge
+                skel_f = cv2.GaussianBlur(skel_f, (3, 3), 0)
+                skel_max = float(skel_f.max())
+                if skel_max > 0:
+                    skeleton_score = skel_f / skel_max
+        except Exception:
+            skeleton_score = np.zeros_like(prob, dtype=np.float32)
+    if np.any(bin_mask):
+        dist = cv2.distanceTransform(bin_mask.astype(np.uint8), cv2.DIST_L2, 5)
+        dist_norm = dist.astype(np.float32)
+        maxd = float(dist_norm.max())
+        if maxd > 0:
+            dist_norm /= maxd
+        center_score = np.power(dist_norm, 0.9)
+    else:
+        center_score = np.zeros_like(prob, dtype=np.float32)
+
+    eps = 1e-6
+    live_score = np.power(prob, 0.7) * (0.15 + 0.85 * center_score)
+    # Boost with skeleton ridge to keep micro-bumps
+    if skeleton_score is not None:
+        live_score = np.maximum(live_score, 0.55 * skeleton_score + 0.05 * bin_mask.astype(np.float32))
+    live_score = np.clip(live_score, eps, 1.0)
+    cost = -np.log(live_score)
+
+    # Soft rail penalty: down-weight columns that stay on for many rows, without banning them
+    if h >= 4 and w >= 2:
+        col_frac = bin_mask.mean(axis=0)
+        rail_mask = col_frac > 0.25
+        # Expand to runs of length ≥3 using a 3-wide moving window
+        rail_run = np.convolve(rail_mask.astype(np.float32), np.ones(3, dtype=np.float32), mode='same') >= 2.5
+        rail_weight = 15.0  # keep modest per guidance (5–30)
+        if np.any(rail_run):
+            cost += (rail_weight * rail_run.astype(np.float32))[np.newaxis, :]
+
+    # Use live_score for Viterbi likelihoods
+    prob = live_score
     
     if hot_side in ("left", "right") and w >= 2:
         frac = np.linspace(0.0, 1.0, w, dtype=np.float32)
@@ -1938,7 +1958,7 @@ def trace_curve_with_dp(
             value = scale_min + (x / max(1, w - 1)) * (scale_max - scale_min)
             if value < pmin or value > pmax:
                 # Penalize implausible values (but not too harshly)
-                cost[:, x] += 2.0
+                cost[:, x] += 1.0
     
     # Run optimized DP (Forward Pass)
     xs_fwd, conf_fwd = fast_tracer.run_viterbi(
@@ -1993,6 +2013,605 @@ def trace_curve_with_dp(
     
     return xs, confidence
 
+
+def trace_curve_skeleton_path(mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Photocopy-style tracer: binarize, skeletonize, take top-to-bottom seam along skeleton.
+    """
+    if mask is None or mask.size == 0:
+        return np.array([]), np.array([])
+    h, w = mask.shape
+    bin_mask = (mask > 25).astype(np.uint8)
+    if cv2.countNonZero(bin_mask) == 0:
+        return np.full(h, np.nan, dtype=np.float32), np.zeros(h, dtype=np.float32)
+
+    # Light rail removal
+    dark = (mask < 40).astype(np.uint8)
+    k_vert = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(12, h // 24)))
+    k_horz = cv2.getStructuringElement(cv2.MORPH_RECT, (max(12, w // 24), 1))
+    rail_v = cv2.morphologyEx(dark, cv2.MORPH_OPEN, k_vert)
+    rail_h = cv2.morphologyEx(dark, cv2.MORPH_OPEN, k_horz)
+    rail_mask = cv2.bitwise_or(rail_v, rail_h)
+    bin_mask = cv2.subtract(bin_mask, rail_mask)
+    bin_mask = np.clip(bin_mask, 0, 1).astype(np.uint8)
+    if cv2.countNonZero(bin_mask) == 0:
+        return np.full(h, np.nan, dtype=np.float32), np.zeros(h, dtype=np.float32)
+
+    skel = _skeletonize_binary((bin_mask * 255).astype(np.uint8))
+    if skel is None or skel.size != mask.size or cv2.countNonZero(skel) == 0:
+        return np.full(h, np.nan, dtype=np.float32), np.zeros(h, dtype=np.float32)
+
+    num_labels, labels = cv2.connectedComponents(skel, connectivity=8)
+    if num_labels > 1:
+        areas = [(labels == i).sum() for i in range(1, num_labels)]
+        keep_label = 1 + int(np.argmax(areas))
+        skel = np.where(labels == keep_label, skel, 0).astype(np.uint8)
+        if cv2.countNonZero(skel) == 0:
+            return np.full(h, np.nan, dtype=np.float32), np.zeros(h, dtype=np.float32)
+
+    prob = skel.astype(np.float32) / 255.0
+    cost = 1.0 - prob
+    dp = cost.copy()
+    prev = np.full_like(labels, -1, dtype=np.int16)
+    for y in range(1, h):
+        for x in range(w):
+            best = dp[y - 1, x]
+            px = x
+            if x > 0 and dp[y - 1, x - 1] < best:
+                best = dp[y - 1, x - 1]; px = x - 1
+            if x + 1 < w and dp[y - 1, x + 1] < best:
+                best = dp[y - 1, x + 1]; px = x + 1
+            dp[y, x] += best
+            prev[y, x] = px
+    end_x = int(np.argmin(dp[-1]))
+    xs_path = np.full(h, np.nan, dtype=np.float32)
+    x = end_x
+    for y in range(h - 1, -1, -1):
+        xs_path[y] = float(x)
+        x_prev = prev[y, x]
+        if x_prev < 0:
+            break
+        x = int(x_prev)
+    conf = np.where(np.isfinite(xs_path), 1.0, 0.0).astype(np.float32)
+    return xs_path, conf
+
+
+def _skeletonize_binary(bin_img: np.ndarray) -> np.ndarray:
+    """Simple morphological skeletonization (Zhang-Suen style via erode-open)."""
+    skel = np.zeros_like(bin_img, dtype=np.uint8)
+    element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    prev = None
+    iteration = 0
+    max_iter = 1024  # safety
+    work = bin_img.copy()
+    while True:
+        eroded = cv2.erode(work, element)
+        temp = cv2.dilate(eroded, element)
+        temp = cv2.subtract(work, temp)
+        skel = cv2.bitwise_or(skel, temp)
+        work = eroded.copy()
+        iteration += 1
+        if cv2.countNonZero(work) == 0 or iteration >= max_iter:
+            break
+        if prev is not None and np.array_equal(work, prev):
+            break
+        prev = work
+    return skel
+
+
+def _parabola_subpixel_x(row_slice: np.ndarray, start: int):
+    """Fit a parabola to the log-intensity of a row slice and return subpixel x."""
+    if row_slice is None or row_slice.size < 3:
+        return float(start + np.argmax(row_slice))
+    y = row_slice.astype(np.float32)
+    idx = int(np.argmax(y))
+    if idx == 0 or idx == y.size - 1:
+        return float(start + idx)
+    y1, y2, y3 = y[idx - 1:idx + 2]
+    denom = (y1 - 2 * y2 + y3)
+    if abs(denom) < 1e-9:
+        return float(start + idx)
+    offset = 0.5 * (y1 - y3) / denom
+    return float(start + idx + offset)
+
+
+def _postprocess_missed_peaks(mask: np.ndarray, prob: np.ndarray, xs: np.ndarray, search_radius: int = 12, min_prob: float = 0.03):
+    """Hybrid post-processor: force missed ink peaks onto the curve."""
+    h, w = mask.shape
+    if xs.size != h:
+        return xs
+    for y in range(h):
+        if not np.isfinite(xs[y]):
+            continue
+        xi = int(round(xs[y]))
+        start = max(0, xi - search_radius)
+        end = min(w, xi + search_radius + 1)
+        row = prob[y, start:end]
+        if row.size == 0:
+            continue
+        # Find all peaks above min_prob (robust to plateaus)
+        peaks = []
+        plateau_start = -1
+        for i in range(1, row.size - 1):
+            val = row[i]
+            if val < min_prob:
+                plateau_start = -1
+                continue
+            
+            prev = row[i - 1]
+            next_val = row[i + 1]
+            
+            # Rising edge
+            if val > prev:
+                if val > next_val:
+                    peaks.append(i) # Sharp peak
+                    plateau_start = -1
+                elif val == next_val:
+                    plateau_start = i # Start plateau
+                else:
+                    plateau_start = -1
+            # Flat
+            elif val == prev:
+                if val > next_val:
+                    if plateau_start != -1:
+                        peaks.append((plateau_start + i) // 2) # End plateau
+                    plateau_start = -1
+                elif val < next_val:
+                    plateau_start = -1
+            # Falling
+            else:
+                plateau_start = -1
+
+        if not peaks:
+            continue
+        # If the current position is not already on a peak, move to the nearest peak
+        cur_rel = xi - start
+        on_peak = any(abs(cur_rel - p) <= 2 for p in peaks)
+        if not on_peak:
+            # Choose the peak closest to the current x
+            best = min(peaks, key=lambda p: abs(p - cur_rel))
+            # Weighted centroid around the chosen peak
+            peak_val = row[best]
+            thresh = max(peak_val * 0.6, min_prob)
+            left = best
+            right = best
+            while left > 0 and row[left - 1] >= thresh:
+                left -= 1
+            while right + 1 < row.size and row[right + 1] >= thresh:
+                right += 1
+            seg = row[left:right + 1].astype(np.float32)
+            coords = np.arange(start + left, start + right + 1, dtype=np.float32)
+            wsum = seg.sum()
+            if wsum > 1e-6:
+                xs[y] = float((coords * seg).sum() / wsum)
+            else:
+                xs[y] = float(start + best)
+
+
+def align_rgb_channels(bgr: np.ndarray) -> np.ndarray:
+    """Align RGB channels via phase correlation to reduce color fringing."""
+    if bgr is None or bgr.ndim != 3 or bgr.shape[2] != 3:
+        return bgr
+    try:
+        b, g, r = cv2.split(bgr)
+
+        def _shift_to_ref(src, ref):
+            src_f = src.astype(np.float32)
+            ref_f = ref.astype(np.float32)
+            shift, _ = cv2.phaseCorrelate(ref_f, src_f)
+            dx, dy = shift
+            M = np.float32([[1, 0, dx], [0, 1, dy]])
+            return cv2.warpAffine(src, M, (src.shape[1], src.shape[0]), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+        r_aligned = _shift_to_ref(r, g)
+        b_aligned = _shift_to_ref(b, g)
+        return cv2.merge([b_aligned, g, r_aligned])
+    except Exception:
+        return bgr
+
+
+def align_rgb_channels(bgr: np.ndarray) -> np.ndarray:
+    """Align RGB channels via phase correlation to reduce color fringing."""
+    if bgr is None or bgr.ndim != 3 or bgr.shape[2] != 3:
+        return bgr
+    try:
+        b, g, r = cv2.split(bgr)
+
+        def _shift_to_ref(src, ref):
+            src_f = src.astype(np.float32)
+            ref_f = ref.astype(np.float32)
+            shift, _ = cv2.phaseCorrelate(ref_f, src_f)
+            dx, dy = shift
+            M = np.float32([[1, 0, dx], [0, 1, dy]])
+            return cv2.warpAffine(src, M, (src.shape[1], src.shape[0]), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+        r_aligned = _shift_to_ref(r, g)
+        b_aligned = _shift_to_ref(b, g)
+        return cv2.merge([b_aligned, g, r_aligned])
+    except Exception:
+        return bgr
+    for y in range(h):
+        if not np.isfinite(xs[y]):
+            continue
+        xi = int(round(xs[y]))
+        start = max(0, xi - search_radius)
+        end = min(w, xi + search_radius + 1)
+        row = prob[y, start:end]
+        if row.size == 0:
+            continue
+        # Find all peaks above min_prob
+        peaks = []
+        for i in range(1, row.size - 1):
+            if row[i] > row[i - 1] and row[i] > row[i + 1] and row[i] >= min_prob:
+                peaks.append(i)
+        if not peaks:
+            continue
+        # If the current position is not already on a peak, move to the nearest peak
+        cur_rel = xi - start
+        on_peak = any(abs(cur_rel - p) <= 2 for p in peaks)
+        if not on_peak:
+            # Choose the peak closest to the current x
+            best = min(peaks, key=lambda p: abs(p - cur_rel))
+            # Weighted centroid around the chosen peak
+            peak_val = row[best]
+            thresh = max(peak_val * 0.6, min_prob)
+            left = best
+            right = best
+            while left > 0 and row[left - 1] >= thresh:
+                left -= 1
+            while right + 1 < row.size and row[right + 1] >= thresh:
+                right += 1
+            seg = row[left:right + 1].astype(np.float32)
+            coords = np.arange(start + left, start + right + 1, dtype=np.float32)
+            wsum = seg.sum()
+            if wsum > 1e-6:
+                xs[y] = float((coords * seg).sum() / wsum)
+            else:
+                xs[y] = float(start + best)
+        else:
+            # Even if on a peak, refine to weighted centroid for subpixel accuracy
+            cur_idx = int(cur_rel)
+            if 0 < cur_idx < row.size - 1:
+                peak_val = row[cur_idx]
+                thresh = max(peak_val * 0.6, min_prob)
+                left = cur_idx
+                right = cur_idx
+                while left > 0 and row[left - 1] >= thresh:
+                    left -= 1
+                while right + 1 < row.size and row[right + 1] >= thresh:
+                    right += 1
+                seg = row[left:right + 1].astype(np.float32)
+                coords = np.arange(start + left, start + right + 1, dtype=np.float32)
+                wsum = seg.sum()
+                if wsum > 1e-6:
+                    xs[y] = float((coords * seg).sum() / wsum)
+    return xs
+
+
+def trace_curve_pixel_perfect(mask: np.ndarray, grayscale: np.ndarray = None, bgr: np.ndarray = None, hot_side=None, preserve_wiggles: bool = False, crest_boost: bool = False):
+    """Pixel-perfect tracing optimized for dot-matrix style prints: row-by-row peak following."""
+    if mask is None or mask.size == 0:
+        return np.array([]), np.array([])
+    h, w = mask.shape
+    if h < 4 or w < 2:
+        return np.full(h, np.nan, dtype=np.float32), np.zeros(h, dtype=np.float32)
+
+    # Build probability map with hue weighting if available
+    hue_weight = None
+    if bgr is not None and bgr.size == mask.size * 3:
+        try:
+            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+            ink_mask = (mask > np.percentile(mask, 70)).astype(np.uint8)
+            if ink_mask.sum() > 20:
+                ink_hues = hsv[..., 0][ink_mask.astype(bool)]
+                ang = ink_hues.astype(np.float32) * (2.0 * np.pi / 180.0)
+                mean_hue = math.atan2(np.sin(ang).mean(), np.cos(ang).mean())
+                if mean_hue < 0:
+                    mean_hue += 2 * np.pi
+                mean_deg = mean_hue * 180.0 / np.pi
+                hue = hsv[..., 0].astype(np.float32)
+                dh = np.abs(((hue - mean_deg + 90) % 180) - 90)
+                hue_weight = np.exp(-(dh ** 2) / (2 * (12.0 ** 2))).astype(np.float32)
+                hue_weight = np.clip(hue_weight, 0.15, 1.0)
+        except Exception:
+            hue_weight = None
+
+    prob_base = mask.astype(np.float32) / 255.0
+    if hue_weight is not None:
+        prob_base = prob_base * hue_weight
+    # Morphological close to connect dot-matrix dots (slightly larger to bridge gaps)
+    # Taller kernel for crest_boost to bridge vertical dot gaps
+    k_size = (3, 11) if crest_boost else (4, 6)
+    prob_closed = cv2.morphologyEx(prob_base, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, k_size))
+    prob = np.maximum(prob_base, prob_closed)
+    
+    # Only blur if NOT crest_boost to preserve sharp dot edges
+    if not crest_boost:
+        prob = cv2.GaussianBlur(prob, (3, 3), 0)
+    
+    prob = np.clip(prob * 1.25, 0.0, 1.0)
+
+    # Per-row global maxima (photocopy-style fallback)
+    row_max_xs = np.full(h, np.nan, dtype=np.float32)
+    for y in range(h):
+        row = prob[y]
+        peak = row.max()
+        if peak < 0.01:
+            continue
+        idx = int(np.argmax(row))
+        thresh = max(peak * 0.6, 0.01)
+        left = idx
+        right = idx
+        while left > 0 and row[left - 1] >= thresh:
+            left -= 1
+        while right + 1 < row.size and row[right + 1] >= thresh:
+            right += 1
+        seg = row[left:right + 1].astype(np.float32)
+        coords = np.arange(left, right + 1, dtype=np.float32)
+        wsum = seg.sum()
+        if wsum > 1e-6:
+            row_max_xs[y] = float((coords * seg).sum() / wsum)
+        else:
+            row_max_xs[y] = float(idx)
+
+    def _seam_path(prob_map: np.ndarray):
+        """Min-cost vertical seam on (1-prob)."""
+        h_s, w_s = prob_map.shape
+        if h_s < 2 or w_s < 1:
+            return np.full(h_s, np.nan, dtype=np.float32)
+        cost = 1.0 - prob_map
+        dp = cost.copy()
+        prev = np.full((h_s, w_s), -1, dtype=np.int16)
+        for y in range(1, h_s):
+            for x in range(w_s):
+                best = dp[y - 1, x]
+                px = x
+                if x > 0 and dp[y - 1, x - 1] < best:
+                    best = dp[y - 1, x - 1]; px = x - 1
+                if x + 1 < w_s and dp[y - 1, x + 1] < best:
+                    best = dp[y - 1, x + 1]; px = x + 1
+                dp[y, x] += best
+                prev[y, x] = px
+        end_x = int(np.argmin(dp[-1]))
+        xs_path = np.full(h_s, np.nan, dtype=np.float32)
+        x = end_x
+        for y in range(h_s - 1, -1, -1):
+            xs_path[y] = float(x)
+            x_prev = prev[y, x]
+            if x_prev < 0:
+                break
+            x = int(x_prev)
+        return xs_path
+
+    # ---- Simple row-by-row peak following (dot-matrix style) ----
+    # Optional crest boost: use stronger ridge-enhanced prob to stay on tops
+    ridge_prob = prob
+    if crest_boost:
+        # Taller vertical blur to bridge larger dot gaps
+        # Also slightly wider to help horizontal connectivity
+        k_size = (5, 11)
+        ridge_prob = np.maximum(prob, cv2.blur(prob, (1, 15)))
+        sobel_y = cv2.Sobel(prob, cv2.CV_32F, 0, 1, ksize=3)
+        sobel_y = np.abs(sobel_y)
+        if sobel_y.max() > 1e-6:
+            sobel_y = sobel_y / (sobel_y.max() + 1e-6)
+            ridge_prob = np.maximum(ridge_prob, ridge_prob * (1.0 + 0.6 * sobel_y))
+        ridge_prob = cv2.dilate(ridge_prob, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3)))
+    xs = np.full(h, np.nan, dtype=np.float32)
+    confidence = np.zeros(h, dtype=np.float32)
+    base_search_rad = 80  # widened to catch larger jumps
+
+    # Find initial x from the row with strongest total ink
+    row_sums = ridge_prob.sum(axis=1)
+    start_row = int(np.argmax(row_sums))
+    best_x = int(np.argmax(ridge_prob[start_row]))
+    xs[start_row] = float(best_x)
+    confidence[start_row] = ridge_prob[start_row, best_x]
+
+    def find_peak_in_row(y, prev_x, wide_search=False):
+        """Find strongest peak near prev_x in row y with adaptive continuity penalty."""
+        xi = int(round(prev_x))
+        row_strength = float(ridge_prob[y].max()) if crest_boost else 0.0
+        
+        # Determine search window
+        s_rad = base_search_rad + int(6 * row_strength) if crest_boost else base_search_rad
+        if wide_search:
+            s_rad = s_rad * 3  # Emergency wide search
+            
+        start = max(0, xi - s_rad)
+        end = min(w, xi + s_rad + 1)
+        row = ridge_prob[y, start:end]
+        
+        # Lower threshold to catch faint dots
+        min_peak_thresh = 0.005 if crest_boost else 0.012
+        if row.size == 0 or row.max() < min_peak_thresh:
+            return np.nan, 0.0
+        
+        # Find all significant peaks (robust to plateaus)
+        peaks = []
+        plateau_start = -1
+        for i in range(1, row.size - 1):
+            val = row[i]
+            if val < min_peak_thresh:
+                plateau_start = -1
+                continue
+                
+            prev = row[i - 1]
+            next_val = row[i + 1]
+            
+            # Rising edge
+            if val > prev:
+                if val > next_val:
+                    peaks.append(i) # Sharp peak
+                    plateau_start = -1
+                elif val == next_val:
+                    plateau_start = i # Start plateau
+                else:
+                    plateau_start = -1
+            # Flat
+            elif val == prev:
+                if val > next_val:
+                    if plateau_start != -1:
+                        peaks.append((plateau_start + i) // 2) # End plateau
+                    plateau_start = -1
+                elif val < next_val:
+                    plateau_start = -1
+            # Falling
+            else:
+                plateau_start = -1
+
+        if crest_boost and peaks:
+            # Use scoring with quadratic penalty to prefer closer peaks
+            # but allow jumping to strong peaks if they are reasonably close.
+            best_score = -1e9
+            idx_rel = peaks[0]
+            for pk in peaks:
+                pk_val = row[pk]
+                pk_x = start + pk
+                dist = abs(pk_x - prev_x)
+                
+                # Quadratic penalty: penalize large jumps much more than small ones
+                # at dist=0, penalty=0
+                # at dist=10, penalty is small
+                # at dist=80, penalty is large
+                norm_dist = dist / float(s_rad) # 0 to 1
+                
+                # Base penalty factor
+                penalty_weight = 0.15 # Stronger weight to prevent jumping to grid lines
+                
+                continuity_penalty = penalty_weight * (norm_dist ** 2) * (1.0 - pk_val * 0.5)
+                
+                score = pk_val - continuity_penalty
+                if score > best_score:
+                    best_score = score
+                    idx_rel = pk
+            peak_val = row[idx_rel]
+        elif crest_boost and row.max() >= 0.008:
+             # No peaks found but signal is strong (likely edge peak), use argmax
+             idx_rel = int(np.argmax(row))
+             peak_val = row[idx_rel]
+        elif not peaks:
+            idx_rel = int(np.argmax(row))
+            peak_val = row[idx_rel]
+        else:
+            # Choose peak with best score: peak_val - adaptive continuity_penalty
+            best_score = -1e9
+            idx_rel = peaks[0]
+            for pk in peaks:
+                pk_val = row[pk]
+                pk_x = start + pk
+                # Adaptive penalty: lighter to allow close switch-backs; allow bigger excursions on strong peaks
+                dist = abs(pk_x - prev_x)
+                if crest_boost:
+                     continuity_penalty = 0.005 * (dist / float(s_rad)) * (1.0 - pk_val)
+                else:
+                     continuity_penalty = 0.020 * (dist / float(s_rad)) * (1.0 - pk_val)
+                score = pk_val - continuity_penalty
+                if score > best_score:
+                    best_score = score
+                    idx_rel = pk
+            peak_val = row[idx_rel]
+        
+        # Weighted centroid for subpixel
+        # Use cleaner 'prob' map for localization if available to avoid blur bias
+        if crest_boost:
+            raw_row = prob[y, start:end]
+            if raw_row.size == row.size:
+                # Re-check value on raw map
+                pv_raw = raw_row[idx_rel]
+                # If raw map has signal, use it. Otherwise fall back to ridge_row
+                if pv_raw > 0.001:
+                    row_for_centroid = raw_row
+                    peak_val = pv_raw
+                    # Tighter threshold for crest_boost to stay on peak
+                    thresh = max(peak_val * 0.70, 0.0025)
+                else:
+                    row_for_centroid = row
+                    thresh = max(peak_val * 0.70, 0.0025)
+            else:
+                row_for_centroid = row
+                thresh = max(peak_val * 0.70, 0.0025)
+        else:
+            row_for_centroid = row
+            thresh = max(peak_val * 0.40, 0.003)
+
+        left = idx_rel
+        right = idx_rel
+        while left > 0 and row_for_centroid[left - 1] >= thresh:
+            left -= 1
+        while right + 1 < row_for_centroid.size and row_for_centroid[right + 1] >= thresh:
+            right += 1
+        seg = row_for_centroid[left:right + 1].astype(np.float32)
+        coords = np.arange(start + left, start + right + 1, dtype=np.float32)
+        wsum = seg.sum()
+        if wsum > 1e-6:
+            x_out = float((coords * seg).sum() / wsum)
+        else:
+            x_out = float(start + idx_rel)
+        return x_out, peak_val
+
+    # Trace downward from start_row
+    prev_x = xs[start_row]
+    for y in range(start_row + 1, h):
+        x_new, conf = find_peak_in_row(y, prev_x)
+        if not np.isfinite(x_new) and crest_boost:
+            # Fallback: try wide search
+            x_new, conf = find_peak_in_row(y, prev_x, wide_search=True)
+            
+        xs[y] = x_new
+        confidence[y] = conf
+        if np.isfinite(x_new):
+            prev_x = x_new
+
+    # Trace upward from start_row
+    prev_x = xs[start_row]
+    for y in range(start_row - 1, -1, -1):
+        x_new, conf = find_peak_in_row(y, prev_x)
+        if not np.isfinite(x_new) and crest_boost:
+            # Fallback: try wide search
+            x_new, conf = find_peak_in_row(y, prev_x, wide_search=True)
+            
+        xs[y] = x_new
+        confidence[y] = conf
+        if np.isfinite(x_new):
+            prev_x = x_new
+
+    # Fill small gaps with linear interpolation (more permissive to bridge gaps)
+    s = pd.Series(xs)
+    s = s.interpolate(method='linear', limit_direction='both', limit=25)
+    xs = s.to_numpy(dtype=np.float32)
+
+    # No inertia smoothing to keep every wiggle
+
+    # Photocopy-style fusion: row tracer vs row maxima vs seam
+    # 1) Fuse with row maxima when stronger (no margin to keep detail)
+    for y in range(h):
+        if not np.isfinite(row_max_xs[y]):
+            continue
+        x_row = xs[y]
+        x_max = row_max_xs[y]
+        p_max = ridge_prob[y, int(round(np.clip(x_max, 0, w - 1)))]
+        p_row = ridge_prob[y, int(round(np.clip(x_row, 0, w - 1)))] if np.isfinite(x_row) else -1.0
+        if p_max > p_row:
+            xs[y] = x_max
+
+    # 2) Optional seam fusion; skip when crest_boost is enabled
+    if not crest_boost:
+        xs_seam = _seam_path(prob)
+        if xs_seam.size == h:
+            xs_fused = xs.copy()
+            for y in range(h):
+                x_row = xs[y]
+                x_seam = xs_seam[y]
+                if not np.isfinite(x_seam):
+                    continue
+                p_seam = prob[y, int(round(np.clip(x_seam, 0, w - 1)))]
+                p_row = prob[y, int(round(np.clip(x_row, 0, w - 1)))] if np.isfinite(x_row) else -1.0
+                if p_seam > p_row:  # no margin, prefer stronger seam locally
+                    xs_fused[y] = x_seam
+            xs = xs_fused
+
+    return xs, confidence
 
 def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.5, hot_side=None):
     """
@@ -5529,10 +6148,17 @@ def digitize():
         right_value = float(c['right_value'])
         mode = c.get('mode', 'black')
         hot_side = c.get('hot_side')
+        pixel_perfect = bool(c.get('pixel_perfect'))
+        trace_mode = c.get('trace_mode')
+        align_channels = bool(c.get('align_channels'))
+        preserve_wiggles = bool(c.get('preserve_wiggles'))
+        crest_boost = bool(c.get('crest_boost'))
         if not hot_side and np.isfinite(left_value) and np.isfinite(right_value):
             hot_side = 'right' if right_value >= left_value else 'left'
         
         roi = img[top:bot, left_px:right_px]
+        if align_channels:
+            roi = align_rgb_channels(roi)
         if blur > 0:
             bb = blur + 1 if blur % 2 == 0 else blur
             roi = cv2.GaussianBlur(roi, (bb, bb), 0)
@@ -5570,10 +6196,36 @@ def digitize():
         dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
         max_step_dp = 200 if mode in colored_modes else 3  # Allow unlimited movement to follow gamma ray spikes
 
+        # Optional pixel-perfect skeleton tracer (preserve every bump)
+        if pixel_perfect and mode in colored_modes:
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            if trace_mode == "skeleton_path":
+                xs, confidence = trace_curve_skeleton_path(mask)
+            else:
+                xs, confidence = trace_curve_pixel_perfect(
+                    mask,
+                    grayscale=gray_roi,
+                    bgr=roi,
+                    hot_side=hot_side,
+                    preserve_wiggles=preserve_wiggles,
+                    crest_boost=crest_boost,
+                )
+            width_px = mask.shape[1]
+            # Fill gaps gently to avoid dropping rows
+            if xs.size:
+                s = pd.Series(xs)
+                s = s.interpolate(method='linear', limit_direction='both', limit=max(10, int(xs.size * 0.02)))
+                xs = s.to_numpy(dtype=np.float32)
+            # Hybrid post-processing: force missed ink peaks onto the curve
+            prob = mask.astype(np.float32) / 255.0
+            if crest_boost:
+                xs = _postprocess_missed_peaks(mask, prob, xs, search_radius=40, min_prob=0.004)
+            else:
+                xs = _postprocess_missed_peaks(mask, prob, xs, search_radius=30, min_prob=0.008)
         # For colored modes, use the "Fusion" strategy from successful memories:
         # Run both DP and Direct Centerline tracers, then merge per-row based on probability.
         # AND DISABLE EXTRA REFINEMENTS which cause the zig-zag snapping.
-        if mode in colored_modes:
+        elif mode in colored_modes:
             # SUPER-RESOLUTION: Upscale mask by 2x to allow sub-pixel precision
             # Use LINEAR interpolation to create smooth gradients between pixels
             mask_orig = mask

@@ -2047,18 +2047,17 @@
         }
 
         function ensureTracePointsHaveDepthIndex(curveId) {
-            if (!curveId) return;
-            if (!lastCurveTraces || !lastCurveTraces[curveId]) return;
+            // Resolve to the active trace/key so depth indices populate even when trace keys differ
+            const { traceKey, points } = getActiveCurveTracePoints();
+            const key = traceKey || curveId || editCurveId;
+            if (!key || !points || !Array.isArray(points) || !points.length) return;
             if (!Array.isArray(lastDigitizedDepth) || !lastDigitizedDepth.length) return;
-
-            const pts = lastCurveTraces[curveId];
-            if (!Array.isArray(pts) || !pts.length) return;
 
             const depthCfg = lastDepthConfig || getDepthConfigFromInputs();
             if (!depthCfg) return;
 
-            for (let i = 0; i < pts.length; i++) {
-                const pt = pts[i];
+            for (let i = 0; i < points.length; i++) {
+                const pt = points[i];
                 if (!Array.isArray(pt) || pt.length < 2) continue;
                 if (Number.isInteger(pt[2]) && pt[2] >= 0) continue;
 
@@ -2068,6 +2067,13 @@
                 if (dIdx >= 0) {
                     pt[2] = dIdx;
                 }
+            }
+
+            // Persist normalized key back into lastCurveTraces
+            if (lastCurveTraces && traceKey && lastCurveTraces[traceKey]) {
+                lastCurveTraces[traceKey] = points;
+            } else if (lastCurveTraces && curveId && lastCurveTraces[curveId]) {
+                lastCurveTraces[curveId] = points;
             }
         }
 
@@ -2155,9 +2161,9 @@
             let nearestDist2 = Infinity;
             let bestUnpinnedIndex = -1;
             let bestUnpinnedDist2 = Infinity;
-            const maxDist = 20;
+            const maxDist = 8;  // Reduced from 20px to 8px for dense areas
             const maxDist2 = maxDist * maxDist;
-            const unpinRadius = 6;
+            const unpinRadius = 3;  // Reduced from 6px to 3px for precision
             const unpinRadius2 = unpinRadius * unpinRadius;
 
             for (let i = 0; i < pts.length; i++) {
@@ -3713,7 +3719,9 @@
                 ? { focusCurveId: editCurveId, fastMode: true }
                 : undefined);
         }, { passive: true });
+        // Keep overlays aligned if the window or page moves (scroll/resize)
         window.addEventListener('resize', () => scheduleCurveOverlayRedraw());
+        window.addEventListener('scroll', () => scheduleCurveOverlayRedraw(), { passive: true });
 
         // Marquee-style panel selection (click-drag-release) and curve edge picking
         if (imageHitTarget) imageHitTarget.addEventListener('dblclick', (event) => {
@@ -6446,7 +6454,8 @@
             legacyChains.forEach((el) => el.remove());
 
 
-            const rect = img.getBoundingClientRect();
+            // Use overlay box if available so canvas matches the scrolled container
+            const rect = overlay.getBoundingClientRect();
             if (!rect.width || !rect.height) {
                 clearCurveTraceOverlays();
                 return;
@@ -6465,25 +6474,12 @@
                 imageHeight = h;
             }
 
-            const scrollEl = canvas.closest('.viewer-scroll');
+            // Anchor drawing to overlay origin; ignore scroll offsets to prevent drift
             let viewLeft = 0;
             let viewTop = 0;
             let baseWidth = rect.width;
             let baseHeight = rect.height;
             const visibleMarginPx = 60;
-            if (scrollEl) {
-                viewLeft = Number(scrollEl.scrollLeft) || 0;
-                viewTop = Number(scrollEl.scrollTop) || 0;
-                baseWidth = Number(scrollEl.clientWidth) || rect.width;
-                baseHeight = Number(scrollEl.clientHeight) || rect.height;
-                if (rect.width) baseWidth = Math.min(baseWidth, rect.width);
-                if (rect.height) baseHeight = Math.min(baseHeight, rect.height);
-                const maxLeft = Math.max(0, rect.width - baseWidth);
-                const maxTop = Math.max(0, rect.height - baseHeight);
-                viewLeft = Math.max(0, Math.min(viewLeft, maxLeft));
-                viewTop = Math.max(0, Math.min(viewTop, maxTop));
-            }
-            
             const viewBottom = viewTop + baseHeight;
             const viewRight = viewLeft + baseWidth;
 
@@ -6516,8 +6512,9 @@
             // CSS size stays at base size (already zoomed via element sizing)
             canvas.style.width = baseWidth + 'px';
             canvas.style.height = baseHeight + 'px';
-            canvas.style.left = viewLeft + 'px';
-            canvas.style.top = viewTop + 'px';
+            // Anchor canvas to overlay origin to avoid scroll-induced drift
+            canvas.style.left = '0px';
+            canvas.style.top = '0px';
 
             const ctx = canvas.getContext('2d');
             if (!ctx) {
@@ -6629,8 +6626,8 @@
                     for (let i = 0; i < sortedPoints.length; i++) {
                         const xImg = sortedPoints[i][0];
                         const yImg = sortedPoints[i][1];
-                        const xDom = (xImg * scaleX) - viewLeft;
-                        const yDom = (yImg * scaleY) - viewTop;
+                        const xDom = (xImg * scaleX);
+                        const yDom = (yImg * scaleY);
                         if (first) {
                             ctx.moveTo(xDom, yDom);
                             prevXImg = xImg;
@@ -6740,6 +6737,13 @@
                         const isPinned = (dIdx != null) ? isDepthIndexPinned(name, dIdx) : false;
                         let xDom = (xImg * scaleX) - viewLeft;
                         let yDom = (yImg * scaleY) - viewTop;
+                        if (isPinned) {
+                            // Pinned points get a distinct red highlight
+                            ctx.beginPath();
+                            ctx.arc(xDom, yDom, r + 1.2, 0, Math.PI * 2);
+                            ctx.fillStyle = '#ff0000';
+                            ctx.fill();
+                        }
                         if (highContrastOverlay) {
                             ctx.beginPath();
                             ctx.arc(xDom, yDom, r + 0.4, 0, Math.PI * 2);
@@ -6747,7 +6751,7 @@
                             ctx.fill();
                             ctx.beginPath();
                             ctx.arc(xDom, yDom, r, 0, Math.PI * 2);
-                            ctx.fillStyle = pointFillColor;
+                            ctx.fillStyle = isPinned ? '#ff6600' : pointFillColor;
                             ctx.fill();
                         } else if (compactOverlay) {
                             // Compact: hollow ring markers (minimizes ink occlusion)
@@ -6760,8 +6764,8 @@
                             ctx.globalAlpha = 1.0;
                             ctx.beginPath();
                             ctx.arc(xDom, yDom, rBase, 0, Math.PI * 2);
-                            ctx.strokeStyle = pointFillColor;
-                            ctx.lineWidth = ringW;
+                            ctx.strokeStyle = isPinned ? '#ff0000' : pointFillColor;
+                            ctx.lineWidth = isPinned ? ringW * 2 : ringW;
                             ctx.stroke();
                             ctx.restore();
                         } else if (crispOverlay) {
@@ -6774,8 +6778,8 @@
                             yDom = _snapCoord(yDom, sy, useHalf);
                             ctx.save();
                             ctx.globalAlpha = 1.0;
-                            const ringWhitePx = rPx + 1.0;
-                            const ringBlackPx = rPx + 0.5;
+                            const ringWhitePx = rPx + (isPinned ? 2.0 : 1.0);
+                            const ringBlackPx = rPx + (isPinned ? 1.5 : 0.5);
                             const ringWhiteBase = Math.max(0.1, ringWhitePx / dpr);
                             const ringBlackBase = Math.max(0.1, ringBlackPx / dpr);
                             ctx.beginPath();
@@ -6788,7 +6792,7 @@
                             ctx.fill();
                             ctx.beginPath();
                             ctx.arc(xDom, yDom, rBase, 0, Math.PI * 2);
-                            ctx.fillStyle = pointFillColor;
+                            ctx.fillStyle = isPinned ? '#ff0000' : pointFillColor;
                             ctx.fill();
                             ctx.restore();
                         } else {
@@ -6796,13 +6800,13 @@
                             ctx.save();
                             ctx.globalAlpha = 0.35;
                             ctx.beginPath();
-                            ctx.arc(xDom, yDom, r + 0.35, 0, Math.PI * 2);
+                            ctx.arc(xDom, yDom, r + (isPinned ? 0.7 : 0.35), 0, Math.PI * 2);
                             ctx.fillStyle = '#ffffff';
                             ctx.fill();
                             ctx.globalAlpha = 0.9;
                             ctx.beginPath();
                             ctx.arc(xDom, yDom, r, 0, Math.PI * 2);
-                            ctx.fillStyle = pointFillColor;
+                            ctx.fillStyle = isPinned ? '#ff0000' : pointFillColor;
                             ctx.fill();
                             ctx.restore();
                         }
@@ -6813,6 +6817,10 @@
                             ctx.beginPath();
                             ctx.arc(xDom, yDom, r + 2.2, 0, Math.PI * 2);
                             ctx.strokeStyle = '#ffd000';
+                            ctx.lineWidth = 1.5;
+                            ctx.stroke();
+                            ctx.restore();
+                        }
                             ctx.lineWidth = Math.max(0.1, 1.2 / Math.max(1, sx));
                             ctx.stroke();
                             ctx.restore();
