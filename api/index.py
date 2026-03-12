@@ -14,6 +14,9 @@ from io import BytesIO
 import base64
 from typing import Dict, List, Tuple
 
+from web_app import write_las_simple as write_las_simple_v12
+from web_app import build_las_filename_from_metadata
+
 app = Flask(__name__, template_folder='../templates', static_folder='../static')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
@@ -51,33 +54,9 @@ def compute_depth_vector(nrows, top_depth, bottom_depth):
     ys = np.arange(nrows, dtype=np.float32)
     return top_depth + (ys / max(1, nrows-1)) * (bottom_depth - top_depth)
 
-def write_las_simple(depth, curve_data, depth_unit="FT"):
+def write_las_simple(depth, curve_data, depth_unit="FT", header_metadata=None):
     """Generate LAS file as string"""
-    null_val = -999.25
-    lines = []
-    lines.append("~Version\n")
-    lines.append(" VERS. 2.0 : CWLS LOG ASCII STANDARD\n")
-    lines.append(" WRAP. NO  : One line per depth step\n")
-    lines.append("~Well\n")
-    lines.append(f" STRT.{depth_unit} {depth[0]:.4f} : START DEPTH\n")
-    lines.append(f" STOP.{depth_unit} {depth[-1]:.4f} : STOP DEPTH\n")
-    step = float(depth[1] - depth[0]) if depth.size > 1 else 0.0
-    lines.append(f" STEP.{depth_unit} {step:.4f} : STEP\n")
-    lines.append(f" NULL. {null_val} : NULL VALUE\n")
-    lines.append("~Curve\n")
-    lines.append(f" DEPT.{depth_unit} : Depth\n")
-    for name, meta in curve_data.items():
-        unit = meta.get("unit", "")
-        lines.append(f" {name}.{unit} : {name}\n")
-    lines.append("~ASCII\n")
-
-    names = list(curve_data.keys())
-    arrays = [curve_data[n]["values"] for n in names]
-    for i in range(depth.size):
-        row = [f"{depth[i]:.4f}"] + [f"{arrays[j][i]:.4f}" for j in range(len(arrays))]
-        lines.append(" ".join(row) + "\n")
-
-    return "".join(lines)
+    return write_las_simple_v12(depth, curve_data, depth_unit, header_metadata=header_metadata)
 
 def auto_detect_tracks(image_array):
     """Auto-detect track boundaries"""
@@ -167,6 +146,8 @@ def digitize():
         depth_cfg = cfg['depth']
         curves = cfg['curves']
         gopt = cfg.get('global_options', {})
+
+        header_metadata = data.get('header_metadata') if isinstance(data, dict) else None
         
         null_val = float(gopt.get('null', -999.25))
         downsample = int(gopt.get('downsample', 1))
@@ -223,12 +204,12 @@ def digitize():
             curve_data[name] = {'unit': unit, 'values': vals_out}
         
         # Generate LAS file
-        las_content = write_las_simple(base_depth, curve_data, depth_unit)
+        las_content = write_las_simple(base_depth, curve_data, depth_unit, header_metadata=header_metadata)
         
         return jsonify({
             'success': True,
             'las_content': las_content,
-            'filename': 'digitized_log.las'
+            'filename': build_las_filename_from_metadata(header_metadata, default_name='digitized_log.las')
         })
     except Exception as e:
         return jsonify({'error': f'Server error: {str(e)}'}), 500

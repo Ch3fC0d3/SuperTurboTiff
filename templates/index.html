@@ -12,6 +12,7 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
+            overflow-x: hidden;
         }
 
         .container {
@@ -35,10 +36,20 @@
             background: #f8f9fa;
             border-radius: 8px;
             padding: 20px;
-            margin-bottom: 20px;
+            margin-bottom: 5px;
             border-left: 4px solid #667eea;
         }
         .step h2 { color: #667eea; margin-bottom: 15px; }
+        .control-pane .step,
+        .curve-pane .step {
+            padding: 12px 16px;
+            margin-bottom: 0;
+        }
+        .control-pane .step h2,
+        .curve-pane .step h2 {
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
         .upload-area {
             border: 3px dashed #667eea;
             border-radius: 8px;
@@ -181,6 +192,21 @@
             background: #f3f4f6;
             font-weight: 600;
         }
+        .overlay-size-controls {
+            row-gap: 8px;
+        }
+        .overlay-size-controls .control-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            flex: 0 0 auto;
+            white-space: nowrap;
+        }
+        .overlay-size-controls .control-group .hint-text {
+            min-width: 44px;
+            text-align: right;
+            display: inline-block;
+        }
         .status {
             padding: 15px;
             border-radius: 6px;
@@ -203,22 +229,24 @@
             z-index: 30;
         }
         .overlay-scroll {
-            max-height: none;
             overflow-y: auto;
         }
         .workspace {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 380px;
-            gap: 16px;
-            margin-top: 24px;
-            align-items: stretch;
+            grid-template-columns: minmax(0, 1fr) 400px;
+            gap: 20px;
+            margin-bottom: 0px;
+            align-items: start;
         }
         .control-pane {
             display: flex;
             flex-direction: column;
-            gap: 16px;
-            max-height: calc(100vh - 60px);
+            gap: 12px;
+            height: 100%;
             overflow-y: auto;
+            position: sticky;
+            top: 20px;
+            align-self: stretch;
         }
         .viewer-pane {
             flex: 1 1 auto;
@@ -235,16 +263,62 @@
             display: flex;
             flex-direction: column;
         }
+        .viewer-controls {
+            display: flex;
+            gap: 8px;
+            padding: 6px 10px;
+            background: #f5f5f5;
+            border-bottom: 1px solid #ddd;
+            margin-bottom: 0;
+            flex-wrap: wrap;
+            align-items: center;
+            font-size: 0.75rem;
+        }
+        .viewer-controls .btn {
+            padding: 3px 7px;
+            font-size: 0.75rem;
+            min-width: auto;
+            white-space: nowrap;
+        }
+        .viewer-controls .control-section {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            padding: 0 6px;
+            border-left: 1px solid #ddd;
+        }
+        .viewer-controls .control-section:first-child {
+            border-left: none;
+            padding-left: 0;
+        }
+        .viewer-controls label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin: 0;
+        }
+        .viewer-controls input[type="range"] {
+            width: 80px;
+        }
+        .viewer-controls .hint-text {
+            font-size: 0.7rem;
+            color: #666;
+        }
         .viewer-scroll {
-            flex: 0 0 auto;
-            height: calc(100vh - 60px);
+            height: calc(100vh - 120px) !important;
+            max-height: calc(100vh - 120px) !important;
+            overflow: auto !important;
+            position: relative;
+        }
+        .viewer-scroll.scroll-enabled {
             overflow: auto;
         }
         .curve-pane {
             display: flex;
             flex-direction: column;
-            max-height: calc(100vh - 60px);
+            max-height: calc(100vh - 180px);
             overflow-y: auto;
+            position: sticky;
+            top: 20px;
         }
         .curve-pane .step {
             margin-bottom: 0;
@@ -304,17 +378,25 @@
             grid-template-columns: minmax(0, 1fr);
             gap: 12px;
         }
-        @media (max-width: 1000px) {
+        @media (max-width: 1200px) {
             .workspace {
-                flex-direction: column;
+                grid-template-columns: 1fr;
+                gap: 16px;
             }
             .viewer-scroll {
-                height: auto;
+                height: 70vh;
                 max-height: 70vh;
             }
             .control-pane,
             .curve-pane {
                 max-width: none;
+                max-height: none;
+                position: static;
+            }
+        }
+        @media (min-width: 1201px) {
+            .workspace {
+                grid-template-columns: minmax(600px, 1fr) 400px;
             }
         }
         .curve-actions {
@@ -590,7 +672,7 @@
         /* Toolbar Styles */
         .floating-toolbar {
             position: absolute;
-            top: 20px;
+            bottom: 10px;
             left: 50%;
             transform: translateX(-50%);
             background: rgba(255, 255, 255, 0.95);
@@ -601,6 +683,8 @@
             gap: 8px;
             z-index: 100;
             border: 1px solid #ddd;
+            width: fit-content;
+            pointer-events: auto;
         }
         .toolbar-group {
             display: flex;
@@ -749,12 +833,110 @@
                 <div id="imageInfo" class="hidden"></div>
             </div>
 
-            <!-- Main workspace: left.  viewer, right configuration -->
+            <!-- Status Messages (positioned above workspace for visibility) -->
+            <div id="statusArea" style="margin-bottom: 10px;"></div>
+
+            <!-- Main workspace: left viewer, right configuration -->
             <div id="workspace" class="workspace hidden">
                 <!-- Left: log viewer -->
                 <div class="viewer-pane">
                     <div class="viewer-frame" style="position: relative;">
-                        <!-- Floating Toolbar (initially hidden, shown in Edit Mode) -->
+                        <!-- Crosshair Overlay Elements -->
+                        <div id="crosshairX" class="crosshair-line hidden"></div>
+                        <div id="crosshairY" class="crosshair-line hidden"></div>
+                        <div id="crosshairLabel" class="crosshair-label hidden"></div>
+
+                        <!-- Unified Viewer Controls -->
+                        <div class="viewer-controls">
+                            <!-- Lock Controls -->
+                            <div class="control-section">
+                                <button type="button" class="btn" onclick="toggleScrollLock()" id="scrollLockBtn" title="Lock/Unlock Viewer Scroll">🔓</button>
+                                <button type="button" class="btn" onclick="togglePageLock()" id="pageLockBtn" title="Lock/Unlock Page Scroll">📄</button>
+                            </div>
+
+                            <!-- Zoom Controls -->
+                            <div class="control-section">
+                                <label>Zoom:</label>
+                                <button type="button" class="btn" onclick="setZoom(0.25)">25%</button>
+                                <button type="button" class="btn" onclick="setZoom(0.5)">50%</button>
+                                <button type="button" class="btn" onclick="setZoom(1.0)">100%</button>
+                                <button type="button" class="btn" onclick="setZoom(2.0)">200%</button>
+                                <button type="button" class="btn" onclick="setZoom(4.0)">400%</button>
+                                <button type="button" class="btn" onclick="setZoom(8.0)">800%</button>
+                                <button type="button" class="btn" onclick="setZoom(12.0)">1200%</button>
+                                <button type="button" class="btn" onclick="setZoom(16.0)">1600%</button>
+                                <button type="button" class="btn" onclick="setZoom(20.0)">2000%</button>
+                                <input type="range" id="zoomSlider" min="50" max="4800" value="100" step="5" oninput="setZoom(this.value / 100)" style="width: 120px;" />
+                                <span id="zoomLabel" class="hint-text">100%</span>
+                            </div>
+
+                            <div class="control-section">
+                                <label>Curve:</label>
+                                <select id="overlayCurveSelect" onchange="onOverlayCurveTargetChange()" style="max-width: 140px; font-size: 0.75rem; padding: 2px 6px;">
+                                    <option value="__all_unlocked__">All (unlocked)</option>
+                                </select>
+                                <label style="display: flex; align-items: center; gap: 3px; cursor: pointer; font-weight: 400;" title="Lock this curve's overlay settings">
+                                    <input type="checkbox" id="overlayCurveLock" onchange="toggleOverlayCurveLock()"> Lock
+                                </label>
+                            </div>
+
+                            <!-- Overlay Size Controls -->
+                            <div class="control-section">
+                                <label>Line:</label>
+                                <input type="range" id="lineWidthSlider" min="0.10" max="24" value="2" step="0.05" oninput="updateOverlaySize()" />
+                                <span id="lineWidthLabel" class="hint-text">2</span>
+                            </div>
+
+                            <div class="control-section">
+                                <label>Length:</label>
+                                <input type="range" id="lineLengthSlider" min="2" max="80" value="12" step="1" oninput="updateOverlaySize()" />
+                                <span id="lineLengthLabel" class="hint-text">12</span>
+                            </div>
+
+                            <div class="control-section">
+                                <label>Height:</label>
+                                <input type="range" id="lineHeightSlider" min="0.2" max="12" value="2" step="0.1" oninput="updateOverlaySize()" />
+                                <span id="lineHeightLabel" class="hint-text">2.0</span>
+                            </div>
+
+                            <div class="control-section">
+                                <label>Points:</label>
+                                <input type="range" id="pointSizeSlider" min="0.1" max="4" value="0.8" step="0.05" oninput="updateOverlaySize()" />
+                                <span id="pointSizeLabel" class="hint-text">0.8</span>
+                            </div>
+
+                            <div class="control-section">
+                                <label style="display: flex; align-items: center; gap: 3px; cursor: pointer; font-weight: 400;">
+                                    <input type="checkbox" id="showLine" checked onchange="toggleOverlayVisibility()"> Line
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 3px; cursor: pointer; font-weight: 400;" title="Show only the continuous line">
+                                    <input type="checkbox" id="mainLineOnly" onchange="toggleOverlayVisibility()"> Main only
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 3px; cursor: pointer; font-weight: 400;">
+                                    <input type="checkbox" id="showPoints" checked onchange="toggleOverlayVisibility()"> Pts
+                                </label>
+                            </div>
+
+                            <div class="control-section">
+                                <label style="display: flex; align-items: center; gap: 3px; cursor: pointer; font-weight: 400;">
+                                    <input type="checkbox" id="highContrastOverlay" checked onchange="toggleOverlayVisibility()"> High contrast
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 3px; cursor: pointer; font-weight: 400;">
+                                    <input type="checkbox" id="crispOverlay" onchange="toggleOverlayVisibility()"> Crisp
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 3px; cursor: pointer; font-weight: 400;">
+                                    <input type="checkbox" id="compactOverlay" onchange="toggleOverlayVisibility()"> Compact
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="overlay-scroll viewer-scroll">
+                            <div id="overlay">
+                                <img id="imagePreview" alt="Log preview">
+                                <canvas id="curveCanvas"></canvas>
+                            </div>
+                        </div>
+                        <!-- Floating Toolbar (additional tools shown in Edit Mode) -->
                         <div class="floating-toolbar hidden" id="digitizerToolbar">
                             <div class="toolbar-group">
                                 <button class="tool-btn active" id="toolPointer" title="Pointer (Edit/Move)" onclick="setTool('pointer')">🖱️</button>
@@ -765,6 +947,12 @@
                             <div class="toolbar-divider"></div>
                             <div class="toolbar-group">
                                 <button class="tool-btn" id="toolUndo" title="Undo Last Edit (Ctrl+Z)" onclick="undoLastCurveEdit()">↩️</button>
+                            </div>
+                            <div class="toolbar-divider"></div>
+                            <div class="toolbar-group">
+                                <button class="tool-btn" id="toolViewerLock" title="Viewer Scroll Lock" onclick="toggleScrollLock()">🔓</button>
+                                <button class="tool-btn" id="toolPageLock" title="Page Scroll Lock" onclick="togglePageLock()">📄</button>
+                                <button class="tool-btn" id="toolCurveLock" title="Lock Selected Curve Overlay" onclick="toggleOverlayCurveLockFromToolbar()">🎚️🔒</button>
                             </div>
                             <div class="toolbar-divider"></div>
                             <div class="toolbar-group" style="display: flex; align-items: center; padding: 0 4px;">
@@ -778,63 +966,6 @@
                                 <button class="tool-btn" id="btnFilterContrast" title="High Contrast" onclick="toggleFilter('contrast')">◐</button>
                             </div>
                         </div>
-                        
-                        <!-- Crosshair Overlay Elements -->
-                        <div id="crosshairX" class="crosshair-line hidden"></div>
-                        <div id="crosshairY" class="crosshair-line hidden"></div>
-                        <div id="crosshairLabel" class="crosshair-label hidden"></div>
-                        
-                        <div class="overlay-scroll viewer-scroll">
-                            <div id="overlay">
-                                <img id="imagePreview" alt="Log preview">
-                                <canvas id="curveCanvas"></canvas>
-                            </div>
-                        </div>
-                    </div>
-                    <!-- Zoom controls below image - always visible -->
-                    <div class="zoom-controls" style="padding: 8px 12px; background: #f5f5f5; border-top: 1px solid #ddd; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                        <label style="font-weight: 600; font-size: 0.85em; margin-right: 4px;">Zoom:</label>
-                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(0.5)">50%</button>
-                        <button type="button" class="btn" style="padding: 4px 10px; font-size: 0.8em;" onclick="setZoom(1.0)">100%</button>
-                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(2.0)">200%</button>
-                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(4.0)">400%</button>
-                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(8.0)">800%</button>
-                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(12.0)">1200%</button>
-                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(16.0)">1600%</button>
-                        <button type="button" class="btn" style="padding: 4px 8px; font-size: 0.8em;" onclick="setZoom(20.0)">2000%</button>
-                        <input type="range" id="zoomSlider" min="50" max="4800" value="100" step="5" oninput="setZoom(this.value / 100)" style="width: 140px;" />
-                        <span id="zoomLabel" class="hint-text" style="font-size: 0.85em;">100%</span>
-                    </div>
-                    <!-- Overlay size controls -->
-                    <div class="overlay-size-controls" style="padding: 4px 12px 8px 12px; background: #f5f5f5; border-top: 1px solid #eee; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-                        <label style="font-weight: 600; font-size: 0.8em;">Overlay Size:</label>
-                        <label style="font-size: 0.75em;">Line:</label>
-                        <input type="range" id="lineWidthSlider" min="0.10" max="8" value="2" step="0.05" oninput="updateOverlaySize()" style="width: 80px;" />
-                        <span id="lineWidthLabel" class="hint-text" style="font-size: 0.75em; min-width: 20px;">2</span>
-                        
-                        <label style="margin-left: 8px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                            <input type="checkbox" id="showLine" checked onchange="toggleOverlayVisibility()"> Line
-                        </label>
-
-                        <label style="font-size: 0.75em; margin-left: 12px;">Points:</label>
-                        <input type="range" id="pointSizeSlider" min="0.1" max="4" value="0.8" step="0.05" oninput="updateOverlaySize()" style="width: 80px;" />
-                        <span id="pointSizeLabel" class="hint-text" style="font-size: 0.75em; min-width: 20px;">0.8</span>
-
-                        <label style="margin-left: 8px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                            <input type="checkbox" id="showPoints" checked onchange="toggleOverlayVisibility()"> Points
-                        </label>
-
-                        <label style="margin-left: 10px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                            <input type="checkbox" id="highContrastOverlay" checked onchange="toggleOverlayVisibility()"> High contrast
-                        </label>
-
-                        <label style="margin-left: 10px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                            <input type="checkbox" id="crispOverlay" onchange="toggleOverlayVisibility()"> Crisp
-                        </label>
-
-                        <label style="margin-left: 10px; font-size: 0.75em; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                            <input type="checkbox" id="compactOverlay" onchange="toggleOverlayVisibility()"> Compact
-                        </label>
                     </div>
                 </div>
 
@@ -959,9 +1090,12 @@
                                     </div>
                                 </div>
 
-                                <div style="margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px;">
+                                <div style="margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
                                     <button class="btn" type="button" onclick="runDigitization()" id="digitizeBtn">
                                         🚀 Digitize
+                                    </button>
+                                    <button class="btn" type="button" onclick="mlPredictCurve()" title="Use trained ML model to predict a single curve trace in the selected panel">
+                                        🤖 ML predict curve
                                     </button>
                                     <button class="btn" type="button" onclick="downloadLastLas()" id="downloadLasBtn" disabled>
                                         💾 Download LAS
@@ -1005,9 +1139,6 @@
                 </div>
             </div>
 
-            <!-- Status Messages -->
-            <div id="statusArea"></div>
-
             <!-- Step 5: AI Insights -->
             <div class="step hidden" id="insightsStep">
                 <h2>Step 5: AI Insights</h2>
@@ -1050,6 +1181,7 @@
         let headerRegionDrag = false;
         let headerRegion = null; // { left_px, right_px, top_px, bottom_px }
         let headerTracks = null; // array of tracks from header capture
+        let headerMetadata = null; // well/log metadata parsed from header OCR
         let lastDigitizedDepth = null;   // array of depths from last /digitize
         let lastDigitizedCurves = null;  // { curveId: { unit, values[] } }
         let lastLasContent = null;       // LAS text from last digitization
@@ -1138,7 +1270,6 @@
                 editDragState = null;
                 if (btn) btn.textContent = 'Enable edit mode';
                 if (status) status.textContent = 'Edit mode off';
-                if (sel) sel.value = '';
             }
             renderCurveListView();
         }
@@ -1339,7 +1470,7 @@
         }
 
         function setZoom(value) {
-            const minZoom = 0.5;
+            const minZoom = 0.25;
             const maxZoom = getMaxSafeZoom();
             const requested = Number(value);
             const clamped = Math.max(minZoom, Math.min(maxZoom, requested));
@@ -1362,37 +1493,407 @@
             setZoom(1.0);
         }
 
-        // Overlay size settings
         let overlayLineWidth = 2;
+        let overlayLineLength = 12;
+        let overlayLineHeight = 2;
         let overlayPointSize = 0.8;
+        let overlaySettingsByCurveId = {};
+
+        const OVERLAY_SETTINGS_STORAGE_KEY = 'tifflas.overlaySettingsByCurveId.v1';
+        const OVERLAY_ACTIVE_STORAGE_KEY = 'tifflas.overlayActiveTarget.v1';
+        const OVERLAY_UI_STORAGE_KEY = 'tifflas.overlayUiState.v1';
+
+        function saveOverlaySettingsToStorage() {
+            try {
+                if (!window || !window.localStorage) return;
+                const payload = (overlaySettingsByCurveId && typeof overlaySettingsByCurveId === 'object')
+                    ? overlaySettingsByCurveId
+                    : {};
+                window.localStorage.setItem(OVERLAY_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        function loadOverlaySettingsFromStorage() {
+            try {
+                if (!window || !window.localStorage) return;
+                const raw = window.localStorage.getItem(OVERLAY_SETTINGS_STORAGE_KEY);
+                if (!raw) return;
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object') {
+                    overlaySettingsByCurveId = parsed;
+                }
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        function saveOverlayActiveTargetToStorage(target) {
+            try {
+                if (!window || !window.localStorage) return;
+                const v = target ? String(target) : '';
+                window.localStorage.setItem(OVERLAY_ACTIVE_STORAGE_KEY, v);
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        function loadOverlayActiveTargetFromStorage() {
+            try {
+                if (!window || !window.localStorage) return null;
+                const raw = window.localStorage.getItem(OVERLAY_ACTIVE_STORAGE_KEY);
+                return raw ? String(raw) : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function saveOverlayUiStateToStorage() {
+            try {
+                if (!window || !window.localStorage) return;
+                const payload = {
+                    lineWidth: Number.isFinite(overlayLineWidth) ? overlayLineWidth : null,
+                    lineLength: Number.isFinite(overlayLineLength) ? overlayLineLength : null,
+                    lineHeight: Number.isFinite(overlayLineHeight) ? overlayLineHeight : null,
+                    pointSize: Number.isFinite(overlayPointSize) ? overlayPointSize : null,
+                    style: getOverlayStyleFromUi(),
+                };
+                window.localStorage.setItem(OVERLAY_UI_STORAGE_KEY, JSON.stringify(payload));
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        function loadOverlayUiStateFromStorage() {
+            try {
+                if (!window || !window.localStorage) return;
+                const raw = window.localStorage.getItem(OVERLAY_UI_STORAGE_KEY);
+                if (!raw) return;
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object') return;
+
+                const lineSlider = document.getElementById('lineWidthSlider');
+                const lineLengthSlider = document.getElementById('lineLengthSlider');
+                const lineHeightSlider = document.getElementById('lineHeightSlider');
+                const pointSlider = document.getElementById('pointSizeSlider');
+
+                const lineLabel = document.getElementById('lineWidthLabel');
+                const lineLengthLabel = document.getElementById('lineLengthLabel');
+                const lineHeightLabel = document.getElementById('lineHeightLabel');
+                const pointLabel = document.getElementById('pointSizeLabel');
+
+                if (lineSlider && Number.isFinite(parsed.lineWidth)) {
+                    lineSlider.value = String(parsed.lineWidth);
+                    overlayLineWidth = Number(parsed.lineWidth);
+                    if (lineLabel) lineLabel.textContent = overlayLineWidth.toFixed(2);
+                }
+                if (lineLengthSlider && Number.isFinite(parsed.lineLength)) {
+                    lineLengthSlider.value = String(parsed.lineLength);
+                    overlayLineLength = Number(parsed.lineLength);
+                    if (lineLengthLabel) lineLengthLabel.textContent = overlayLineLength.toFixed(0);
+                }
+                if (lineHeightSlider && Number.isFinite(parsed.lineHeight)) {
+                    lineHeightSlider.value = String(parsed.lineHeight);
+                    overlayLineHeight = Number(parsed.lineHeight);
+                    if (lineHeightLabel) lineHeightLabel.textContent = overlayLineHeight.toFixed(1);
+                }
+                if (pointSlider && Number.isFinite(parsed.pointSize)) {
+                    pointSlider.value = String(parsed.pointSize);
+                    overlayPointSize = Number(parsed.pointSize);
+                    if (pointLabel) pointLabel.textContent = overlayPointSize.toFixed(2);
+                }
+
+                if (parsed.style) {
+                    setOverlayStyleUi(parsed.style);
+                }
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        function getOverlayTargetCurveId() {
+            const sel = document.getElementById('overlayCurveSelect');
+            const v = sel && sel.value ? String(sel.value) : '__all_unlocked__';
+            return v;
+        }
+
+        function getOverlayStyleFromUi() {
+            const chkHigh = document.getElementById('highContrastOverlay');
+            const chkCrisp = document.getElementById('crispOverlay');
+            const chkCompact = document.getElementById('compactOverlay');
+
+            const compact = !!(chkCompact && chkCompact.checked);
+            const crisp = !!(chkCrisp && chkCrisp.checked);
+            const high = !!(chkHigh && chkHigh.checked);
+
+            if (compact) return 'compact';
+            if (crisp) return 'crisp';
+            return high ? 'high' : 'high';
+        }
+
+        function setOverlayStyleUi(style) {
+            const chkHigh = document.getElementById('highContrastOverlay');
+            const chkCrisp = document.getElementById('crispOverlay');
+            const chkCompact = document.getElementById('compactOverlay');
+
+            const s = String(style || 'high');
+            if (chkHigh) chkHigh.checked = s === 'high';
+            if (chkCrisp) chkCrisp.checked = s === 'crisp';
+            if (chkCompact) chkCompact.checked = s === 'compact';
+        }
+
+        function ensureOverlaySettingsForCurve(curveId) {
+            if (!curveId) return null;
+            const key = String(curveId);
+            if (overlaySettingsByCurveId && overlaySettingsByCurveId[key]) {
+                return overlaySettingsByCurveId[key];
+            }
+            if (!overlaySettingsByCurveId || typeof overlaySettingsByCurveId !== 'object') {
+                overlaySettingsByCurveId = {};
+            }
+            overlaySettingsByCurveId[key] = {
+                lineWidth: Number.isFinite(overlayLineWidth) ? overlayLineWidth : 2,
+                lineLength: Number.isFinite(overlayLineLength) ? overlayLineLength : 12,
+                lineHeight: Number.isFinite(overlayLineHeight) ? overlayLineHeight : 2,
+                pointSize: Number.isFinite(overlayPointSize) ? overlayPointSize : 0.8,
+                style: getOverlayStyleFromUi(),
+                locked: false,
+            };
+            return overlaySettingsByCurveId[key];
+        }
+
+        function getOverlaySettingsForCurve(curveId) {
+            const s = ensureOverlaySettingsForCurve(curveId);
+            if (s) return s;
+            return {
+                lineWidth: Number.isFinite(overlayLineWidth) ? overlayLineWidth : 2,
+                lineLength: Number.isFinite(overlayLineLength) ? overlayLineLength : 12,
+                lineHeight: Number.isFinite(overlayLineHeight) ? overlayLineHeight : 2,
+                pointSize: Number.isFinite(overlayPointSize) ? overlayPointSize : 0.8,
+                style: getOverlayStyleFromUi(),
+                locked: false,
+            };
+        }
+
+        function populateOverlayCurveSelectFromTracks() {
+            const sel = document.getElementById('overlayCurveSelect');
+            if (!sel) return;
+
+            const prev = sel.value;
+            sel.innerHTML = '<option value="__all_unlocked__">All (unlocked)</option>';
+
+            const tracks = (typeof getTrackCalibrationsSnapshot === 'function')
+                ? getTrackCalibrationsSnapshot()
+                : null;
+            if (tracks && Array.isArray(tracks)) {
+                for (const t of tracks) {
+                    if (!t || !t.id) continue;
+                    const opt = document.createElement('option');
+                    opt.value = String(t.id);
+                    opt.textContent = String(t.id);
+                    sel.appendChild(opt);
+                    ensureOverlaySettingsForCurve(t.id);
+                }
+            }
+
+            if (prev && Array.from(sel.options).some(o => o.value === prev)) {
+                sel.value = prev;
+            } else if (tracks && Array.isArray(tracks) && tracks.length) {
+                sel.value = String(tracks[0].id);
+            }
+
+            const storedTarget = loadOverlayActiveTargetFromStorage();
+            if (storedTarget && Array.from(sel.options).some(o => o.value === storedTarget)) {
+                sel.value = storedTarget;
+            }
+
+            onOverlayCurveTargetChange();
+        }
+
+        function setOverlayControlsDisabled(disabled) {
+            const lineSlider = document.getElementById('lineWidthSlider');
+            const lineLengthSlider = document.getElementById('lineLengthSlider');
+            const lineHeightSlider = document.getElementById('lineHeightSlider');
+            const pointSlider = document.getElementById('pointSizeSlider');
+            const chkHigh = document.getElementById('highContrastOverlay');
+            const chkCrisp = document.getElementById('crispOverlay');
+            const chkCompact = document.getElementById('compactOverlay');
+
+            const d = !!disabled;
+            if (lineSlider) lineSlider.disabled = d;
+            if (lineLengthSlider) lineLengthSlider.disabled = d;
+            if (lineHeightSlider) lineHeightSlider.disabled = d;
+            if (pointSlider) pointSlider.disabled = d;
+            if (chkHigh) chkHigh.disabled = d;
+            if (chkCrisp) chkCrisp.disabled = d;
+            if (chkCompact) chkCompact.disabled = d;
+        }
+
+        function onOverlayCurveTargetChange() {
+            const target = getOverlayTargetCurveId();
+            const lockEl = document.getElementById('overlayCurveLock');
+
+            saveOverlayActiveTargetToStorage(target);
+
+            if (target === '__all_unlocked__') {
+                if (lockEl) {
+                    lockEl.checked = false;
+                    lockEl.disabled = true;
+                }
+                setOverlayControlsDisabled(false);
+                if (typeof syncToolbarCurveLockButton === 'function') syncToolbarCurveLockButton();
+                return;
+            }
+
+            if (lockEl) {
+                lockEl.disabled = false;
+            }
+
+            const settings = getOverlaySettingsForCurve(target);
+            if (lockEl) lockEl.checked = !!settings.locked;
+            setOverlayControlsDisabled(!!settings.locked);
+
+            const lineSlider = document.getElementById('lineWidthSlider');
+            const lineLengthSlider = document.getElementById('lineLengthSlider');
+            const lineHeightSlider = document.getElementById('lineHeightSlider');
+            const pointSlider = document.getElementById('pointSizeSlider');
+            const lineLabel = document.getElementById('lineWidthLabel');
+            const lineLengthLabel = document.getElementById('lineLengthLabel');
+            const lineHeightLabel = document.getElementById('lineHeightLabel');
+            const pointLabel = document.getElementById('pointSizeLabel');
+
+            if (lineSlider && Number.isFinite(settings.lineWidth)) {
+                lineSlider.value = String(settings.lineWidth);
+                overlayLineWidth = Number(settings.lineWidth);
+                if (lineLabel) lineLabel.textContent = overlayLineWidth.toFixed(2);
+            }
+            if (lineLengthSlider && Number.isFinite(settings.lineLength)) {
+                lineLengthSlider.value = String(settings.lineLength);
+                overlayLineLength = Number(settings.lineLength);
+                if (lineLengthLabel) lineLengthLabel.textContent = overlayLineLength.toFixed(0);
+            }
+            if (lineHeightSlider && Number.isFinite(settings.lineHeight)) {
+                lineHeightSlider.value = String(settings.lineHeight);
+                overlayLineHeight = Number(settings.lineHeight);
+                if (lineHeightLabel) lineHeightLabel.textContent = overlayLineHeight.toFixed(1);
+            }
+            if (pointSlider && Number.isFinite(settings.pointSize)) {
+                pointSlider.value = String(settings.pointSize);
+                overlayPointSize = Number(settings.pointSize);
+                if (pointLabel) pointLabel.textContent = overlayPointSize.toFixed(2);
+            }
+
+            setOverlayStyleUi(settings.style);
+            if (typeof syncToolbarCurveLockButton === 'function') syncToolbarCurveLockButton();
+        }
+
+        function toggleOverlayCurveLock() {
+            const target = getOverlayTargetCurveId();
+            if (!target || target === '__all_unlocked__') return;
+            const lockEl = document.getElementById('overlayCurveLock');
+            const settings = getOverlaySettingsForCurve(target);
+            settings.locked = !!(lockEl && lockEl.checked);
+            saveOverlaySettingsToStorage();
+            onOverlayCurveTargetChange();
+        }
+
+        function toggleOverlayCurveLockFromToolbar() {
+            const lockEl = document.getElementById('overlayCurveLock');
+            if (!lockEl || lockEl.disabled) return;
+            lockEl.checked = !lockEl.checked;
+            toggleOverlayCurveLock();
+        }
 
         function updateOverlaySize() {
             const lineSlider = document.getElementById('lineWidthSlider');
+            const lineLengthSlider = document.getElementById('lineLengthSlider');
+            const lineHeightSlider = document.getElementById('lineHeightSlider');
             const pointSlider = document.getElementById('pointSizeSlider');
             const lineLabel = document.getElementById('lineWidthLabel');
+            const lineLengthLabel = document.getElementById('lineLengthLabel');
+            const lineHeightLabel = document.getElementById('lineHeightLabel');
             const pointLabel = document.getElementById('pointSizeLabel');
-            
-            if (lineSlider) {
-                overlayLineWidth = parseFloat(lineSlider.value);
+
+            const next = {
+                lineWidth: lineSlider ? parseFloat(lineSlider.value) : overlayLineWidth,
+                lineLength: lineLengthSlider ? parseFloat(lineLengthSlider.value) : overlayLineLength,
+                lineHeight: lineHeightSlider ? parseFloat(lineHeightSlider.value) : overlayLineHeight,
+                pointSize: pointSlider ? parseFloat(pointSlider.value) : overlayPointSize,
+            };
+
+            if (Number.isFinite(next.lineWidth)) {
+                overlayLineWidth = next.lineWidth;
                 if (lineLabel) lineLabel.textContent = overlayLineWidth.toFixed(2);
             }
-            if (pointSlider) {
-                overlayPointSize = parseFloat(pointSlider.value);
-                if (pointLabel) pointLabel.textContent = overlayPointSize.toFixed(1);
+            if (Number.isFinite(next.lineLength)) {
+                overlayLineLength = next.lineLength;
+                if (lineLengthLabel) lineLengthLabel.textContent = overlayLineLength.toFixed(0);
             }
-            
-            // Re-render the overlay with new sizes
+            if (Number.isFinite(next.lineHeight)) {
+                overlayLineHeight = next.lineHeight;
+                if (lineHeightLabel) lineHeightLabel.textContent = overlayLineHeight.toFixed(1);
+            }
+            if (Number.isFinite(next.pointSize)) {
+                overlayPointSize = next.pointSize;
+                if (pointLabel) pointLabel.textContent = overlayPointSize.toFixed(2);
+            }
+
+            saveOverlayUiStateToStorage();
+
+            const target = getOverlayTargetCurveId();
+            const tracks = (typeof getTrackCalibrationsSnapshot === 'function')
+                ? getTrackCalibrationsSnapshot()
+                : null;
+            const applyToCurve = (curveId) => {
+                const s = getOverlaySettingsForCurve(curveId);
+                if (s.locked) return false;
+                if (Number.isFinite(next.lineWidth)) s.lineWidth = next.lineWidth;
+                if (Number.isFinite(next.lineLength)) s.lineLength = next.lineLength;
+                if (Number.isFinite(next.lineHeight)) s.lineHeight = next.lineHeight;
+                if (Number.isFinite(next.pointSize)) s.pointSize = next.pointSize;
+                return true;
+            };
+
+            if (target && target !== '__all_unlocked__') {
+                const s = getOverlaySettingsForCurve(target);
+                if (s.locked) {
+                    showStatus('This curve is locked. Unlock it to change overlay settings.', 'info');
+                } else {
+                    applyToCurve(target);
+                }
+            } else if (tracks && Array.isArray(tracks)) {
+                for (const t of tracks) {
+                    if (!t || !t.id) continue;
+                    applyToCurve(t.id);
+                }
+            } else if (lastCurveTraces && typeof lastCurveTraces === 'object') {
+                for (const k of Object.keys(lastCurveTraces)) {
+                    applyToCurve(k);
+                }
+            }
+
             if (lastCurveTraces) {
                 renderCurveTraceOverlays(lastCurveTraces);
             }
+
+            saveOverlaySettingsToStorage();
         }
 
         function openIntroModal() {
             const backdrop = document.getElementById('introModalBackdrop');
-            if (backdrop) {
-                backdrop.classList.remove('hidden');
-            }
+            const modal = document.getElementById('introModal');
+            if (backdrop) backdrop.classList.remove('hidden');
+            if (modal) modal.classList.remove('hidden');
         }
+
+        // Initialize overlay sizes from sliders on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadOverlaySettingsFromStorage();
+            loadOverlayUiStateFromStorage();
+            populateOverlayCurveSelectFromTracks();
+            if (typeof syncToolbarCurveLockButton === 'function') syncToolbarCurveLockButton();
+        });
 
         function closeIntroModal() {
             const backdrop = document.getElementById('introModalBackdrop');
@@ -1502,6 +2003,7 @@
             headerRegionDrag = false;
             headerRegion = null;
             headerTracks = null;
+            headerMetadata = null;
             clearHeaderRegionOverlay();
             const summaryEl = document.getElementById('headerSelectionSummary');
             if (summaryEl) {
@@ -1758,6 +2260,8 @@
             if (prev && Array.from(sel.options).some(o => o.value === prev)) {
                 sel.value = prev;
             }
+
+            populateOverlayCurveSelectFromTracks();
         }
 
         function findDigitizedCurveEntry(id) {
@@ -2310,6 +2814,16 @@
             const idx = findNearestDepthIndex(depth, lastDigitizedDepth);
             if (idx < 0) return;
 
+            // Use raw Y position to allow sub-grid placement (visual smoothness).
+            // Strict snapping to depth grid causes "stops adding" on coarse grids
+            // because multiple clicks map to same Y and get deduped.
+            const yImgUse = yImg;
+
+            if (isDepthIndexPinned(editCurveId, idx)) {
+                showStatus('Point is pinned; unpin before adding/editing at this depth.', 'info');
+                return;
+            }
+
             const tracks = getTrackCalibrationsSnapshot();
             if (!tracks || !tracks.length) return;
             const targetTrack = tracks.find(t => t.id === editCurveId);
@@ -2332,7 +2846,7 @@
                 idx,
                 oldValue,
                 oldTraceX: null,
-                yImg,
+                yImg: yImgUse,
                 depthIndex: idx,
             });
 
@@ -2341,21 +2855,46 @@
             if (!lastCurveTraces) {
                 lastCurveTraces = {};
             }
-            let pts = lastCurveTraces[editCurveId];
+
+            // Robustly find existing points using shared helper (handles case-sensitivity/keys)
+            const activeTrace = getActiveCurveTracePoints();
+            let pts = activeTrace.points;
+            
+            // Determine where to save.
+            let targetKey = activeTrace.traceKey || getActiveCurveTraceKey() || editCurveId;
+
             if (!Array.isArray(pts)) {
                 pts = [];
             }
 
-            ensureTracePointsHaveDepthIndex(editCurveId);
-            const existingIdx = findPointIndexByDepthIndex(pts, idx);
+            // Use Y-based lookup instead of depthIndex to avoid collapsing dense points
+            let existingIdx = -1;
+            const yEpsilon = 1.0; 
+            for (let i = 0; i < pts.length; i++) {
+                const pt = pts[i];
+                if (Array.isArray(pt) && pt.length >= 2 && Math.abs(pt[1] - yImgUse) < yEpsilon) {
+                    existingIdx = i;
+                    break;
+                }
+            }
+
             if (existingIdx >= 0) {
                 pts[existingIdx][0] = clampedX;
-                pts[existingIdx][1] = yImg;
+                pts[existingIdx][1] = yImgUse;
                 pts[existingIdx][2] = idx;
             } else {
-                pts.push([clampedX, yImg, idx]);
+                // Insert at the correct sorted position to prevent "line out to the right"
+                let insertAt = pts.length;
+                for (let i = 0; i < pts.length; i++) {
+                    if (pts[i] && pts[i][1] > yImgUse) {
+                        insertAt = i;
+                        break;
+                    }
+                }
+                pts.splice(insertAt, 0, [clampedX, yImgUse, idx]);
             }
-            lastCurveTraces[editCurveId] = pts;
+
+            lastCurveTraces[targetKey] = pts;
 
             renderCurveTraceOverlays(lastCurveTraces);
         }
@@ -2751,6 +3290,11 @@
                 if (!neighbors.length) return false;
                 if (centerDepthIdx < 0 || centerDepthIdx >= entry.values.length) return false;
 
+                if (isDepthIndexPinned(editCurveId, centerDepthIdx)) {
+                    showStatus('That point is pinned and cannot be moved.', 'info');
+                    return false;
+                }
+
                 editDragState = {
                     curveId: editCurveId,
                     curveKey: curveKey,
@@ -2887,6 +3431,11 @@
             // Find the center neighbor to compute deltas
             const centerN = neighbors.find(n => n.pointIndex === centerIndex);
             if (!centerN) return;
+
+            if (isDepthIndexPinned(state.curveId, centerN.depthIndex)) {
+                return;
+            }
+
             const deltaX = xImg - centerN.originalX;
             const deltaY = yImg - centerN.originalY;
 
@@ -4116,12 +4665,20 @@
                             const yNow = pts[pIdx][1];
                             const oldDepthIdx = (Array.isArray(pts[pIdx]) && Number.isInteger(pts[pIdx][2])) ? pts[pIdx][2] : n.depthIndex;
 
+                            if (isDepthIndexPinned(curveId, oldDepthIdx)) {
+                                return;
+                            }
+
                             const newDepthIdx = (function () {
                                 const depth = pixelToDepthFromConfig(yNow, depthCfg);
                                 if (!Number.isFinite(depth)) return -1;
                                 return findNearestDepthIndex(depth, lastDigitizedDepth);
                             })();
                             if (newDepthIdx < 0 || newDepthIdx >= entry.values.length) return;
+
+                            if (isDepthIndexPinned(curveId, newDepthIdx)) {
+                                return;
+                            }
 
                             if (!valuesUndoMap.has(newDepthIdx)) {
                                 valuesUndoMap.set(newDepthIdx, entry.values[newDepthIdx]);
@@ -4709,11 +5266,26 @@
                 // Store the detected header tracks
                 headerTracks = tracks;
 
+                // Store extracted header metadata (company, well, field, etc.) if provided
+                headerMetadata = (data && data.header_metadata) ? data.header_metadata : null;
+
                 // Update summary
                 const summaryEl = document.getElementById('headerSelectionSummary');
                 if (summaryEl) {
                     const names = tracks.map(t => t.name || '?').join(', ');
-                    summaryEl.textContent = `Header captured: ${tracks.length} track(s) — ${names}. These will pre-fill Step 4 curves.`;
+                    const metaBits = [];
+                    try {
+                        if (headerMetadata && typeof headerMetadata === 'object') {
+                            if (headerMetadata.well) metaBits.push(`WELL=${headerMetadata.well}`);
+                            if (headerMetadata.comp) metaBits.push(`COMP=${headerMetadata.comp}`);
+                            if (headerMetadata.fld) metaBits.push(`FLD=${headerMetadata.fld}`);
+                            if (headerMetadata.state) metaBits.push(`STATE=${headerMetadata.state}`);
+                        }
+                    } catch (e) {
+                        // ignore
+                    }
+                    const metaText = metaBits.length ? ` Meta: ${metaBits.join(' | ')}` : '';
+                    summaryEl.textContent = `Header captured: ${tracks.length} track(s) — ${names}. These will pre-fill Step 4 curves.${metaText}`;
                 }
 
                 showStatus(`✓ Header captured: ${tracks.length} track(s) detected.`, 'success');
@@ -4997,12 +5569,12 @@
 
         async function aiAutoCurves() {
             if (!uploadedImage || !imageWidth || !imageHeight) {
-                showStatus('Please upload an image first.', 'info');
+                showStatus('❌ Please upload an image first (Step 1).', 'error');
                 return;
             }
 
             if (!primaryRegion || !Number.isFinite(primaryRegion.left_px) || !Number.isFinite(primaryRegion.right_px)) {
-                showStatus('Please select a panel first (click "Select panel from image" and drag a box).', 'info');
+                showStatus('❌ Please select a panel first: click "Select panel from image" in Step 3 and drag a box around the log panel.', 'error');
                 return;
             }
 
@@ -5012,7 +5584,7 @@
             const bottomPx = bottomPxInput ? parseFloat(bottomPxInput.value) : imageHeight - 1;
 
             if (!Number.isFinite(topPx) || !Number.isFinite(bottomPx) || bottomPx <= topPx) {
-                showStatus('Invalid depth pixel range; please set Top/Bottom pixel values first.', 'info');
+                showStatus('❌ Please set Top/Bottom pixel values in Step 3 first (these define the depth range).', 'error');
                 return;
             }
 
@@ -5032,6 +5604,109 @@
                 await aiProposeCurves();
             } catch (err) {
                 showStatus(`AI auto-setup failed: ${err.message}`, 'error');
+            }
+        }
+
+        async function mlPredictCurve() {
+            if (!uploadedImage || !imageWidth || !imageHeight) {
+                showStatus('❌ Please upload an image first (Step 1).', 'error');
+                return;
+            }
+
+            const topPxInput = document.getElementById('topPx');
+            const bottomPxInput = document.getElementById('bottomPx');
+            const topPx = topPxInput ? parseFloat(topPxInput.value) : 0;
+            const bottomPx = bottomPxInput ? parseFloat(bottomPxInput.value) : imageHeight - 1;
+
+            if (!Number.isFinite(topPx) || !Number.isFinite(bottomPx) || bottomPx <= topPx) {
+                showStatus('❌ Please set Top/Bottom pixel values in Step 3 first (these define the depth range).', 'error');
+                return;
+            }
+
+            // Try to get panel bounds from primaryRegion, or fall back to curve tracks
+            let leftPx = 0;
+            let rightPx = imageWidth;
+
+            if (primaryRegion && Number.isFinite(primaryRegion.left_px) && Number.isFinite(primaryRegion.right_px)) {
+                leftPx = Math.max(0, Number(primaryRegion.left_px));
+                rightPx = Math.min(imageWidth, Number(primaryRegion.right_px));
+            } else {
+                // Try to get bounds from existing curves/tracks
+                const tracks = (typeof getTrackCalibrationsSnapshot === 'function') ? getTrackCalibrationsSnapshot() : null;
+                if (tracks && tracks.length > 0) {
+                    // Use the first track's bounds (tracks use leftX/rightX, not left_px/right_px)
+                    const track = tracks[0];
+                    if (track && Number.isFinite(track.leftX) && Number.isFinite(track.rightX)) {
+                        leftPx = Math.max(0, Math.floor(Number(track.leftX)));
+                        rightPx = Math.min(imageWidth, Math.ceil(Number(track.rightX)));
+                    } else {
+                        showStatus('❌ Please set up at least one curve track with valid left/right pixel bounds.', 'error');
+                        return;
+                    }
+                } else {
+                    showStatus('❌ Please select a panel or set up at least one curve track first.', 'error');
+                    return;
+                }
+            }
+
+            showStatus('🤖 Running ML curve prediction...', 'info');
+
+            try {
+                const response = await fetch('/api/ml_predict_curve_trace', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        image: uploadedImage,
+                        roi: {
+                            top_px: topPx,
+                            bottom_px: bottomPx,
+                            left_px: leftPx,
+                            right_px: rightPx
+                        },
+                        device: 'cpu'
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    const pixelTrace = result.pixel_trace;
+                    const roiHeight = bottomPx - topPx;
+                    
+                    showStatus(`✅ ML prediction complete! Got ${pixelTrace.length} points`, 'success');
+
+                    // Convert pixel trace to curve points
+                    const curvePoints = [];
+                    for (let i = 0; i < pixelTrace.length; i++) {
+                        const x = leftPx + pixelTrace[i];
+                        const y = topPx + i;
+                        curvePoints.push({ x: x, y: y });
+                    }
+
+                    // Add as a new curve overlay
+                    if (!window.mlPredictedCurves) {
+                        window.mlPredictedCurves = [];
+                    }
+                    
+                    window.mlPredictedCurves.push({
+                        name: `ML_CURVE_${window.mlPredictedCurves.length + 1}`,
+                        points: curvePoints,
+                        color: '#FF00FF'  // Magenta for ML curves
+                    });
+
+                    // Redraw canvas to show the predicted curve
+                    if (lastCurveTraces) {
+                        renderCurveTraceOverlays(lastCurveTraces);
+                    }
+                    
+                    showStatus(`✅ ML curve displayed in magenta. You can now add it as a regular curve or run digitization.`, 'success');
+                } else {
+                    showStatus(`❌ ML prediction failed: ${result.error}`, 'error');
+                }
+
+            } catch (err) {
+                showStatus(`❌ ML prediction error: ${err.message}`, 'error');
+                console.error('ML prediction error:', err);
             }
         }
 
@@ -6397,6 +7072,42 @@
                 // ignore
             }
 
+            // Persist style per-curve (or all unlocked)
+            try {
+                const style = getOverlayStyleFromUi();
+                const target = getOverlayTargetCurveId();
+                const tracks = (typeof getTrackCalibrationsSnapshot === 'function')
+                    ? getTrackCalibrationsSnapshot()
+                    : null;
+
+                const applyStyleToCurve = (curveId) => {
+                    const s = getOverlaySettingsForCurve(curveId);
+                    if (s.locked) return false;
+                    s.style = style;
+                    return true;
+                };
+
+                if (target && target !== '__all_unlocked__') {
+                    const s = getOverlaySettingsForCurve(target);
+                    if (s.locked) {
+                        showStatus('This curve is locked. Unlock it to change overlay style.', 'info');
+                    } else {
+                        applyStyleToCurve(target);
+                    }
+                } else if (tracks && Array.isArray(tracks)) {
+                    for (const t of tracks) {
+                        if (!t || !t.id) continue;
+                        applyStyleToCurve(t.id);
+                    }
+                } else if (typeof lastCurveTraces !== 'undefined' && lastCurveTraces && typeof lastCurveTraces === 'object') {
+                    for (const k of Object.keys(lastCurveTraces)) {
+                        applyStyleToCurve(k);
+                    }
+                }
+            } catch (e) {
+                // ignore
+            }
+
             // Force redraw with current checkbox states
             if (window.lastCurveTraces) {
                 renderCurveTraceOverlays(window.lastCurveTraces);
@@ -6422,26 +7133,11 @@
             const chkPoints = document.getElementById('showPoints');
             if (chkPoints) showPoints = chkPoints.checked;
 
-            let highContrastOverlay = true;
-            const chkHighContrast = document.getElementById('highContrastOverlay');
-            if (chkHighContrast) highContrastOverlay = chkHighContrast.checked;
+            let mainLineOnly = false;
+            const chkMainLineOnly = document.getElementById('mainLineOnly');
+            if (chkMainLineOnly) mainLineOnly = chkMainLineOnly.checked;
 
-            let crispOverlay = false;
-            const chkCrisp = document.getElementById('crispOverlay');
-            if (chkCrisp) crispOverlay = chkCrisp.checked;
-
-            let compactOverlay = false;
-            const chkCompact = document.getElementById('compactOverlay');
-            if (chkCompact) compactOverlay = chkCompact.checked;
-
-            // Enforce precedence: compact > crisp > high-contrast.
-            // This prevents the default high-contrast style from masking crisp/compact.
-            if (compactOverlay) {
-                crispOverlay = false;
-                highContrastOverlay = false;
-            } else if (crispOverlay) {
-                highContrastOverlay = false;
-            }
+            const defaultStyle = (typeof getOverlayStyleFromUi === 'function') ? getOverlayStyleFromUi() : 'high';
 
             if (!overlay || !img || !curveTraces || !canvas) {
                 clearCurveTraceOverlays();
@@ -6474,24 +7170,32 @@
                 imageHeight = h;
             }
 
-            // Anchor drawing to overlay origin; ignore scroll offsets to prevent drift
-            let viewLeft = 0;
-            let viewTop = 0;
-            let baseWidth = rect.width;
-            let baseHeight = rect.height;
-            const visibleMarginPx = 60;
-            const viewBottom = viewTop + baseHeight;
-            const viewRight = viewLeft + baseWidth;
+            // Clip canvas to the visible viewport of the scroll container for crisp rendering
+            const scrollContainer = document.querySelector('.viewer-scroll');
+            const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+            const scrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
+            const viewportH = scrollContainer ? scrollContainer.clientHeight : rect.height;
+            const viewportW = scrollContainer ? scrollContainer.clientWidth : rect.width;
 
-            // Account for device pixel ratio AND zoom for crisp rendering
+            const fullWidth = rect.width;
+            const fullHeight = rect.height;
+            const visibleMarginPx = 300;
+
+            // Visible region in full CSS overlay coordinates
+            const viewLeft = Math.max(0, scrollLeft - visibleMarginPx);
+            const viewTop = Math.max(0, scrollTop - visibleMarginPx);
+            const viewRight = Math.min(fullWidth, scrollLeft + viewportW + visibleMarginPx);
+            const viewBottom = Math.min(fullHeight, scrollTop + viewportH + visibleMarginPx);
+            let baseWidth = Math.max(1, viewRight - viewLeft);
+            let baseHeight = Math.max(1, viewBottom - viewTop);
+
+            // Account for device pixel ratio for crisp rendering
             const dpr = window.devicePixelRatio || 1;
             let renderScale = dpr;
 
-            // Safety caps: prevent huge canvases (long logs + high zoom can explode).
-            // NOTE: We must allow renderScale < 1, otherwise a very large CSS-sized
-            // canvas will still allocate an enormous internal bitmap and crash/blank.
+            // Safety caps on the now-small viewport canvas
             const maxDim = 8192;
-            const maxPixels = 16000000;
+            const maxPixels = 32000000;
             if (baseWidth > 0 && baseHeight > 0) {
                 const capDimScale = Math.min(maxDim / baseWidth, maxDim / baseHeight);
                 const capPixScale = Math.sqrt(maxPixels / (baseWidth * baseHeight));
@@ -6503,18 +7207,17 @@
             if (!Number.isFinite(renderScale) || renderScale <= 0) {
                 renderScale = 1;
             }
-            
-            // Set canvas internal resolution higher for crisp lines
+
+            // Set canvas internal resolution to cover only the visible viewport
             const desiredCanvasW = Math.max(1, Math.round(baseWidth * renderScale));
             const desiredCanvasH = Math.max(1, Math.round(baseHeight * renderScale));
             if (canvas.width !== desiredCanvasW) canvas.width = desiredCanvasW;
             if (canvas.height !== desiredCanvasH) canvas.height = desiredCanvasH;
-            // CSS size stays at base size (already zoomed via element sizing)
             canvas.style.width = baseWidth + 'px';
             canvas.style.height = baseHeight + 'px';
-            // Anchor canvas to overlay origin to avoid scroll-induced drift
-            canvas.style.left = '0px';
-            canvas.style.top = '0px';
+            // Position canvas at the scroll offset within the overlay
+            canvas.style.left = viewLeft + 'px';
+            canvas.style.top = viewTop + 'px';
 
             const ctx = canvas.getContext('2d');
             if (!ctx) {
@@ -6525,7 +7228,8 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             const sx = baseWidth > 0 ? (canvas.width / baseWidth) : 1;
             const sy = baseHeight > 0 ? (canvas.height / baseHeight) : 1;
-            ctx.setTransform(sx, 0, 0, sy, 0, 0);
+            // Translate by viewport offset so full-overlay coordinates render correctly
+            ctx.setTransform(sx, 0, 0, sy, -viewLeft * sx, -viewTop * sy);
             const _snapCoord = (v, s, halfPx) => {
                 const vv = Number(v);
                 const ss = Number(s);
@@ -6554,6 +7258,13 @@
             for (const name of curveNames) {
                 const points = curveTraces[name] || [];
                 if (!points.length) continue;
+
+                ensureOverlaySettingsForCurve(name);
+                const curveSettings = getOverlaySettingsForCurve(name);
+                const curveStyle = (curveSettings && curveSettings.style) ? String(curveSettings.style) : defaultStyle;
+                const compactOverlay = curveStyle === 'compact';
+                const crispOverlay = curveStyle === 'crisp';
+                const highContrastOverlay = curveStyle === 'high';
 
                 // Per-curve visibility toggle (defaults to visible)
                 if (tracks && Array.isArray(tracks)) {
@@ -6618,110 +7329,173 @@
 
                 // Draw chain
                 if (showLine) {
-                    ctx.beginPath();
+                    // Main line thickness comes from the Line slider.
+                    // Stick thickness comes from the Line height slider (fallback to Line).
+                    const mainThickness = Math.max(0.1, (curveSettings && Number.isFinite(curveSettings.lineWidth)) ? curveSettings.lineWidth : (overlayLineWidth || 4));
+                    const stickThickness = Math.max(0.1, (curveSettings && Number.isFinite(curveSettings.lineHeight)) ? curveSettings.lineHeight : ((overlayLineHeight || mainThickness)));
+                    const stickLen = Math.max(2.0, (curveSettings && Number.isFinite(curveSettings.lineLength)) ? curveSettings.lineLength : (overlayLineLength || stickThickness * 6));
+                    const halfStick = stickLen * 0.5;
 
-                    let first = true;
-                    let prevXImg = null;
-                    let prevYImg = null;
-                    for (let i = 0; i < sortedPoints.length; i++) {
-                        const xImg = sortedPoints[i][0];
-                        const yImg = sortedPoints[i][1];
-                        const xDom = (xImg * scaleX);
-                        const yDom = (yImg * scaleY);
-                        if (first) {
-                            ctx.moveTo(xDom, yDom);
-                            prevXImg = xImg;
-                            prevYImg = yImg;
-                            first = false;
-                        } else {
-                            ctx.lineTo(xDom, yDom);
-                            prevXImg = xImg;
-                            prevYImg = yImg;
+                    // First, draw a thin connecting polyline to guarantee continuity.
+                    if (sortedPoints.length >= 2) {
+                        ctx.save();
+                        ctx.setLineDash([]);
+                        ctx.lineJoin = 'round';
+                        ctx.lineCap = 'round';
+                        const connectorW = Math.max(0.6, mainThickness);
+                        ctx.lineWidth = connectorW;
+                        ctx.strokeStyle = lineCoreColor;
+                        ctx.beginPath();
+                        let started = false;
+                        for (let i = 0; i < sortedPoints.length; i++) {
+                            const xDom = (sortedPoints[i][0] * scaleX);
+                            const yDom = (sortedPoints[i][1] * scaleY);
+                            if (!started) {
+                                ctx.moveTo(xDom, yDom);
+                                started = true;
+                            } else {
+                                ctx.lineTo(xDom, yDom);
+                            }
+                        }
+                        ctx.stroke();
+                        ctx.restore();
+                    }
+
+                    // Render as horizontal sticks at each sample so all micro-segments stay parallel to the bottom.
+                    // If "Main line only" is enabled, we skip sticks (but still allow points).
+                    if (mainLineOnly) {
+                        // fall through so points can still render
+                    } else {
+
+                    // Densify: fill long gaps with interpolated stick samples so the stroke looks continuous.
+                    // We keep the original editable points as-is; this only affects rendering density.
+                    const stickSamples = [];
+                    const desiredDomStep = 3.0; // px between sticks on screen (any direction)
+                    const maxStickSamples = 12000;
+                    for (let i = 0; i < sortedPoints.length && stickSamples.length < maxStickSamples; i++) {
+                        const p0 = sortedPoints[i];
+                        if (!Array.isArray(p0) || p0.length < 2) continue;
+                        const x0 = Number(p0[0]);
+                        const y0 = Number(p0[1]);
+                        if (!Number.isFinite(x0) || !Number.isFinite(y0)) continue;
+
+                        if (i === sortedPoints.length - 1) {
+                            stickSamples.push([x0, y0]);
+                            break;
+                        }
+
+                        const p1 = sortedPoints[i + 1];
+                        if (!Array.isArray(p1) || p1.length < 2) {
+                            stickSamples.push([x0, y0]);
+                            continue;
+                        }
+                        const x1 = Number(p1[0]);
+                        const y1 = Number(p1[1]);
+                        if (!Number.isFinite(x1) || !Number.isFinite(y1)) {
+                            stickSamples.push([x0, y0]);
+                            continue;
+                        }
+
+                        stickSamples.push([x0, y0]);
+                        const dx = x1 - x0;
+                        const dy = y1 - y0;
+                        const domDx = dx * scaleX;
+                        const domDy = dy * scaleY;
+                        const domDist = Math.hypot(domDx, domDy);
+                        if (domDist <= desiredDomStep) continue;
+
+                        const steps = Math.min(200, Math.ceil(domDist / desiredDomStep));
+                        for (let s = 1; s < steps && stickSamples.length < maxStickSamples; s++) {
+                            const t = s / steps;
+                            const yy = y0 + dy * t;
+                            const xx = x0 + (x1 - x0) * t;
+                            stickSamples.push([xx, yy]);
                         }
                     }
-                    // Draw the editable curve with high contrast: white outline + magenta core
-                    // Use slider values for line width
-                    const lineW = Math.max(0.1, overlayLineWidth || 4);
-                    if (highContrastOverlay) {
-                        ctx.strokeStyle = '#ffffff';
-                        ctx.lineWidth = lineW;
-                        ctx.stroke();
-                        ctx.strokeStyle = '#000000';
-                        ctx.lineWidth = Math.max(0.1, lineW * 0.85);
-                        ctx.stroke();
-                        ctx.strokeStyle = lineCoreColor;
-                        ctx.lineWidth = Math.max(0.1, lineW * 0.65);
-                        ctx.stroke();
-                    } else if (compactOverlay) {
-                        // Compact: 1 device-pixel hairline so ink remains visible on both sides
-                        const hairline = Math.max(0.1, 1 / Math.max(1, sx));
-                        try {
+
+                    const drawStick = (xDom, yDom, coreColor, outline) => {
+                        if (outline) {
                             ctx.beginPath();
-                            for (let i = 0; i < sortedPoints.length; i++) {
-                                const xImg = sortedPoints[i][0];
-                                const yImg = sortedPoints[i][1];
-                                let xDom = (xImg * scaleX) - viewLeft;
-                                let yDom = (yImg * scaleY) - viewTop;
-                                xDom = _snapCoord(xDom, sx, true);
-                                yDom = _snapCoord(yDom, sy, true);
-                                if (i === 0) ctx.moveTo(xDom, yDom);
-                                else ctx.lineTo(xDom, yDom);
-                            }
-                        } catch (e) {
+                            ctx.moveTo(xDom - halfStick * 1.2, yDom);
+                            ctx.lineTo(xDom + halfStick * 1.2, yDom);
+                            ctx.strokeStyle = outline.color;
+                            ctx.lineWidth = outline.width;
+                            ctx.stroke();
                         }
-                        ctx.strokeStyle = lineCoreColor;
-                        ctx.globalAlpha = 1.0;
-                        ctx.lineWidth = hairline;
+                        ctx.beginPath();
+                        ctx.moveTo(xDom - halfStick, yDom);
+                        ctx.lineTo(xDom + halfStick, yDom);
+                        ctx.strokeStyle = coreColor;
+                        ctx.lineWidth = Math.max(0.1, stickThickness * (outline ? 0.65 : 1.0));
                         ctx.stroke();
+                    };
+
+                    // Iterate points and draw sticks
+                    ctx.setLineDash([]);
+                    if (highContrastOverlay) {
+                        for (let i = 0; i < stickSamples.length; i++) {
+                            const xDom = (stickSamples[i][0] * scaleX);
+                            const yDom = (stickSamples[i][1] * scaleY);
+                            // Keep a light halo for visibility, no black outline.
+                            drawStick(xDom, yDom, lineCoreColor, { color: '#ffffff', width: Math.max(0.1, stickThickness * 1.1) });
+                        }
+                    } else if (compactOverlay) {
+                        const hairline = Math.max(0.1, 1 / Math.max(1, sx));
+                        for (let i = 0; i < stickSamples.length; i++) {
+                            let xDom = (stickSamples[i][0] * scaleX) - viewLeft;
+                            let yDom = (stickSamples[i][1] * scaleY) - viewTop;
+                            xDom = _snapCoord(xDom, sx, true);
+                            yDom = _snapCoord(yDom, sy, true);
+                            ctx.beginPath();
+                            ctx.moveTo(xDom - halfStick, yDom);
+                            ctx.lineTo(xDom + halfStick, yDom);
+                            ctx.strokeStyle = lineCoreColor;
+                            ctx.globalAlpha = 1.0;
+                            ctx.lineWidth = hairline;
+                            ctx.stroke();
+                        }
                     } else if (crispOverlay) {
-                        // Crisp: solid single stroke, quantized to whole device pixels
                         const quantPx = 0.5;
                         const dpr = window.devicePixelRatio || 1;
-                        const lineWpx = Math.max(quantPx, Math.round((lineW * dpr) / quantPx) * quantPx);
+                        const lineWpx = Math.max(quantPx, Math.round((stickThickness * dpr) / quantPx) * quantPx);
                         const useHalf = (Math.round(lineWpx * 2) % 4) !== 0;
-                        try {
+                        for (let i = 0; i < stickSamples.length; i++) {
+                            let xDom = (stickSamples[i][0] * scaleX) - viewLeft;
+                            let yDom = (stickSamples[i][1] * scaleY) - viewTop;
+                            xDom = _snapCoord(xDom, sx, useHalf);
+                            yDom = _snapCoord(yDom, sy, useHalf);
+                            ctx.save();
+                            ctx.globalAlpha = 1.0;
+                            ctx.lineJoin = 'miter';
+                            ctx.lineCap = 'butt';
+                            const outlineWhitePx = lineWpx + 1.0;
                             ctx.beginPath();
-                            for (let i = 0; i < sortedPoints.length; i++) {
-                                const xImg = sortedPoints[i][0];
-                                const yImg = sortedPoints[i][1];
-                                let xDom = (xImg * scaleX) - viewLeft;
-                                let yDom = (yImg * scaleY) - viewTop;
-                                xDom = _snapCoord(xDom, sx, useHalf);
-                                yDom = _snapCoord(yDom, sy, useHalf);
-                                if (i === 0) ctx.moveTo(xDom, yDom);
-                                else ctx.lineTo(xDom, yDom);
-                            }
-                        } catch (e) {
+                            ctx.moveTo(xDom - halfStick, yDom);
+                            ctx.lineTo(xDom + halfStick, yDom);
+                            ctx.strokeStyle = '#ffffff';
+                            ctx.lineWidth = Math.max(0.1, outlineWhitePx / dpr);
+                            ctx.stroke();
+                            ctx.beginPath();
+                            ctx.moveTo(xDom - halfStick, yDom);
+                            ctx.lineTo(xDom + halfStick, yDom);
+                            ctx.strokeStyle = lineCoreColor;
+                            ctx.lineWidth = Math.max(0.1, lineWpx / dpr);
+                            ctx.stroke();
+                            ctx.restore();
                         }
-                        ctx.save();
-                        ctx.globalAlpha = 1.0;
-                        ctx.lineJoin = 'miter';
-                        ctx.lineCap = 'butt';
-                        // Dual-outline for visibility on both dark and light backgrounds.
-                        const outlineWhitePx = lineWpx + 1.0;
-                        const outlineBlackPx = lineWpx + 0.5;
-                        ctx.strokeStyle = '#ffffff';
-                        ctx.lineWidth = Math.max(0.1, outlineWhitePx / dpr);
-                        ctx.stroke();
-                        ctx.strokeStyle = '#000000';
-                        ctx.lineWidth = Math.max(0.1, outlineBlackPx / dpr);
-                        ctx.stroke();
-                        ctx.strokeStyle = lineCoreColor;
-                        ctx.lineWidth = Math.max(0.1, lineWpx / dpr);
-                        ctx.stroke();
-                        ctx.restore();
                     } else {
-                        // Subtle but clear: soft halo + solid core
-                        ctx.save();
-                        ctx.globalAlpha = 0.25;
-                        ctx.strokeStyle = '#ffffff';
-                        ctx.lineWidth = Math.max(0.1, lineW * 1.6);
-                        ctx.stroke();
-                        ctx.globalAlpha = 0.9;
-                        ctx.strokeStyle = lineCoreColor;
-                        ctx.lineWidth = Math.max(0.1, lineW * 0.85);
-                        ctx.stroke();
-                        ctx.restore();
+                        // Subtle but clear: soft halo + solid core using horizontal sticks
+                        for (let i = 0; i < stickSamples.length; i++) {
+                            const xDom = (stickSamples[i][0] * scaleX);
+                            const yDom = (stickSamples[i][1] * scaleY);
+                            ctx.save();
+                            ctx.globalAlpha = 0.25;
+                            drawStick(xDom, yDom, '#ffffff', null);
+                            ctx.globalAlpha = 0.9;
+                            drawStick(xDom, yDom, lineCoreColor, null);
+                            ctx.restore();
+                        }
+                    }
                     }
                 }
 
@@ -6729,7 +7503,7 @@
                 // Use slider value for point size
                 if (showPoints && !fastForThisCurve) {
                     const step = fastMode ? Math.max(3, Math.ceil(sortedPoints.length / 300)) : 3;
-                    const r = Math.max(0.1, overlayPointSize || 1.2);
+                    const r = Math.max(0.1, (curveSettings && Number.isFinite(curveSettings.pointSize)) ? curveSettings.pointSize : (overlayPointSize || 1.2));
                     for (let i = 0; i < sortedPoints.length; i += step) {
                         const xImg = sortedPoints[i][0];
                         const yImg = sortedPoints[i][1];
@@ -6821,10 +7595,45 @@
                             ctx.stroke();
                             ctx.restore();
                         }
-                            ctx.lineWidth = Math.max(0.1, 1.2 / Math.max(1, sx));
-                            ctx.stroke();
-                            ctx.restore();
+                    }
+                }
+            }
+
+            // Render ML predicted curves in magenta
+            if (window.mlPredictedCurves && Array.isArray(window.mlPredictedCurves)) {
+                ctx.setLineDash([]);
+                for (const mlCurve of window.mlPredictedCurves) {
+                    if (!mlCurve || !mlCurve.points || !mlCurve.points.length) continue;
+                    
+                    const mlColor = mlCurve.color || '#FF00FF';
+                    const mlLineWidth = 2;
+                    
+                    // Draw line connecting all points
+                    ctx.beginPath();
+                    for (let i = 0; i < mlCurve.points.length; i++) {
+                        const xDom = (mlCurve.points[i].x * scaleX) - viewLeft;
+                        const yDom = (mlCurve.points[i].y * scaleY) - viewTop;
+                        if (i === 0) {
+                            ctx.moveTo(xDom, yDom);
+                        } else {
+                            ctx.lineTo(xDom, yDom);
                         }
+                    }
+                    ctx.strokeStyle = mlColor;
+                    ctx.lineWidth = mlLineWidth;
+                    ctx.globalAlpha = 0.8;
+                    ctx.stroke();
+                    ctx.globalAlpha = 1.0;
+                    
+                    // Draw points every 50 pixels for visibility
+                    const pointStep = Math.max(1, Math.floor(mlCurve.points.length / 100));
+                    for (let i = 0; i < mlCurve.points.length; i += pointStep) {
+                        const xDom = (mlCurve.points[i].x * scaleX) - viewLeft;
+                        const yDom = (mlCurve.points[i].y * scaleY) - viewTop;
+                        ctx.beginPath();
+                        ctx.arc(xDom, yDom, 2, 0, Math.PI * 2);
+                        ctx.fillStyle = mlColor;
+                        ctx.fill();
                     }
                 }
             }
@@ -7103,6 +7912,7 @@
                         config: config,
                         detected_text: detectedText || null,
                         preview_filters: previewFilters,
+                        header_metadata: headerMetadata || null,
                     }),
                 });
 
@@ -7305,6 +8115,166 @@
                 behavior: 'smooth'
             });
         }
+
+        // Scroll lock functionality
+        let scrollLocked = false; // Page viewer scroll unlocked by default
+        let pageLocked = false; // Page scroll unlocked by default
+        
+        function toggleScrollLock() {
+            scrollLocked = !scrollLocked;
+            const viewerScroll = document.querySelector('.viewer-scroll');
+            const btn = document.getElementById('scrollLockBtn');
+            const btn2 = document.getElementById('toolViewerLock');
+            
+            if (scrollLocked) {
+                if (viewerScroll) viewerScroll.style.overflow = 'hidden';
+                if (btn) {
+                    btn.innerHTML = '🔒';
+                    btn.title = 'Viewer Locked - Click to Unlock';
+                    btn.classList.add('active');
+                }
+                if (btn2) {
+                    btn2.innerHTML = '🔒';
+                    btn2.classList.add('active');
+                }
+            } else {
+                if (viewerScroll) viewerScroll.style.overflow = 'auto';
+                if (btn) {
+                    btn.innerHTML = '🔓';
+                    btn.title = 'Viewer Unlocked - Click to Lock';
+                    btn.classList.remove('active');
+                }
+                if (btn2) {
+                    btn2.innerHTML = '🔓';
+                    btn2.classList.remove('active');
+                }
+            }
+        }
+        
+        function togglePageLock() {
+            pageLocked = !pageLocked;
+            const btn = document.getElementById('pageLockBtn');
+            const btn2 = document.getElementById('toolPageLock');
+            
+            if (pageLocked) {
+                document.body.style.overflow = 'hidden';
+                if (btn) {
+                    btn.innerHTML = '📄🔒';
+                    btn.title = 'Page Locked - Click to Unlock';
+                    btn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                }
+                if (btn2) {
+                    btn2.innerHTML = '📄🔒';
+                    btn2.title = 'Page Locked - Click to Unlock';
+                    btn2.classList.add('active');
+                }
+            } else {
+                document.body.style.overflow = '';
+                if (btn) {
+                    btn.innerHTML = '📄';
+                    btn.title = 'Page Unlocked - Click to Lock';
+                    btn.style.background = '#94a3b8';
+                }
+                if (btn2) {
+                    btn2.innerHTML = '📄';
+                    btn2.title = 'Page Unlocked - Click to Lock';
+                    btn2.classList.remove('active');
+                }
+            }
+        }
+
+        function syncToolbarCurveLockButton() {
+            const btn = document.getElementById('toolCurveLock');
+            const lockEl = document.getElementById('overlayCurveLock');
+            const target = (typeof getOverlayTargetCurveId === 'function') ? getOverlayTargetCurveId() : null;
+            if (!btn) return;
+
+            const disabled = !lockEl || !!lockEl.disabled || !target || target === '__all_unlocked__';
+            btn.disabled = disabled;
+            if (disabled) {
+                btn.classList.remove('active');
+                btn.title = 'Select a curve to lock its overlay settings';
+                btn.innerHTML = '🎚️🔒';
+                return;
+            }
+
+            const locked = !!lockEl.checked;
+            if (locked) {
+                btn.classList.add('active');
+                btn.title = 'Curve Overlay Locked - Click to Unlock';
+                btn.innerHTML = '🎚️🔒';
+            } else {
+                btn.classList.remove('active');
+                btn.title = 'Curve Overlay Unlocked - Click to Lock';
+                btn.innerHTML = '🎚️🔓';
+            }
+        }
+        
+        // Reset viewer zoom and position
+        function resetViewerZoom() {
+            const overlay = document.getElementById('overlay');
+            const imagePreview = document.getElementById('imagePreview');
+            if (overlay && imagePreview) {
+                overlay.style.transform = 'scale(1)';
+                overlay.style.transformOrigin = 'top left';
+                const viewerScroll = document.querySelector('.viewer-scroll');
+                if (viewerScroll) {
+                    viewerScroll.scrollTop = 0;
+                    viewerScroll.scrollLeft = 0;
+                }
+                showStatus('View reset to original size', 'info');
+            }
+        }
+        
+        // Prevent accidental scrolling when locked
+        document.addEventListener('DOMContentLoaded', function() {
+            const viewerScroll = document.querySelector('.viewer-scroll');
+            if (viewerScroll) {
+                viewerScroll.addEventListener('wheel', function(e) {
+                    if (scrollLocked && !e.ctrlKey && !e.metaKey) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                }, { passive: false });
+                
+                // Add pan functionality with Shift+Drag
+                let isPanning = false;
+                let startX, startY, scrollLeft, scrollTop;
+                
+                viewerScroll.addEventListener('mousedown', function(e) {
+                    if (e.shiftKey) {
+                        isPanning = true;
+                        startX = e.pageX - viewerScroll.offsetLeft;
+                        startY = e.pageY - viewerScroll.offsetTop;
+                        scrollLeft = viewerScroll.scrollLeft;
+                        scrollTop = viewerScroll.scrollTop;
+                        viewerScroll.style.cursor = 'grabbing';
+                        e.preventDefault();
+                    }
+                });
+                
+                viewerScroll.addEventListener('mousemove', function(e) {
+                    if (!isPanning) return;
+                    e.preventDefault();
+                    const x = e.pageX - viewerScroll.offsetLeft;
+                    const y = e.pageY - viewerScroll.offsetTop;
+                    const walkX = (x - startX) * 2;
+                    const walkY = (y - startY) * 2;
+                    viewerScroll.scrollLeft = scrollLeft - walkX;
+                    viewerScroll.scrollTop = scrollTop - walkY;
+                });
+                
+                viewerScroll.addEventListener('mouseup', function() {
+                    isPanning = false;
+                    viewerScroll.style.cursor = '';
+                });
+                
+                viewerScroll.addEventListener('mouseleave', function() {
+                    isPanning = false;
+                    viewerScroll.style.cursor = '';
+                });
+            }
+        });
 
         async function askAiAboutLog() {
             const textarea = document.getElementById('aiChatQuestion');

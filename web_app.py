@@ -11,22 +11,16 @@ Setup:
 
 Free hosting: Deploy to Render.com, Railway.app, or Google Cloud Run
 """
-# Add Google Vision API initialization
-from google.cloud import vision
-VISION_API_AVAILABLE = True
-try:
-    vision_client = vision.ImageAnnotatorClient()
-except Exception as e:
-    print(f"Google Vision API initialization failed: {e}")
-    vision_client = None
-    VISION_API_AVAILABLE = False
+# Vision API is optional; initialize later after env vars are loaded.
+VISION_API_AVAILABLE = False
+vision_client = None
 
 # Load environment variables from .env and .env.local
 from dotenv import load_dotenv
 load_dotenv()  # Load .env
 load_dotenv('.env.local', override=True)  # Load .env.local (overrides .env)
 
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response
 import math
 import os
 import random
@@ -45,7 +39,7 @@ import pandas as pd
 import json
 from io import BytesIO, StringIO
 import base64
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import tempfile
 from datetime import datetime
 import uuid
@@ -53,6 +47,27 @@ from pathlib import Path
 import requests
 import openai
 from huggingface_hub import InferenceClient
+
+TORCH_AVAILABLE = False
+try:
+    import torch
+    from torch import nn
+    TORCH_AVAILABLE = True
+except Exception:
+    torch = None
+    nn = None
+
+# Phase 1 & 2: Learning system imports
+from user_tracker import tracker
+from parameter_learner import ParameterLearner
+from ai_tracer import AITracer
+
+# Initialize learning system after all imports
+learner = ParameterLearner(tracker)
+import hashlib
+
+# Initialize AI tracer
+ai_tracer = AITracer("curve_trace_model.pt")
 
 # Try to import Google Vision API (optional)
 try:
@@ -68,16 +83,30 @@ try:
         VISION_API_AVAILABLE = True
         print("✅ Google Vision API: Loaded from environment variable")
     elif 'GOOGLE_APPLICATION_CREDENTIALS' in os.environ:
-        # Local development: JSON file path
+        # Local development: JSON file path in env var
         vision_client = vision.ImageAnnotatorClient()
         VISION_API_AVAILABLE = True
         print("✅ Google Vision API: Loaded from file")
     else:
-        print("⚠️  Google Vision API: No credentials found")
+        # Auto-detect key file in project directory
+        _local_key = Path(__file__).parent / 'GOOGLE_APPLICATION_CREDENTIALS.json'
+        if _local_key.exists():
+            credentials = service_account.Credentials.from_service_account_file(str(_local_key))
+            vision_client = vision.ImageAnnotatorClient(credentials=credentials)
+            VISION_API_AVAILABLE = True
+            print(f"✅ Google Vision API: Auto-loaded from {_local_key.name}")
+        else:
+            print("⚠️  Google Vision API: No credentials found")
+            vision_client = None
+            VISION_API_AVAILABLE = False
 except ImportError:
     print("⚠️  Google Vision API not available. Install: pip install google-cloud-vision")
+    vision_client = None
+    VISION_API_AVAILABLE = False
 except Exception as e:
     print(f"⚠️  Google Vision API error: {e}")
+    vision_client = None
+    VISION_API_AVAILABLE = False
 
 # Optional LAS validator
 LASIO_AVAILABLE = False
@@ -129,7 +158,7 @@ APP_VERSION = os.environ.get("APP_VERSION", "dev")
 APP_BUILD_TIME = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB max request size
 
 
 @app.errorhandler(500)
@@ -1232,6 +1261,86 @@ def apply_local_contrast_normalization(img_bgr):
     return enhanced_bgr
 
 
+def remove_grid_lines_aggressive(gray_img, aggressive=True):
+    """
+    Aggressively detect and remove grid lines from black and white log images.
+    Returns a mask with grid lines removed.
+    
+    Args:
+        gray_img: Grayscale image
+        aggressive: If True, use very aggressive grid detection
+    """
+    if gray_img is None or gray_img.size == 0:
+        return gray_img
+    
+    h, w = gray_img.shape[:2]
+    if h < 20 or w < 20:
+        return gray_img
+    
+    # Create a copy to work with
+    result = gray_img.copy()
+    
+    # Detect vertical lines (most common in grid)
+    if aggressive:
+        # Very aggressive vertical line detection
+        v_kernel_size = max(15, min(80, h // 3))  # Larger kernel for aggressive detection
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_kernel_size))
+        v_lines = cv2.morphologyEx(result, cv2.MORPH_OPEN, v_kernel)
+        
+        # Detect horizontal lines
+        h_kernel_size = max(15, min(80, w // 3))
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_kernel_size, 1))
+        h_lines = cv2.morphologyEx(result, cv2.MORPH_OPEN, h_kernel)
+        
+        # Combine detected lines
+        grid_lines = cv2.bitwise_or(v_lines, h_lines)
+        
+        # Dilate slightly to ensure complete removal
+        dilate_kernel = np.ones((2, 2), np.uint8)
+        grid_lines = cv2.dilate(grid_lines, dilate_kernel, iterations=1)
+        
+        # Remove grid lines from original
+        result = cv2.subtract(result, grid_lines)
+    else:
+        # Standard grid removal
+        v_kernel_size = max(10, min(60, h // 2))
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_kernel_size))
+        v_lines = cv2.morphologyEx(result, cv2.MORPH_OPEN, v_kernel)
+        
+        h_kernel_size = max(10, min(60, w // 2))
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_kernel_size, 1))
+        h_lines = cv2.morphologyEx(result, cv2.MORPH_OPEN, h_kernel)
+        
+        grid_lines = cv2.bitwise_or(v_lines, h_lines)
+        result = cv2.subtract(result, grid_lines)
+    
+    return result
+
+
+def detect_if_black_and_white_log(roi_bgr):
+    """
+    Auto-detect if an image is a black and white log (vs colored).
+    Returns True if the image appears to be black and white.
+    """
+    if roi_bgr is None or roi_bgr.size == 0:
+        return False
+    
+    try:
+        # Convert to HSV and check saturation
+        hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+        saturation = hsv[:, :, 1]
+        
+        # Calculate percentage of low-saturation pixels
+        low_sat_pixels = np.sum(saturation < 30)
+        total_pixels = saturation.size
+        low_sat_ratio = low_sat_pixels / max(1, total_pixels)
+        
+        # If >90% of pixels have low saturation, it's likely black and white
+        return low_sat_ratio > 0.90
+    except Exception:
+        return False
+
+
 def enhance_curve_roi(roi_bgr):
     """
     Apply lightweight denoise + horizontal super-resolution to a curve ROI.
@@ -1636,8 +1745,16 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
     else:
         # "black" or fallback: dark pixels relative to local background
+        # Auto-detect if this is a black and white log for aggressive grid removal
+        is_bw_log = detect_if_black_and_white_log(roi_bgr)
+        
+        # Apply aggressive grid removal to grayscale before thresholding if B&W detected
+        gray_processed = gray
+        if is_bw_log:
+            gray_processed = remove_grid_lines_aggressive(gray, aggressive=True)
+        
         color_mask = cv2.adaptiveThreshold(
-            gray,
+            gray_processed,
             255,
             cv2.ADAPTIVE_THRESH_MEAN_C,
             cv2.THRESH_BINARY_INV,
@@ -1655,9 +1772,17 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         except Exception:
             pass
 
+        # Additional grid removal on the mask itself (less aggressive if already processed)
         if h >= 20 and w >= 20:
-            k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, min(60, h // 2))))
-            k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, min(60, w // 2)), 1))
+            if is_bw_log:
+                # Lighter grid removal since we already did aggressive removal
+                k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(8, min(40, h // 3))))
+                k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (max(8, min(40, w // 3)), 1))
+            else:
+                # Standard grid removal for non-B&W images
+                k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, min(60, h // 2))))
+                k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, min(60, w // 2)), 1))
+            
             v_lines = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, k_v)
             h_lines = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, k_h)
             lines = cv2.bitwise_or(v_lines, h_lines)
@@ -4405,7 +4530,7 @@ def compute_depth_vector(nrows, top_depth, bottom_depth):
     ys = np.arange(nrows, dtype=np.float32)
     return top_depth + (ys / max(1, nrows-1)) * (bottom_depth - top_depth)
 
-def write_las_simple(depth, curve_data, depth_unit="FT"):
+def write_las_simple(depth, curve_data, depth_unit="FT", header_metadata=None):
     """Generate LAS 1.2-style file compatible with QuickSyn"""
     null_val = -999.25
     unit_token = "F" if depth_unit.upper().startswith("F") else depth_unit.upper()
@@ -4427,7 +4552,41 @@ def write_las_simple(depth, curve_data, depth_unit="FT"):
     step = float(depth[1] - depth[0]) if depth.size > 1 else 0.0
     lines.append(f" STEP.{unit_token}               {step:.4f}:" + eol)
     lines.append(f" NULL.               {null_val:.4f}:" + eol)
-    lines.append(" WELL.               WELL NAME:  DIGITIZED_LOG" + eol)
+
+    md = header_metadata if isinstance(header_metadata, dict) else {}
+    comp = (md.get('comp') or md.get('company') or '').strip() if isinstance(md.get('comp') or md.get('company') or '', str) else ''
+    well = (md.get('well') or '').strip() if isinstance(md.get('well') or '', str) else ''
+    fld = (md.get('fld') or md.get('field') or '').strip() if isinstance(md.get('fld') or md.get('field') or '', str) else ''
+    loc = (md.get('loc') or md.get('location') or '').strip() if isinstance(md.get('loc') or md.get('location') or '', str) else ''
+    county = (md.get('county') or '').strip() if isinstance(md.get('county') or '', str) else ''
+    state = (md.get('state') or '').strip() if isinstance(md.get('state') or '', str) else ''
+    prov = (md.get('prov') or md.get('province') or '').strip() if isinstance(md.get('prov') or md.get('province') or '', str) else ''
+    srvc = (md.get('srvc') or md.get('service') or md.get('service_company') or '').strip() if isinstance(md.get('srvc') or md.get('service') or md.get('service_company') or '', str) else ''
+    date = (md.get('date') or '').strip() if isinstance(md.get('date') or '', str) else ''
+    api = (md.get('api') or '').strip() if isinstance(md.get('api') or '', str) else ''
+    uwi = (md.get('uwi') or '').strip() if isinstance(md.get('uwi') or '', str) else ''
+
+    if comp:
+        lines.append(f" COMP.       {comp}:" + eol)
+    lines.append(f" WELL.       {(well or 'DIGITIZED_LOG')}:" + eol)
+    if fld:
+        lines.append(f" FLD .       {fld}:" + eol)
+    if loc:
+        lines.append(f" LOC .       {loc}:" + eol)
+    if county:
+        lines.append(f" CNTY.       {county}:" + eol)
+    if state:
+        lines.append(f" STAT.       {state}:" + eol)
+    if prov:
+        lines.append(f" PROV.       {prov}:" + eol)
+    if srvc:
+        lines.append(f" SRVC.       {srvc}:" + eol)
+    if date:
+        lines.append(f" DATE.       {date}:" + eol)
+    if api:
+        lines.append(f" API .       {api}:" + eol)
+    if uwi:
+        lines.append(f" UWI .       {uwi}:" + eol)
 
     # Minimal parameter information section (to match legacy LAS 1.2 style)
     lines.append("~PARAMETER INFORMATION BLOCK" + eol)
@@ -4457,6 +4616,33 @@ def write_las_simple(depth, curve_data, depth_unit="FT"):
         lines.append(" ".join(row_vals) + eol)
 
     return "".join(lines)
+
+
+def build_las_filename_from_metadata(header_metadata, default_name="digitized_log.las"):
+    if not isinstance(header_metadata, dict):
+        return default_name
+    well = header_metadata.get('well')
+    comp = header_metadata.get('comp') or header_metadata.get('company')
+
+    def _clean(s):
+        if not isinstance(s, str):
+            return ''
+        s = s.strip()
+        if not s:
+            return ''
+        import re
+        s = re.sub(r"\s+", "_", s)
+        s = re.sub(r"[^A-Za-z0-9_\-]+", "", s)
+        s = s.strip("_-")
+        return s[:80]
+
+    well_s = _clean(well)
+    comp_s = _clean(comp)
+    if well_s and comp_s:
+        return f"{comp_s}__{well_s}.las"
+    if well_s:
+        return f"{well_s}.las"
+    return default_name
 
 # ----------------------------
 # Google Vision API Functions
@@ -5039,6 +5225,94 @@ def auto_layout_tracks():
     detected_text = detect_text_vision_api(header_bytes)
     raw_text = detected_text.get('raw', []) or []
 
+    def _extract_header_metadata(raw_entries):
+        if not isinstance(raw_entries, list) or not raw_entries:
+            return None
+        try:
+            items_local = []
+            for entry in raw_entries:
+                if not isinstance(entry, dict):
+                    continue
+                text = (entry.get('text') or '').strip()
+                if not text:
+                    continue
+                verts = entry.get('vertices') or []
+                ys_local = [v.get('y') for v in verts if isinstance(v, dict) and 'y' in v]
+                xs_local = [v.get('x') for v in verts if isinstance(v, dict) and 'x' in v]
+                if not ys_local or not xs_local:
+                    continue
+                y = float(sum(ys_local)) / len(ys_local)
+                x = float(sum(xs_local)) / len(xs_local)
+                items_local.append((y, x, text))
+            if not items_local:
+                return None
+            items_local.sort(key=lambda t: (t[0], t[1]))
+
+            lines = []
+            y_tol = 8.0
+            current_y = None
+            current_tokens = []
+            for y, x, text in items_local:
+                if current_y is None or abs(y - current_y) <= y_tol:
+                    if current_y is None:
+                        current_y = y
+                    current_tokens.append((x, text))
+                else:
+                    current_tokens.sort(key=lambda t: t[0])
+                    lines.append(' '.join(t[1] for t in current_tokens if t[1]).strip())
+                    current_y = y
+                    current_tokens = [(x, text)]
+            if current_tokens:
+                current_tokens.sort(key=lambda t: t[0])
+                lines.append(' '.join(t[1] for t in current_tokens if t[1]).strip())
+
+            import re
+
+            def pick_after(label_re, s):
+                m = re.search(label_re, s, flags=re.IGNORECASE)
+                if not m:
+                    return None
+                tail = s[m.end():].strip(" :-\t")
+                return tail.strip() if tail else None
+
+            md = {}
+            for s in lines:
+                if not s:
+                    continue
+                for key, pat in (
+                    ('comp', r"\bCOMPANY\b"),
+                    ('well', r"\bWELL\b"),
+                    ('fld', r"\bFIELD\b"),
+                    ('loc', r"\bLOCATION\b"),
+                    ('county', r"\bCOUNTY\b"),
+                    ('state', r"\bSTATE\b"),
+                    ('prov', r"\bPROV(?:INCE)?\b"),
+                    ('srvc', r"\bSERVICE\s+COMPANY\b"),
+                    ('date', r"\bDATE\b"),
+                    ('api', r"\bAPI\b"),
+                    ('uwi', r"\bUWI\b"),
+                ):
+                    if key in md:
+                        continue
+                    val = pick_after(pat, s)
+                    if val:
+                        md[key] = val
+
+                if 'api' not in md:
+                    m = re.search(r"\b(\d{2}[- ]?\d{3}[- ]?\d{5})\b", s)
+                    if m:
+                        md['api'] = m.group(1).replace(' ', '-')
+                if 'date' not in md:
+                    m = re.search(r"\b(\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})\b", s)
+                    if m:
+                        md['date'] = m.group(1)
+
+            return md if md else None
+        except Exception:
+            return None
+
+    header_metadata = _extract_header_metadata(raw_text) if treat_region_as_header else None
+
     items = []
     for entry in raw_text:
         text = (entry.get('text') or '').strip()
@@ -5196,6 +5470,7 @@ def auto_layout_tracks():
         'success': True,
         'tracks': tracks_out,
         'raw_layout': layout,
+        'header_metadata': header_metadata,
     })
 
 
@@ -6111,6 +6386,8 @@ def digitize():
     curves = (cfg['curves'] or [])[:6]
     gopt = cfg.get('global_options', {})
 
+    header_metadata = data.get('header_metadata') if isinstance(data, dict) else None
+
     null_val = float(gopt.get('null', -999.25))
     downsample = int(gopt.get('downsample', 1))
     blur = int(gopt.get('blur', 3))
@@ -6137,7 +6414,8 @@ def digitize():
     
     curve_data = {}
     curve_traces = {}
-    
+    curve_warnings = []
+
     for c in curves:
         # LAS-facing name/unit come from las_mnemonic/las_unit (or name/unit as fallback)
         name = c.get('las_mnemonic') or c.get('name')
@@ -6155,17 +6433,56 @@ def digitize():
         crest_boost = bool(c.get('crest_boost'))
         if not hot_side and np.isfinite(left_value) and np.isfinite(right_value):
             hot_side = 'right' if right_value >= left_value else 'left'
-        
-        roi = img[top:bot, left_px:right_px]
+
+        # Defensive ROI bounds check: avoid empty slices that crash OpenCV ops.
+        # (This can happen if the UI sends left/right reversed, or values are out of range.)
+        img_w = int(img.shape[1])
+        img_h = int(img.shape[0])
+        left_px = max(0, min(img_w - 1, left_px))
+        right_px = max(0, min(img_w, right_px))
+        if right_px <= left_px:
+            curve_warnings.append({
+                'curve': name,
+                'error': 'Invalid curve bounds (right_px must be > left_px).',
+                'left_px': left_px,
+                'right_px': right_px,
+                'image_width': img_w,
+            })
+            continue
+
+        top_clamped = max(0, min(img_h - 1, int(top)))
+        bot_clamped = max(0, min(img_h, int(bot)))
+        if bot_clamped <= top_clamped:
+            curve_warnings.append({
+                'curve': name,
+                'error': 'Invalid depth bounds (bottom_px must be > top_px).',
+                'top_px': top_clamped,
+                'bottom_px': bot_clamped,
+                'image_height': img_h,
+            })
+            continue
+
+        roi = img[top_clamped:bot_clamped, left_px:right_px]
+        if roi is None or roi.size == 0:
+            curve_warnings.append({
+                'curve': name,
+                'error': 'Empty ROI for curve (check left/right and top/bottom).',
+                'top_px': top_clamped,
+                'bottom_px': bot_clamped,
+                'left_px': left_px,
+                'right_px': right_px,
+            })
+            continue
+
         if align_channels:
             roi = align_rgb_channels(roi)
         if blur > 0:
             bb = blur + 1 if blur % 2 == 0 else blur
             roi = cv2.GaussianBlur(roi, (bb, bb), 0)
-        
+
         # Define colored modes set (including auto which detects hue automatically)
         colored_modes = {"green", "red", "blue", "auto", "cyan", "magenta", "yellow", "orange", "purple"}
-        
+
         # NEW: Build a soft probability mask for the curve using color/edges
         # plus vertical-rail suppression. This returns an 8-bit image where
         # higher values mean higher likelihood of curve pixels.
@@ -6197,7 +6514,19 @@ def digitize():
         max_step_dp = 200 if mode in colored_modes else 3  # Allow unlimited movement to follow gamma ray spikes
 
         # Optional pixel-perfect skeleton tracer (preserve every bump)
-        if pixel_perfect and mode in colored_modes:
+        if ai_tracer.is_available() and trace_mode == "ai_tracer":
+            # Use the AI model for tracing
+            try:
+                # The AI model predicts coordinates relative to the ROI's left edge
+                # and already handles scaling to the ROI width.
+                xs = ai_tracer.trace(roi)
+                confidence = np.ones_like(xs) * 0.95 # Mock high confidence for AI
+            except Exception as e:
+                print(f"⚠️ AI Tracer failed for {name}: {e}")
+                # Fallback to empty if AI fails
+                xs = np.full(roi.shape[0], np.nan)
+                confidence = np.zeros(roi.shape[0])
+        elif pixel_perfect and mode in colored_modes:
             gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             if trace_mode == "skeleton_path":
                 xs, confidence = trace_curve_skeleton_path(mask)
@@ -6617,6 +6946,13 @@ def digitize():
 
             las_curve_data[name] = {"unit": meta.get("unit", ""), "values": new_vals}
 
+    if not curve_data:
+        return jsonify({
+            'error': 'No valid curves to digitize. Please check curve bounds and depth settings.',
+            'curve_warnings': curve_warnings,
+            'depth_warnings': depth_warnings,
+        }), 400
+
     # Run simple curve sanity checks (outlier warnings) on the final LAS depth grid
     outlier_warnings = compute_curve_outlier_warnings(curves, las_curve_data, null_val)
 
@@ -6635,7 +6971,7 @@ def digitize():
         digitized_curves = None
 
     # Generate LAS file
-    las_content = write_las_simple(las_depth, las_curve_data, depth_unit)
+    las_content = write_las_simple(las_depth, las_curve_data, depth_unit, header_metadata=header_metadata)
 
     # Validate LAS output if possible
     validation = {
@@ -6662,10 +6998,11 @@ def digitize():
     return jsonify({
         'success': True,
         'las_content': las_content,
-        'filename': 'digitized_log.las',
+        'filename': build_las_filename_from_metadata(header_metadata, default_name='digitized_log.las'),
         'validation': validation,
         'outlier_warnings': outlier_warnings,
         'depth_warnings': depth_warnings,
+        'curve_warnings': curve_warnings,
         'curve_traces': curve_traces,
         'ai_payload': ai_payload,
         'ai_summary': ai_summary,
@@ -7177,6 +7514,736 @@ def log_correction():
         return jsonify({'success': False, 'error': str(exc)}), 500
 
 
+@app.route('/api/learn_from_user', methods=['POST'])
+def learn_from_user():
+    """Record user curve adjustments for learning (Phase 1)"""
+    data = request.json or {}
+    
+    required_fields = ['curve_type', 'original_params', 'user_params']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({
+                'success': False, 
+                'error': f'Missing required field: {field}'
+            }), 400
+    
+    try:
+        curve_type = data['curve_type']
+        original_params = data['original_params']
+        user_params = data['user_params']
+        quality_score = data.get('quality_score', 1.0)
+        image_context = data.get('image_context')
+        
+        # Validate curve type
+        valid_types = ['GR', 'RHOB', 'NPHI', 'DT', 'CALI', 'SP', 'OTHER']
+        if curve_type not in valid_types:
+            curve_type = 'OTHER'
+        
+        # Record the adjustment
+        tracker.record_adjustment(
+            curve_type=curve_type,
+            original_params=original_params,
+            user_params=user_params,
+            quality_score=quality_score,
+            image_context=image_context
+        )
+        
+        # Return stats for feedback
+        stats = tracker.get_stats(curve_type)
+        
+        return jsonify({
+            'success': True,
+            'stats': stats,
+            'message': f'Adjustment recorded for {curve_type}'
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/user_preferences', methods=['GET'])
+def get_user_preferences():
+    """Get user preference statistics"""
+    curve_type = request.args.get('curve_type')
+    
+    if curve_type:
+        adjustments = tracker.get_adjustments(curve_type)
+        stats = tracker.get_stats(curve_type)
+        return jsonify({
+            'curve_type': curve_type,
+            'adjustments': adjustments,
+            'stats': stats
+        })
+    else:
+        all_adjustments = tracker.get_all_adjustments()
+        all_stats = {ct: tracker.get_stats(ct) for ct in all_adjustments.keys()}
+        return jsonify({
+            'all_adjustments': all_adjustments,
+            'all_stats': all_stats
+        })
+
+
+@app.route('/api/clear_preferences', methods=['POST'])
+def clear_preferences():
+    """Clear user preferences (for testing/reset)"""
+    curve_type = request.json.get('curve_type')
+    
+    if curve_type:
+        tracker.adjustments[curve_type] = []
+    else:
+        tracker.adjustments.clear()
+    
+    tracker.save_preferences()
+    
+    return jsonify({
+        'success': True,
+        'message': f'Preferences cleared for {curve_type or "all curves"}'
+    })
+
+
+@app.route('/api/batch_digitize', methods=['POST'])
+def batch_digitize():
+    """Process multiple TIFF images for ML training dataset generation.
+
+    Expects JSON with:
+      - jobs: list of { image, config, preview_filters, detected_text, header_metadata }
+      - export_format: 'json' (default) or 'las'
+      - include_images: bool (include cropped panel images in output)
+
+    Returns:
+      - results: list of digitization results with metadata
+      - summary: { total, success, failed }
+    """
+    data = request.json or {}
+    jobs = data.get('jobs', [])
+    export_format = data.get('export_format', 'json')
+    include_images = data.get('include_images', True)
+
+    if not jobs:
+        return jsonify({'success': False, 'error': 'No jobs provided'}), 400
+
+    results = []
+    success_count = 0
+    failed_count = 0
+
+    for idx, job in enumerate(jobs):
+        try:
+            image_data = job.get('image')
+            image_path = job.get('image_path')
+            config = job.get('config')
+            preview_filters = job.get('preview_filters', {})
+            detected_text = job.get('detected_text', {})
+            header_metadata = job.get('header_metadata')
+
+            if not image_data and not image_path:
+                results.append({
+                    'index': idx,
+                    'success': False,
+                    'error': 'Missing image or image_path'
+                })
+                failed_count += 1
+                continue
+
+            if not config:
+                results.append({
+                    'index': idx,
+                    'success': False,
+                    'error': 'Missing config'
+                })
+                failed_count += 1
+                continue
+
+            # Load image (path or base64)
+            img = None
+            if image_path:
+                if os.path.exists(image_path):
+                    img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+                else:
+                    results.append({
+                        'index': idx,
+                        'success': False,
+                        'error': f'Image path not found: {image_path}'
+                    })
+                    failed_count += 1
+                    continue
+            elif image_data:
+                try:
+                    # Decode image
+                    if ',' in image_data:
+                        image_data = image_data.split(',')[1]
+                    img_bytes = base64.b64decode(image_data)
+                    nparr = np.frombuffer(img_bytes, np.uint8)
+                    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except Exception as e:
+                    results.append({
+                        'index': idx,
+                        'success': False,
+                        'error': f'Failed to decode image: {e}'
+                    })
+                    failed_count += 1
+                    continue
+
+            if img is None:
+                results.append({
+                    'index': idx,
+                    'success': False,
+                    'error': 'Failed to decode image'
+                })
+                failed_count += 1
+                continue
+
+            # Extract config
+            depth_cfg = config['depth']
+            curves = (config['curves'] or [])[:6]
+            gopt = config.get('global_options', {})
+
+            null_val = float(gopt.get('null', -999.25))
+            downsample = int(gopt.get('downsample', 1))
+            blur = int(gopt.get('blur', 3))
+            min_run = int(gopt.get('min_run', 2))
+            smooth_window = int(gopt.get('smooth_window', 5))
+
+            H, W, _ = img.shape
+            top = max(0, int(depth_cfg['top_px']))
+            bot = min(H, int(depth_cfg['bottom_px']))
+            top_depth = float(depth_cfg['top_depth'])
+            bottom_depth = float(depth_cfg['bottom_depth'])
+            depth_unit = depth_cfg.get('unit', 'FT')
+
+            nrows = bot - top
+            base_depth = compute_depth_vector(nrows, top_depth, bottom_depth)
+
+            curve_data = {}
+            curve_traces = {}
+
+            for c in curves:
+                name = c.get('las_mnemonic') or c.get('name')
+                unit = c.get('las_unit') or c.get('unit', '')
+                left_px = int(c['left_px'])
+                right_px = int(c['right_px'])
+                left_value = float(c['left_value'])
+                right_value = float(c['right_value'])
+                mode = c.get('mode', 'black')
+                hot_side = c.get('hot_side')
+                pixel_perfect = bool(c.get('pixel_perfect'))
+                trace_mode = c.get('trace_mode')
+                align_channels = bool(c.get('align_channels'))
+                preserve_wiggles = bool(c.get('preserve_wiggles'))
+                crest_boost = bool(c.get('crest_boost'))
+
+                if not hot_side and np.isfinite(left_value) and np.isfinite(right_value):
+                    hot_side = 'right' if right_value >= left_value else 'left'
+
+                left_px = max(0, min(W - 1, left_px))
+                right_px = max(0, min(W, right_px))
+
+                if right_px <= left_px:
+                    continue
+
+                top_clamped = max(0, min(H - 1, int(top)))
+                bot_clamped = max(0, min(H, int(bot)))
+
+                if bot_clamped <= top_clamped:
+                    continue
+
+                roi = img[top_clamped:bot_clamped, left_px:right_px]
+                if roi is None or roi.size == 0:
+                    continue
+
+                if align_channels:
+                    roi = align_rgb_channels(roi)
+                if blur > 0:
+                    bb = blur + 1 if blur % 2 == 0 else blur
+                    roi = cv2.GaussianBlur(roi, (bb, bb), 0)
+
+                mask = compute_prob_map(roi, mode=mode, ui_filters=preview_filters)
+                curve_type = c.get('type', 'GR')
+
+                colored_modes = {"green", "red", "blue", "auto", "cyan", "magenta", "yellow", "orange", "purple"}
+
+                if pixel_perfect and mode in colored_modes:
+                    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                    if trace_mode == "skeleton_path":
+                        xs, confidence = trace_curve_skeleton_path(mask)
+                    else:
+                        xs, confidence = trace_curve_pixel_perfect(
+                            mask, grayscale=gray_roi, bgr=roi, hot_side=hot_side,
+                            preserve_wiggles=preserve_wiggles, crest_boost=crest_boost,
+                        )
+                    width_px = mask.shape[1]
+                    if xs.size:
+                        s = pd.Series(xs)
+                        s = s.interpolate(method='linear', limit_direction='both', limit=max(10, int(xs.size * 0.02)))
+                        xs = s.to_numpy(dtype=np.float32)
+                    prob = mask.astype(np.float32) / 255.0
+                    if crest_boost:
+                        xs = _postprocess_missed_peaks(mask, prob, xs, search_radius=40, min_prob=0.004)
+                    else:
+                        xs = _postprocess_missed_peaks(mask, prob, xs, search_radius=30, min_prob=0.008)
+                elif mode in colored_modes:
+                    mask_orig = mask
+                    h_orig, w_orig = mask.shape
+                    mask = cv2.resize(mask, (w_orig * 2, h_orig * 2), interpolation=cv2.INTER_LINEAR)
+                    max_step_dp = 200 * 2
+                    dp_smooth_lambda = 0.001
+                    dp_curv_lambda = 0.001
+
+                    xs_dp, conf_dp = trace_curve_with_dp(
+                        mask, scale_min=left_value, scale_max=right_value,
+                        curve_type=curve_type, max_step=max_step_dp,
+                        smooth_lambda=dp_smooth_lambda, curv_lambda=dp_curv_lambda,
+                        hot_side=hot_side,
+                    )
+
+                    h_mask, w_mask = mask.shape
+                    prob_map = mask.astype(np.float32) / 255.0
+                    xs = np.full(h_mask, np.nan, dtype=np.float32)
+
+                    for row in range(h_mask):
+                        dp_x = xs_dp[row] if row < len(xs_dp) else None
+                        if np.isnan(dp_x):
+                            continue
+
+                        search_radius = 30
+                        x_start = max(0, int(dp_x) - search_radius)
+                        x_end = min(w_mask, int(dp_x) + search_radius + 1)
+                        row_probs = prob_map[row, x_start:x_end]
+
+                        if row_probs.size == 0:
+                            continue
+
+                        local_max_idx = np.argmax(row_probs)
+                        xs[row] = x_start + local_max_idx
+
+                    xs = xs / 2.0
+
+                    mask = mask_orig
+                else:
+                    xs, confidence = trace_curve_with_dp(
+                        mask, scale_min=left_value, scale_max=right_value,
+                        curve_type=curve_type, max_step=3, smooth_lambda=0.5, curv_lambda=0.05,
+                        hot_side=hot_side,
+                    )
+
+                if xs.size != nrows:
+                    if xs.size > nrows:
+                        xs = xs[:nrows]
+                    else:
+                        xs = np.pad(xs, (0, nrows - xs.size), mode='edge')
+
+                xs = pd.Series(xs).interpolate(method='linear', limit_direction='both', limit=10).to_numpy()
+
+                scale_range = right_value - left_value
+                if scale_range == 0:
+                    scale_range = 1.0
+
+                values = left_value + (xs / (right_px - left_px)) * scale_range
+                values = np.where(np.isnan(values), null_val, values)
+
+                # Clean NaN/inf from xs and values before converting to list
+                xs_clean = np.where(np.isnan(xs) | np.isinf(xs), null_val, xs)
+                values_clean = np.where(np.isnan(values) | np.isinf(values), null_val, values)
+
+                if downsample > 1:
+                    values_clean = values_clean[::downsample]
+                    base_depth = base_depth[::downsample]
+
+                curve_data[name] = values_clean.tolist()
+                curve_traces[name] = xs_clean.tolist()
+
+            # Clean NaN/inf from depth values before converting to list
+            base_depth_clean = np.where(np.isnan(base_depth) | np.isinf(base_depth), null_val, base_depth)
+
+            result = {
+                'index': idx,
+                'success': True,
+                'depth': {
+                    'top_px': top,
+                    'bottom_px': bot,
+                    'top_depth': top_depth,
+                    'bottom_depth': bottom_depth,
+                    'unit': depth_unit,
+                    'values': base_depth_clean.tolist(),
+                },
+                'curves': curve_data,
+                'curve_traces': curve_traces,
+                'metadata': {
+                    'image_width': W,
+                    'image_height': H,
+                    'curve_count': len(curve_data),
+                    'null_value': null_val,
+                }
+            }
+
+            if include_images:
+                ok, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ok:
+                    result['image'] = base64.b64encode(buf.tobytes()).decode('utf-8')
+
+            if header_metadata:
+                result['header_metadata'] = header_metadata
+
+            results.append(result)
+            success_count += 1
+
+        except Exception as e:
+            results.append({
+                'index': idx,
+                'success': False,
+                'error': str(e)
+            })
+            failed_count += 1
+            continue
+
+    return jsonify({
+        'success': True,
+        'results': results,
+        'summary': {
+            'total': len(jobs),
+            'success': success_count,
+            'failed': failed_count
+        }
+    })
+
+
+@app.route('/api/export_training_data', methods=['POST'])
+def export_training_data():
+    """Export digitized data as ML-ready training dataset.
+
+    Expects JSON with:
+      - data: list of digitization results (from batch_digitize or digitize)
+      - format: 'json' (default) or 'csv'
+      - include_metadata: bool (include image metadata)
+
+    Returns:
+      - JSON or CSV formatted training data with:
+        - image_id
+        - depth_values
+        - curve_data (pixel traces and value mappings)
+        - curve_metadata (type, scale, parameters)
+    """
+    class NpEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                if np.isnan(obj) or np.isinf(obj):
+                    return None
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super(NpEncoder, self).default(obj)
+
+    data = request.json or {}
+    dataset = data.get('data', [])
+    export_format = data.get('format', 'json')
+    include_metadata = data.get('include_metadata', True)
+
+    if not dataset:
+        return jsonify({'success': False, 'error': 'No data provided'}), 400
+
+    training_data = []
+
+    for idx, item in enumerate(dataset):
+        if not item.get('success'):
+            continue
+
+        depth_info = item.get('depth', {})
+        curves = item.get('curves', {})
+        curve_traces = item.get('curve_traces', {})
+        metadata = item.get('metadata', {})
+        header_metadata = item.get('header_metadata', {})
+
+        # Clean depth values of NaN/inf
+        depth_values_raw = depth_info.get('values', [])
+        depth_values_clean = [None if isinstance(v, float) and (np.isnan(v) or np.isinf(v)) else v for v in depth_values_raw]
+
+        training_item = {
+            'image_id': f"img_{idx:04d}",
+            'depth': {
+                'top_px': depth_info.get('top_px'),
+                'bottom_px': depth_info.get('bottom_px'),
+                'top_depth': depth_info.get('top_depth'),
+                'bottom_depth': depth_info.get('bottom_depth'),
+                'unit': depth_info.get('unit', 'FT'),
+                'values': depth_values_clean,
+            },
+            'curves': []
+        }
+
+        for curve_name, values in curves.items():
+            trace = curve_traces.get(curve_name, [])
+            # Filter out NaN and inf values for JSON serialization
+            trace_clean = [None if isinstance(v, float) and (np.isnan(v) or np.isinf(v)) else v for v in trace]
+            values_clean = [None if isinstance(v, float) and (np.isnan(v) or np.isinf(v)) else v for v in values]
+
+            training_item['curves'].append({
+                'name': curve_name,
+                'pixel_trace': trace_clean,
+                'depth_values': values_clean,
+                'sample_count': len(values),
+            })
+
+        if include_metadata:
+            # Clean metadata values
+            training_item['metadata'] = {
+                'image_width': metadata.get('image_width'),
+                'image_height': metadata.get('image_height'),
+                'curve_count': metadata.get('curve_count'),
+                'null_value': metadata.get('null_value'),
+            }
+            if header_metadata:
+                training_item['header_metadata'] = header_metadata
+
+        training_data.append(training_item)
+
+    if export_format == 'csv':
+        import csv
+        from io import StringIO
+
+        output = StringIO()
+        writer = csv.writer(output)
+
+        writer.writerow(['image_id', 'depth_top_px', 'depth_bottom_px', 'depth_top_depth',
+                        'depth_bottom_depth', 'depth_unit', 'curve_name', 'pixel_trace',
+                        'depth_values'])
+
+        for item in training_data:
+            depth = item['depth']
+            for curve in item['curves']:
+                # Filter out NaN and inf values for JSON serialization
+                pixel_trace = curve['pixel_trace']
+                depth_values = curve['depth_values']
+
+                # Replace NaN with null for JSON compatibility
+                pixel_trace_clean = [None if isinstance(v, float) and (np.isnan(v) or np.isinf(v)) else v for v in pixel_trace]
+                depth_values_clean = [None if isinstance(v, float) and (np.isnan(v) or np.isinf(v)) else v for v in depth_values]
+
+                writer.writerow([
+                    item['image_id'],
+                    depth['top_px'],
+                    depth['bottom_px'],
+                    depth['top_depth'],
+                    depth['bottom_depth'],
+                    depth['unit'],
+                    curve['name'],
+                    json.dumps(pixel_trace_clean),
+                    json.dumps(depth_values_clean),
+                ])
+
+        csv_output = output.getvalue()
+        return jsonify({
+            'success': True,
+            'format': 'csv',
+            'data': csv_output,
+            'count': len(training_data)
+        })
+
+    # Use custom encoder to handle numpy types and NaN/inf
+    response_data = {
+        'success': True,
+        'format': 'json',
+        'data': training_data,
+        'count': len(training_data)
+    }
+
+    json_str = json.dumps(response_data, cls=NpEncoder)
+    return Response(json_str, mimetype='application/json')
+
+
+_ML_CURVE_TRACE_MODEL_CACHE = {
+     'model_path': None,
+     'model': None,
+     'meta': None,
+ }
+
+
+if TORCH_AVAILABLE:
+     class _CurveTraceNet(nn.Module):
+         def __init__(self, in_ch: int = 1, base: int = 16):
+             super().__init__()
+             self.enc = nn.Sequential(
+                 nn.Conv2d(in_ch, base, 3, padding=1),
+                 nn.ReLU(inplace=True),
+                 nn.Conv2d(base, base, 3, padding=1),
+                 nn.ReLU(inplace=True),
+                 nn.MaxPool2d(2),
+                 nn.Conv2d(base, base * 2, 3, padding=1),
+                 nn.ReLU(inplace=True),
+                 nn.Conv2d(base * 2, base * 2, 3, padding=1),
+                 nn.ReLU(inplace=True),
+             )
+             self.dec = nn.Sequential(
+                 nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                 nn.Conv2d(base * 2, base, 3, padding=1),
+                 nn.ReLU(inplace=True),
+                 nn.Conv2d(base, base, 3, padding=1),
+                 nn.ReLU(inplace=True),
+                 nn.Conv2d(base, 1, 1),
+             )
+
+         def forward(self, x: 'torch.Tensor') -> 'torch.Tensor':
+             feat = self.enc(x)
+             logits = self.dec(feat).squeeze(1)
+             prob = torch.softmax(logits, dim=-1)
+             xs = torch.linspace(0.0, 1.0, logits.shape[-1], device=logits.device)
+             pred = (prob * xs).sum(dim=-1)
+             return pred
+
+
+def _ml_decode_image_data_url(image_data: str) -> np.ndarray:
+     img_data = image_data.split(',', 1)[1]
+     img_bytes = base64.b64decode(img_data)
+     nparr = np.frombuffer(img_bytes, np.uint8)
+     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+     if img is None:
+         raise ValueError('Failed to decode image')
+     return img
+
+
+def _ml_load_curve_trace_model(model_path: str, device: str = 'cpu') -> Tuple['torch.nn.Module', Dict]:
+     cache = _ML_CURVE_TRACE_MODEL_CACHE
+     if cache.get('model') is not None and cache.get('model_path') == model_path:
+         return cache['model'], (cache.get('meta') or {})
+
+     payload = torch.load(model_path, map_location=device)
+     state_dict = payload.get('state_dict')
+     if not state_dict:
+         raise ValueError('Model file missing state_dict')
+
+     model = _CurveTraceNet()
+     model.load_state_dict(state_dict)
+     model.eval()
+     model.to(device)
+
+     meta = {
+         'input_h': int(payload.get('input_h', 256)),
+         'input_w': int(payload.get('input_w', 128)),
+         'curve': payload.get('curve'),
+     }
+
+     cache['model_path'] = model_path
+     cache['model'] = model
+     cache['meta'] = meta
+
+     return model, meta
+
+
+def _ml_resolve_curve_trace_model_path(requested_path: Optional[str]) -> str:
+     if requested_path:
+         return requested_path
+
+     env_path = os.environ.get('CURVE_TRACE_MODEL_PATH')
+     if env_path:
+         return env_path
+
+     candidates = [
+         Path(__file__).with_name('curve_trace_model.pt'),
+         Path.cwd() / 'curve_trace_model.pt',
+     ]
+
+     try:
+         desktop_dir = Path(__file__).resolve().parent.parent
+         candidates.append(desktop_dir / 'TestTiflas' / 'curve_trace_model.pt')
+     except Exception:
+         pass
+
+     for p in candidates:
+         try:
+             if p.exists():
+                 return str(p)
+         except Exception:
+             continue
+
+     return str(candidates[0])
+
+
+@app.route('/api/ml_predict_curve_trace', methods=['POST'])
+def ml_predict_curve_trace():
+     if not TORCH_AVAILABLE:
+         return jsonify({'success': False, 'error': 'torch is not available in this environment'}), 400
+
+     data = request.json or {}
+     image_data = data.get('image')
+     roi = data.get('roi') or {}
+
+     if not image_data:
+         return jsonify({'success': False, 'error': 'Missing image'}), 400
+
+     model_path = _ml_resolve_curve_trace_model_path(data.get('model_path'))
+
+     device = data.get('device') or 'cpu'
+
+     try:
+         img = _ml_decode_image_data_url(image_data)
+         H, W = img.shape[:2]
+
+         top_px = int(roi.get('top_px', 0))
+         bottom_px = int(roi.get('bottom_px', H))
+         left_px = int(roi.get('left_px', 0))
+         right_px = int(roi.get('right_px', W))
+
+         top_px = max(0, min(H - 1, top_px))
+         bottom_px = max(0, min(H, bottom_px))
+         left_px = max(0, min(W - 1, left_px))
+         right_px = max(0, min(W, right_px))
+
+         if bottom_px <= top_px or right_px <= left_px:
+             return jsonify({'success': False, 'error': 'Invalid ROI'}), 400
+
+         roi_img = img[top_px:bottom_px, left_px:right_px]
+         if roi_img is None or roi_img.size == 0:
+             return jsonify({'success': False, 'error': 'Empty ROI'}), 400
+
+         roi_gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
+
+         if not Path(model_path).exists():
+             return jsonify({
+                 'success': False,
+                 'error': f'Model file not found: {model_path}',
+             }), 400
+
+         model, meta = _ml_load_curve_trace_model(model_path=model_path, device=device)
+         in_h = int(meta.get('input_h', 256))
+         in_w = int(meta.get('input_w', 128))
+
+         roi_resized = cv2.resize(roi_gray, (in_w, in_h), interpolation=cv2.INTER_AREA)
+         x = (roi_resized.astype(np.float32) / 255.0)[None, None, :, :]
+         x_t = torch.from_numpy(x).to(device)
+
+         with torch.no_grad():
+             pred_norm = model(x_t)[0].detach().cpu().numpy().astype(np.float32)
+
+         roi_w = int(right_px - left_px)
+         roi_h = int(bottom_px - top_px)
+         if roi_w <= 1 or roi_h <= 1:
+             return jsonify({'success': False, 'error': 'ROI too small'}), 400
+
+         pred_px = pred_norm * float(roi_w - 1)
+
+         src_y = np.linspace(0.0, float(in_h - 1), num=in_h, dtype=np.float32)
+         dst_y = np.linspace(0.0, float(in_h - 1), num=roi_h, dtype=np.float32)
+         pred_px_full = np.interp(dst_y, src_y, pred_px).astype(np.float32)
+
+         return jsonify({
+             'success': True,
+             'model_path': model_path,
+             'model_meta': meta,
+             'roi': {
+                 'top_px': top_px,
+                 'bottom_px': bottom_px,
+                 'left_px': left_px,
+                 'right_px': right_px,
+             },
+             'pixel_trace': pred_px_full.tolist(),
+         })
+     except Exception as e:
+         return jsonify({'success': False, 'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     # Create templates folder if it doesn't exist
     os.makedirs('templates', exist_ok=True)
@@ -7186,4 +8253,4 @@ if __name__ == '__main__':
     print(f"📊 Google Vision API: {'✅ Available' if VISION_API_AVAILABLE else '⚠️  Not configured'}")
     print("🌐 Open: http://localhost:5000")
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=False, use_reloader=False, host='0.0.0.0', port=5000)

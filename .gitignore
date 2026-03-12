@@ -12,3 +12,32 @@ __pycache__/
 venv/
 env/
 .venv/
+
+# Large training / data files (too big for GitHub)
+batch_digitize_results.jsonl
+ml_training_dataset.jsonl
+training_data.json
+training_data.configs.json
+all_training_configs.jsonl
+pair_processing_checkpoint.json
+pair_processing_progress.json
+train_progress.json
+training_progress.json
+training_execution_results.txt
+verification_results.txt
+user_preferences.json
+corrections/
+*.ckpt.pt
+
+# User-uploaded / sample data files
+*.tiff
+*.tif
+*.pdf
+*.xlsx
+*.xls
+*.csv
+*.pptx
+*.ppt
+*.las
+logo3.png
+sweetlogo.svg
