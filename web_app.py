@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load .env
 load_dotenv('.env.local', override=True)  # Load .env.local (overrides .env)
 
-from flask import Flask, render_template, request, jsonify, send_file, Response
+from flask import Flask, render_template, request, jsonify, send_file, Response, session, redirect, url_for, flash
 import math
 import os
 import random
@@ -159,6 +159,21 @@ APP_BUILD_TIME = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB max request size
+app.secret_key = os.environ.get("SECRET_KEY", "tiflas-dev-secret-key-change-in-prod")
+
+# ----------------------------
+# Auth Decorator
+# ----------------------------
+from functools import wraps
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
 
 
 @app.errorhandler(500)
@@ -2738,7 +2753,7 @@ def trace_curve_pixel_perfect(mask: np.ndarray, grayscale: np.ndarray = None, bg
 
     return xs, confidence
 
-def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.5, hot_side=None):
+def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.1, hot_side=None):
     """
     Enhanced multi-scale curve tracing with 5 scales and weighted fusion.
     
@@ -2752,6 +2767,11 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     """
     if curve_mask is None or curve_mask.size == 0:
         return np.array([]), np.array([])
+    
+    # For GR curves, we want to allow very sharp peaks, so we lower the smoothing significantly.
+    # For other curves (like Res), we keep it higher to avoid noise.
+    if curve_type.upper() == "GR":
+        smooth_lambda = 0.001
     
     h, w = curve_mask.shape
     if h < 4 or w < 4:
@@ -3171,7 +3191,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                 
                 # Only refine if local max is significantly better
                 current_val = prob_map[y, x_current] if 0 <= x_current < w else 0
-                if local_max_val > current_val * 1.2:  # 20% improvement threshold
+                if local_max_val > current_val * 1.05:  # 5% improvement threshold (Medium Greedy)
                     xs_refined[y] = start + local_max_idx
         
         return xs_refined
@@ -3269,7 +3289,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                     if x_peak < x_curr_int and p_peak >= max(0.1, p_curr * 0.9):
                         move = True
                 else:
-                    if p_peak >= p_curr * 1.1:
+                    if p_peak >= p_curr * 1.05:
                         move = True
 
             if not move:
@@ -3375,7 +3395,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
             local_val = row_seg[local_idx]
 
             # Only snap if the candidate is clearly better.
-            if local_x != x_int and local_val > 0.1 and local_val >= current_val * 1.1:
+            if local_x != x_int and local_val > 0.1 and local_val >= current_val * 1.05:
                 xs_fused[y] = float(local_x)
                 confidence[y] = float(local_val)
 
@@ -3389,36 +3409,38 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     confidence = confidence * subpixel_conf
     
     # Adaptive smoothing based on local curvature
-    try:
-        from scipy.ndimage import uniform_filter1d
-        valid_mask = np.isfinite(xs_final)
-        if np.sum(valid_mask) > 5:
-            # Calculate local curvature for adaptive smoothing
-            xs_smooth = xs_final.copy()
-            xs_smooth[~valid_mask] = np.interp(np.where(~valid_mask)[0], 
-                                              np.where(valid_mask)[0], 
-                                              xs_final[valid_mask])
-            
-            curvature = np.gradient(np.gradient(xs_smooth))
-            curvature_magnitude = np.abs(curvature)
-            
-            # Adaptive smoothing: less smoothing in high curvature regions
-            for y in range(h):
-                if valid_mask[y]:
-                    # Reduce smoothing near peaks
-                    curv_penalty = min(1.0, curvature_magnitude[y] / np.percentile(curvature_magnitude[valid_mask], 90))
-                    smooth_factor = max(0.1, 1.0 - curv_penalty)
-                    
-                    # Apply minimal smoothing to preserve peaks
-                    if smooth_factor > 0.1:
-                        window = max(3, int(3 + 2 * (1 - smooth_factor)))
-                        if y - window//2 >= 0 and y + window//2 < h:
-                            local_values = xs_final[max(0, y-window//2):min(h, y+window//2+1)]
-                            valid_local = np.isfinite(local_values)
-                            if np.sum(valid_local) > 0:
-                                xs_final[y] = np.mean(local_values[valid_local])
-    except ImportError:
-        pass
+    # Skip for GR logs to preserve sharp peaks - they need to be raw to catch single-pixel spikes
+    if curve_type.upper() != "GR":
+        try:
+            from scipy.ndimage import uniform_filter1d
+            valid_mask = np.isfinite(xs_final)
+            if np.sum(valid_mask) > 5:
+                # Calculate local curvature for adaptive smoothing
+                xs_smooth = xs_final.copy()
+                xs_smooth[~valid_mask] = np.interp(np.where(~valid_mask)[0], 
+                                                  np.where(valid_mask)[0], 
+                                                  xs_final[valid_mask])
+                
+                curvature = np.gradient(np.gradient(xs_smooth))
+                curvature_magnitude = np.abs(curvature)
+                
+                # Adaptive smoothing: less smoothing in high curvature regions
+                for y in range(h):
+                    if valid_mask[y]:
+                        # Reduce smoothing near peaks
+                        curv_penalty = min(1.0, curvature_magnitude[y] / np.percentile(curvature_magnitude[valid_mask], 90))
+                        smooth_factor = max(0.1, 1.0 - curv_penalty)
+                        
+                        # Apply minimal smoothing to preserve peaks
+                        if smooth_factor > 0.1:
+                            window = max(3, int(3 + 2 * (1 - smooth_factor)))
+                            if y - window//2 >= 0 and y + window//2 < h:
+                                local_values = xs_final[max(0, y-window//2):min(h, y+window//2+1)]
+                                valid_local = np.isfinite(local_values)
+                                if np.sum(valid_local) > 0:
+                                    xs_final[y] = np.mean(local_values[valid_local])
+        except ImportError:
+            pass
 
     # Final guarantee: ensure each GR peak cluster has at least one crest sample
     if curve_type.upper() == "GR" and len(all_peaks) > 0:
@@ -6293,7 +6315,40 @@ def select_primary_track_region(tracks, image_width):
 # ----------------------------
 @app.route('/')
 def index():
+    # If already logged in, go to dashboard
+    if 'user' in session:
+        return redirect(url_for('dashboard'))
     return render_template('index.html', app_version=APP_VERSION, build_time=APP_BUILD_TIME)
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        
+        # Simple hardcoded auth as requested
+        if email == 'admin@tiflas.com' and password == 'password':
+            session['user'] = email
+            # Handle "next" redirect if present
+            next_url = request.args.get('next')
+            return redirect(next_url or url_for('dashboard'))
+        else:
+            return render_template('login.html', error='Invalid email or password')
+            
+    return render_template('login.html')
+
+
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    return redirect(url_for('index'))
+
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    return render_template('dashboard.html', app_version=APP_VERSION, build_time=APP_BUILD_TIME)
 
 
 @app.route('/favicon.ico')
@@ -7326,13 +7381,17 @@ def refine_edit():
         # Build probability map for this segment
         colored_modes = {'green', 'red', 'blue', 'auto', 'cyan', 'magenta', 'yellow', 'orange', 'purple'}
         
-        if mode in colored_modes:
-            mask = compute_prob_map(track_proc, mode, ui_filters=ui_filters)
-        else:
-            # Black curve detection
-            source_roi = track_proc if track_proc is not None else track_crop
-            gray = cv2.cvtColor(source_roi, cv2.COLOR_BGR2GRAY) if len(source_roi.shape) == 3 else source_roi
-            mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+        try:
+            if mode in colored_modes:
+                mask = compute_prob_map(track_proc, mode, ui_filters=ui_filters)
+            else:
+                source_roi = track_proc if track_proc is not None else track_crop
+                gray = cv2.cvtColor(source_roi, cv2.COLOR_BGR2GRAY) if len(source_roi.shape) == 3 else source_roi
+                mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+        except Exception as _prob_err:
+            print(f'refine_edit: compute_prob_map failed ({_prob_err}), returning edit position')
+            return jsonify({'success': True, 'refinedX': float(edit_x), 'confidence': 0.0,
+                            'originalX': float(edit_x), 'refinedPath': []})
 
         weight_map = mask.astype(np.float32)
         if mode not in colored_modes:
@@ -7347,15 +7406,20 @@ def refine_edit():
                 weight_map = mask.astype(np.float32)
         
         # Run multi-scale tracing on this segment
-        xs_refined, confidence = trace_curve_multiscale(
-            mask,
-            scale_min=left_value,
-            scale_max=right_value,
-            curve_type=curve_type,
-            max_step=100,
-            smooth_lambda=0.5,  # Increased from 0.00001 to 0.5 to prevent zig-zag "kinks"
-            hot_side=None,
-        )
+        try:
+            xs_refined, confidence = trace_curve_multiscale(
+                mask,
+                scale_min=left_value,
+                scale_max=right_value,
+                curve_type=curve_type,
+                max_step=100,
+                smooth_lambda=0.5,
+                hot_side=None,
+            )
+        except Exception as _trace_err:
+            print(f'refine_edit: trace_curve_multiscale failed ({_trace_err}), returning edit position')
+            return jsonify({'success': True, 'refinedX': float(edit_x), 'confidence': 0.0,
+                            'originalX': float(edit_x), 'refinedPath': []})
         
         # Helper for centroid refinement
         def get_refined_centroid(x_viterbi, row_idx):
