@@ -230,7 +230,7 @@
         }
         #well-plot {
             display: flex;
-            padding: 16px;
+            padding: 0;
             min-width: max-content;
         }
         .placeholder-msg {
@@ -577,7 +577,8 @@ function lasScrollToDepth(scrollTop, containerH, state) {
     // LAS Plot: y = (depth - top) * pxPerUnit + headerOffset + manualOffset
     // depth = top + (y - headerOffset - manualOffset) / pxPerUnit
     
-    const headerOffset = 100; 
+    // Header removed, padding removed. 0px = start.
+    const headerOffset = 0; 
     const effectiveOffset = headerOffset + state.offset;
     
     const depth = state.lasTop + (centerY - effectiveOffset) / state.pxPerUnitLas;
@@ -586,7 +587,8 @@ function lasScrollToDepth(scrollTop, containerH, state) {
 
 // Helper: Convert Depth -> LAS Scroll Y
 function depthToLasScroll(depth, containerH, state) {
-    const headerOffset = 100;
+    // Header removed, padding removed. 0px = start.
+    const headerOffset = 0;
     const effectiveOffset = headerOffset + state.offset;
     
     const y_plot = (depth - state.lasTop) * state.pxPerUnitLas + effectiveOffset;
@@ -816,13 +818,18 @@ function renderPlot() {
         
         const depthSpan = (Math.abs(stopDepth - startDepth)) || 200;
         
+        // Margins for the plot
+        const margins = { top: 0, right: 10, bottom: 20, left: 60 };
+
         // Base scale: 5px per unit. 
-        // Example: 1000ft log -> 5000px height. 
-        // If zoomLevel changes, this scales up/down.
+        // We want the DATA AREA to have exactly this height ratio.
         const pxPerUnit = 5; 
-        let trackHeight = Math.round(depthSpan * pxPerUnit * zoomLevel);
+        const dataHeight = Math.round(depthSpan * pxPerUnit * zoomLevel);
         
-        // Ensure at least a minimum height so it looks okay even for short sections
+        // Total track height includes margins
+        let trackHeight = dataHeight + margins.top + margins.bottom;
+        
+        // Ensure at least a minimum height
         trackHeight = Math.max(trackHeight, 600);
 
         const curvesToPlot = curveNames
@@ -850,11 +857,11 @@ function renderPlot() {
                     gridlines_color: '#E8E8E8',
                     mouseover_yes_or_no: 'yes',
                     mouseover_depth_or_depth_and_curve: 'depth_and_curve',
-                    header_sep_svg_or_not: 'yes',
-                    svg_header_height: '4em',
-                    margin: { top: 10, right: 10, bottom: 30, left: 60 },
+                    header_sep_svg_or_not: 'no',
+                    svg_header_height: '0em',
+                    margin: margins,
                     title: { text: curveName, title_font_size: '12px' },
-                    show_title: 'yes',
+                    show_title: 'no',
                 },
                 components: [{
                     curves: [{
