@@ -959,10 +959,10 @@ def call_ai_auto_layout(layout_payload):
         "You are analyzing the HEADER of a raster well log. The user has "
         "cropped the top portion of a single log panel. You see short text "
         "items (curve mnemonics and scale labels) with approximate x/y "
-        "centers in pixels.\n\n"
+        "centers in pixels, and a 'full_text' block containing all recognized text.\n\n"
         "Your job is to:\n"
         "1. Infer the logging TRACKS present across the width of the header.\n"
-        "2. Extract generic HEADER METADATA (Well, Company, API, etc.) if visible.\n\n"
+        "2. Extract generic HEADER METADATA (Well, Company, API, etc.) from the 'full_text'.\n\n"
         "Pixels are in the coordinate system of the provided header image, "
         "where x=0 is the left edge and x increases to the right. The overall "
         "image width in pixels is image.width_px.\n\n"
@@ -4834,6 +4834,10 @@ def detect_text_vision_api(image_bytes):
         image = vision.Image(content=image_bytes)
         response = vision_client.text_detection(image=image)
 
+        full_text = ""
+        if response.text_annotations:
+            full_text = response.text_annotations[0].description
+
         raw_text = []
         numeric_entries = []
         for text in response.text_annotations[1:]:  # Skip first (full text)
@@ -4867,7 +4871,8 @@ def detect_text_vision_api(image_bytes):
         return {
             'raw': raw_text,
             'numbers': numeric_entries,
-            'suggestions': suggestions
+            'suggestions': suggestions,
+            'full_text': full_text
         }
     except Exception as e:
         print(f"Vision API error: {e}")
@@ -5483,8 +5488,10 @@ def auto_layout_tracks():
             'y': y_center,
         })
 
+    full_text_blob = detected_text.get('full_text', '')
+
     # If no header text found, fall back to edge-based track detection
-    if not items:
+    if not items and not full_text_blob:
         print("⚠️  No header text found; falling back to edge-based track detection")
         try:
             local_tracks = auto_detect_tracks(panel)
@@ -5529,6 +5536,7 @@ def auto_layout_tracks():
             'height_px': header_h,
         },
         'items': items,
+        'full_text': full_text_blob,
     }
 
     layout = call_ai_auto_layout(layout_payload)
