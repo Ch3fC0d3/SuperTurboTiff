@@ -4,9 +4,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LAS Viewer — TIFF→LAS Digitizer</title>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/wellio@0.1.16/dist/wellio.min.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/wellioviz@0.0.34/dist/wellioviz.min.js" crossorigin="anonymous"></script>
+    <!-- Use ES modules via esm.sh for reliable loading of CommonJS packages -->
+    <script type="module">
+        import wellio from 'https://esm.sh/wellio@0.1.16';
+        import wellioviz from 'https://esm.sh/wellioviz@0.0.34?deps=d3@7.9.0';
+        import * as d3 from 'https://esm.sh/d3@7.9.0';
+
+        window.d3 = d3;
+        window.wellio = wellio;
+        window.wellioviz = wellioviz;
+        
+        // Inject d3 into wellioviz if needed
+        if (wellioviz && !wellioviz.d3) {
+            wellioviz.d3 = d3;
+        }
+
+        console.log("[LAS Viewer] Libraries loaded via ESM");
+        window.librariesLoaded = true;
+        window.dispatchEvent(new Event('libraries-loaded'));
+    </script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -241,23 +257,18 @@ const CURVE_COLORS = ['#1971c2','#2f9e44','#c2255c','#e67700','#7950f2','#0c8599
 const MAX_CURVES = 10;
 
 // ── Library resolution ─────────────────────────────────────────────────────
+// Wait for ESM load
 function resolveWellio() {
-    if (typeof wellio !== 'undefined') return wellio;
-    if (window.wellio) return window.wellio;
-    return null;
+    return window.wellio;
 }
 
 function resolveWellioviz() {
-    // Try various export patterns
-    if (typeof wellioviz !== 'undefined') {
-        if (typeof wellioviz.multipleLogPlot === 'function') return wellioviz;
-        if (wellioviz.default && typeof wellioviz.default.multipleLogPlot === 'function') return wellioviz.default;
-    }
-    if (window.wellioviz) {
-        if (typeof window.wellioviz.multipleLogPlot === 'function') return window.wellioviz;
-        if (window.wellioviz.default && typeof window.wellioviz.default.multipleLogPlot === 'function') return window.wellioviz.default;
-    }
-    return null;
+    // wellioviz might be default export or direct
+    let wv = window.wellioviz;
+    if (wv && wv.default) wv = wv.default;
+    // ensure d3 is attached
+    if (wv && !wv.d3 && window.d3) wv.d3 = window.d3;
+    return wv;
 }
 
 // ── Error / info helpers ───────────────────────────────────────────────────
@@ -497,12 +508,26 @@ function renderPlot() {
 }
 
 // ── Library load check ─────────────────────────────────────────────────────
-window.addEventListener('load', function() {
+function checkLibs() {
     const w = resolveWellio();
     const wv = resolveWellioviz();
-    if (!w) console.warn('[LAS Viewer] wellio did not load from CDN');
-    if (!wv) console.warn('[LAS Viewer] wellioviz did not load from CDN');
-});
+    if (w && wv) {
+        // Libraries ready
+        console.log('[LAS Viewer] Libraries verified ready');
+        document.getElementById('placeholder').innerHTML = `
+            <div class="icon">🗂️</div>
+            <p>Open a .LAS file to visualize the well log</p>
+            <small>Supports LAS 2.0 format &bull; up to 10 curves displayed</small>
+        `;
+    }
+}
+
+if (window.librariesLoaded) {
+    checkLibs();
+} else {
+    window.addEventListener('libraries-loaded', checkLibs);
+}
+window.addEventListener('load', checkLibs);
 </script>
 </body>
 </html>
