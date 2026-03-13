@@ -305,6 +305,11 @@
             <label class="sync-toggle" title="Sync scrolling between Image and LAS">
                 <input type="checkbox" id="syncScroll"> Sync Scroll
             </label>
+            <button class="zoom-btn" id="btnMatchScale" onclick="matchImageScale()" title="Match LAS zoom to Image scale" style="margin-left:8px; font-size:0.8em; padding:4px 8px;">Match Scale</button>
+            
+            <div class="toolbar-divider"></div>
+            <span style="font-size:0.85em; font-weight:600; color:#495057;">Shift:</span>
+            <input type="number" id="syncOffset" value="0" step="10" style="width:50px" class="depth-input" title="Vertical offset correction (px)">
         </div>
 
         <div class="curve-toggles" id="curveToggles" style="display:none;">
@@ -349,6 +354,7 @@ const CURVE_COLORS = ['#1971c2','#2f9e44','#c2255c','#e67700','#7950f2','#0c8599
 const MAX_CURVES = 10;
 let isSyncing = false; // Semaphore to prevent scroll loops
 let lasDepthRange = { top: null, bottom: null };
+let imageCalibration = null; // { top_px, bottom_px, top_depth, bottom_depth }
 
 // ── Library resolution ─────────────────────────────────────────────────────
 // Wait for ESM load
@@ -382,17 +388,39 @@ function showInfo(lasJson) {
     bar.innerHTML = '';
     const wi = lasJson.WELL_INFORMATION || {};
     
-    // Extract depths for sync logic
-    const top = parseFloat(wi.STRT?.DATA);
-    const bot = parseFloat(wi.STOP?.DATA);
+    // 1. Try to get depths from Header
+    let top = parseFloat(wi.STRT?.DATA);
+    let bot = parseFloat(wi.STOP?.DATA);
+
+    // 2. Fallback to Data if Header is invalid
+    if (isNaN(top) || isNaN(bot)) {
+        const curves = lasJson.CURVES || {};
+        const curveNames = Object.keys(curves);
+        const depthName = curveNames.find(n => n === 'DEPT' || n === 'DEPTH') || curveNames[0];
+        const depthArr = curves[depthName];
+        if (depthArr && depthArr.length > 0) {
+            const v0 = parseFloat(depthArr[0]);
+            const vN = parseFloat(depthArr[depthArr.length - 1]);
+            if (!isNaN(v0) && !isNaN(vN)) {
+                top = v0;
+                bot = vN;
+                console.log("[LAS Viewer] Derived depth range from data:", top, bot);
+            }
+        }
+    }
+
+    // 3. Update State
     if (!isNaN(top) && !isNaN(bot)) {
         lasDepthRange.top = top;
         lasDepthRange.bottom = bot;
-        // Auto-fill image depths if empty
+        
+        // Auto-fill image depths if empty and no calibration exists
         const imgTop = document.getElementById('imgTopDepth');
         const imgBot = document.getElementById('imgBotDepth');
-        if (!imgTop.value) imgTop.value = top;
-        if (!imgBot.value) imgBot.value = bot;
+        if (!imageCalibration) {
+            if (!imgTop.value) imgTop.value = top;
+            if (!imgBot.value) imgBot.value = bot;
+        }
     }
 
     const fields = [
@@ -402,8 +430,8 @@ function showInfo(lasJson) {
         ['Location', wi.LOC?.DATA || wi.LOCATION?.DATA],
         ['API', wi.API?.DATA],
         ['Date', wi.DATE?.DATA],
-        ['Start Depth', wi.STRT?.DATA ? `${wi.STRT.DATA} ${wi.STRT.UNIT || ''}`.trim() : null],
-        ['Stop Depth', wi.STOP?.DATA ? `${wi.STOP.DATA} ${wi.STOP.UNIT || ''}`.trim() : null],
+        ['Start Depth', !isNaN(top) ? top : (wi.STRT?.DATA || null)],
+        ['Stop Depth', !isNaN(bot) ? bot : (wi.STOP?.DATA || null)],
         ['Step', wi.STEP?.DATA ? `${wi.STEP.DATA} ${wi.STEP.UNIT || ''}`.trim() : null],
     ];
     let hasAny = false;
@@ -467,73 +495,182 @@ document.getElementById('imageInput').addEventListener('change', function(e) {
 const imagePane = document.getElementById('imagePane');
 const plotWrapper = document.getElementById('plotWrapper');
 
-function getDepths() {
-    const imgTop = parseFloat(document.getElementById('imgTopDepth').value);
-    const imgBot = parseFloat(document.getElementById('imgBotDepth').value);
-    // LAS depths from metadata
+function getSyncState() {
+    const img = document.getElementById('uploadedImage');
+    if (!img || !lasData) return null;
+
+    // Get Image params
+    let imgTopD, imgBotD, imgTopPx, imgBotPx;
+    
+    // Prefer calibration data if available (accounts for headers)
+    if (imageCalibration) {
+        imgTopD = parseFloat(imageCalibration.top_depth);
+        imgBotD = parseFloat(imageCalibration.bottom_depth);
+        imgTopPx = parseFloat(imageCalibration.top_px);
+        imgBotPx = parseFloat(imageCalibration.bottom_px);
+    } else {
+        // Fallback to inputs + full image height
+        imgTopD = parseFloat(document.getElementById('imgTopDepth').value);
+        imgBotD = parseFloat(document.getElementById('imgBotDepth').value);
+        imgTopPx = 0;
+        imgBotPx = img.naturalHeight;
+    }
+
+    if (isNaN(imgTopD) || isNaN(imgBotD)) return null;
+
+    // LAS Params
     const lasTop = lasDepthRange.top;
     const lasBot = lasDepthRange.bottom;
-    
-    return { imgTop, imgBot, lasTop, lasBot };
+    if (lasTop === null || lasBot === null) return null;
+
+    // Image Scale Factor (displayed vs natural)
+    const currentW = img.width;
+    const naturalW = img.naturalWidth || 1;
+    const scale = currentW / naturalW;
+
+    // Manual Offset (user correction)
+    const offset = parseFloat(document.getElementById('syncOffset').value) || 0;
+
+    return {
+        imgTopD, imgBotD, imgTopPx, imgBotPx,
+        lasTop, lasBot,
+        scale,
+        offset,
+        imgH: img.naturalHeight,
+        plotH: plotWrapper.scrollHeight,
+        pxPerUnitLas: 5 * zoomLevel // Base 5px * zoom
+    };
 }
 
+// Helper: Convert Image Scroll Y -> Depth
+function imgScrollToDepth(scrollTop, containerH, state) {
+    // Center of viewport
+    const centerY_screen = scrollTop + containerH / 2;
+    const centerY_original = centerY_screen / state.scale;
+    
+    const pxRange = state.imgBotPx - state.imgTopPx;
+    const depthRange = state.imgBotD - state.imgTopD;
+    
+    if (Math.abs(pxRange) < 0.1) return state.imgTopD;
+    
+    // depth = topD + (y_orig - topPx) * (depthRange / pxRange)
+    const depth = state.imgTopD + (centerY_original - state.imgTopPx) * (depthRange / pxRange);
+    return depth;
+}
+
+// Helper: Convert Depth -> Image Scroll Y
+function depthToImgScroll(depth, containerH, state) {
+    const pxRange = state.imgBotPx - state.imgTopPx;
+    const depthRange = state.imgBotD - state.imgTopD;
+    
+    if (Math.abs(depthRange) < 0.001) return 0;
+    
+    const y_original = state.imgTopPx + (depth - state.imgTopD) * (pxRange / depthRange);
+    const y_screen = y_original * state.scale;
+    
+    return y_screen - containerH / 2;
+}
+
+// Helper: Convert LAS Scroll Y -> Depth
+function lasScrollToDepth(scrollTop, containerH, state) {
+    const centerY = scrollTop + containerH / 2;
+    // LAS Plot: y = (depth - top) * pxPerUnit + headerOffset + manualOffset
+    // depth = top + (y - headerOffset - manualOffset) / pxPerUnit
+    
+    const headerOffset = 100; 
+    const effectiveOffset = headerOffset + state.offset;
+    
+    const depth = state.lasTop + (centerY - effectiveOffset) / state.pxPerUnitLas;
+    return depth;
+}
+
+// Helper: Convert Depth -> LAS Scroll Y
+function depthToLasScroll(depth, containerH, state) {
+    const headerOffset = 100;
+    const effectiveOffset = headerOffset + state.offset;
+    
+    const y_plot = (depth - state.lasTop) * state.pxPerUnitLas + effectiveOffset;
+    return y_plot - containerH / 2;
+}
+
+
 // Sync from Image -> LAS
-imagePane.addEventListener('scroll', function() {
+function syncImageToLas() {
     if (!document.getElementById('syncScroll').checked) return;
     if (isSyncing) return;
     isSyncing = true;
 
     try {
-        const { imgTop, imgBot, lasTop, lasBot } = getDepths();
-        if (isNaN(imgTop) || isNaN(imgBot) || isNaN(lasTop) || isNaN(lasBot)) return;
+        const state = getSyncState();
+        if (!state) return;
 
-        // Current image scroll %
-        const imgH = imagePane.scrollHeight - imagePane.clientHeight;
-        if (imgH <= 0) return;
-        const imgPct = imagePane.scrollTop / imgH;
-
-        // Current depth in image
-        const currentDepth = imgTop + (imgBot - imgTop) * imgPct;
-
-        // Map depth to LAS scroll %
-        // LAS is linear from lasTop to lasBot
-        const lasPct = (currentDepth - lasTop) / (lasBot - lasTop);
-
-        const lasH = plotWrapper.scrollHeight - plotWrapper.clientHeight;
-        plotWrapper.scrollTop = lasPct * lasH;
+        const currentDepth = imgScrollToDepth(imagePane.scrollTop, imagePane.clientHeight, state);
+        const targetScroll = depthToLasScroll(currentDepth, plotWrapper.clientHeight, state);
+        plotWrapper.scrollTop = targetScroll;
     } finally {
-        // Short timeout to allow scroll event to settle
         setTimeout(() => isSyncing = false, 10);
     }
-});
+}
+
+imagePane.addEventListener('scroll', syncImageToLas);
 
 // Sync from LAS -> Image
-plotWrapper.addEventListener('scroll', function() {
+function syncLasToImage() {
     if (!document.getElementById('syncScroll').checked) return;
     if (isSyncing) return;
     isSyncing = true;
 
     try {
-        const { imgTop, imgBot, lasTop, lasBot } = getDepths();
-        if (isNaN(imgTop) || isNaN(imgBot) || isNaN(lasTop) || isNaN(lasBot)) return;
+        const state = getSyncState();
+        if (!state) return;
 
-        // Current LAS scroll %
-        const lasH = plotWrapper.scrollHeight - plotWrapper.clientHeight;
-        if (lasH <= 0) return;
-        const lasPct = plotWrapper.scrollTop / lasH;
-
-        // Current depth in LAS
-        const currentDepth = lasTop + (lasBot - lasTop) * lasPct;
-
-        // Map depth to Image scroll %
-        const imgPct = (currentDepth - imgTop) / (imgBot - imgTop);
-
-        const imgH = imagePane.scrollHeight - imagePane.clientHeight;
-        imagePane.scrollTop = imgPct * imgH;
+        const currentDepth = lasScrollToDepth(plotWrapper.scrollTop, plotWrapper.clientHeight, state);
+        const targetScroll = depthToImgScroll(currentDepth, imagePane.clientHeight, state);
+        imagePane.scrollTop = targetScroll;
     } finally {
         setTimeout(() => isSyncing = false, 10);
     }
-});
+}
+
+plotWrapper.addEventListener('scroll', syncLasToImage);
+
+// Live update triggers
+document.getElementById('syncOffset').addEventListener('input', syncImageToLas);
+document.getElementById('imgTopDepth').addEventListener('change', syncImageToLas);
+document.getElementById('imgBotDepth').addEventListener('change', syncImageToLas);
+
+function matchImageScale() {
+    const state = getSyncState();
+    if (!state) {
+        showError("Cannot match scale: Missing calibration or LAS data.");
+        return;
+    }
+    
+    const imgPxRange = state.imgBotPx - state.imgTopPx;
+    const depthRange = state.imgBotD - state.imgTopD;
+    
+    if (Math.abs(depthRange) < 0.1) return;
+    
+    // Pixels per unit in the ORIGINAL image
+    const imgPxPerUnitOriginal = Math.abs(imgPxRange / depthRange);
+    
+    // Pixels per unit currently displayed (scaled by width slider)
+    const imgPxPerUnitDisplayed = imgPxPerUnitOriginal * state.scale;
+    
+    // LAS base is 5 px/unit. We want 5 * zoom = imgPxPerUnitDisplayed
+    const targetZoom = imgPxPerUnitDisplayed / 5;
+    
+    zoomLevel = targetZoom;
+    document.getElementById('zoomLabel').textContent = Math.round(zoomLevel * 100) + '%';
+    
+    renderPlot();
+    
+    // Re-sync after render
+    setTimeout(() => {
+        // Trigger a scroll event to align
+        imagePane.dispatchEvent(new Event('scroll'));
+    }, 100);
+}
 
 // ── Curve chips ────────────────────────────────────────────────────────────
 function buildCurveChips() {
@@ -669,8 +806,14 @@ function renderPlot() {
 
         // Calculate dynamic height based on depth range
         // Default to ~5 pixels per depth unit (e.g. 5px/ft) at zoom 1.0
-        const startDepth = parseFloat(lasData.WELL_INFORMATION?.STRT?.DATA);
-        const stopDepth = parseFloat(lasData.WELL_INFORMATION?.STOP?.DATA);
+        // Use robust state (handled in showInfo)
+        let startDepth = lasDepthRange.top;
+        let stopDepth = lasDepthRange.bottom;
+        
+        // Fallback to header if state is somehow empty (shouldn't happen if showInfo ran)
+        if (startDepth === null || isNaN(startDepth)) startDepth = parseFloat(lasData.WELL_INFORMATION?.STRT?.DATA);
+        if (stopDepth === null || isNaN(stopDepth)) stopDepth = parseFloat(lasData.WELL_INFORMATION?.STOP?.DATA);
+        
         const depthSpan = (Math.abs(stopDepth - startDepth)) || 200;
         
         // Base scale: 5px per unit. 
@@ -751,6 +894,13 @@ function renderPlot() {
 
         wviz.multipleLogPlot('well-plot', allTemplates);
         clearError();
+        
+        // Auto-match scale ONCE if calibration is fresh
+        if (imageCalibration && !window._hasAutoMatchedScale) {
+            window._hasAutoMatchedScale = true;
+            // Delay slightly to let DOM settle
+            setTimeout(matchImageScale, 200);
+        }
 
     } catch (err) {
         console.error('Render error:', err);
@@ -808,9 +958,20 @@ function checkLibs() {
         if (sessionDepths) {
             try {
                 const d = JSON.parse(sessionDepths);
-                if (d.top) document.getElementById('imgTopDepth').value = d.top;
-                if (d.bottom) document.getElementById('imgBotDepth').value = d.bottom;
-            } catch (e) {}
+                // Store full calibration for sync logic
+                if (d.top_px !== undefined && d.bottom_px !== undefined) {
+                    imageCalibration = d;
+                    console.log("[LAS Viewer] Loaded calibration:", imageCalibration);
+                }
+                
+                // Populate inputs
+                const t = d.top_depth || d.top;
+                const b = d.bottom_depth || d.bottom;
+                if (t) document.getElementById('imgTopDepth').value = t;
+                if (b) document.getElementById('imgBotDepth').value = b;
+            } catch (e) {
+                console.warn("Error parsing session depths:", e);
+            }
         }
     }
 }

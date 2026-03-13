@@ -2011,10 +2011,7 @@
                 
                 // Pass depth config if available to pre-fill image depths
                 if (lastDepthConfig) {
-                     sessionStorage.setItem('lasViewerDepths', JSON.stringify({
-                         top: lastDepthConfig.top_depth,
-                         bottom: lastDepthConfig.bottom_depth
-                     }));
+                     sessionStorage.setItem('lasViewerDepths', JSON.stringify(lastDepthConfig));
                 }
             } catch (e) {
                 console.warn('Failed to save data for LAS Viewer:', e);
