@@ -1387,6 +1387,56 @@ def enhance_curve_roi(roi_bgr):
     return proc, scale
 
 
+def suppress_grid_hough(gray, h_thresh_ratio=0.25, v_thresh_ratio=0.25):
+    """
+    Use Probabilistic Hough Transform to detect and remove long straight grid lines
+    while preserving jagged curve data.
+    """
+    if gray is None:
+        return gray
+        
+    h, w = gray.shape
+    # Pre-process for edge detection
+    # Use adaptive threshold to get binary edges
+    edges = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 5)
+    
+    # 1. Horizontal Lines
+    min_len_h = int(w * h_thresh_ratio)
+    lines_h = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=80, minLineLength=min_len_h, maxLineGap=10)
+    
+    # 2. Vertical Lines
+    min_len_v = int(h * v_thresh_ratio)
+    lines_v = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=80, minLineLength=min_len_v, maxLineGap=10)
+    
+    # Mask to draw the lines to be removed
+    grid_mask = np.zeros_like(gray)
+    
+    if lines_h is not None:
+        for line in lines_h:
+            x1, y1, x2, y2 = line[0]
+            angle = abs(math.atan2(y2-y1, x2-x1) * 180 / np.pi)
+            # Strict horizontal check (+/- 2 degrees)
+            if angle < 2 or angle > 178:
+                cv2.line(grid_mask, (x1, y1), (x2, y2), 255, 2)
+                
+    if lines_v is not None:
+        for line in lines_v:
+            x1, y1, x2, y2 = line[0]
+            angle = abs(math.atan2(y2-y1, x2-x1) * 180 / np.pi)
+            # Strict vertical check (+/- 2 degrees from 90)
+            if 88 < angle < 92:
+                cv2.line(grid_mask, (x1, y1), (x2, y2), 255, 2)
+                
+    # Dilate mask slightly to clean up edge artifacts
+    grid_mask = cv2.dilate(grid_mask, np.ones((3,3), np.uint8), iterations=1)
+    
+    # Inpaint/Erase grid lines (set to white)
+    cleaned = gray.copy()
+    cleaned[grid_mask > 0] = 255
+    
+    return cleaned
+
+
 def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allowed=True):
     """Build a soft probability map for the curve in a track ROI.
 
@@ -1572,7 +1622,7 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             # Handle red's wrap-around at 0/180
             if med_h <= 20:
                 h_lo = max(0, int(med_h - band))
-                h_hi = min(30, int(med_h + band))
+                h_hi = min(30, int(med_h - band))
                 dyn_lower = np.array([h_lo, 60, 40], dtype=np.uint8)
                 dyn_upper = np.array([h_hi, 255, 255], dtype=np.uint8)
                 color_mask = cv2.inRange(hsv, dyn_lower, dyn_upper)
@@ -1767,7 +1817,10 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         # Apply aggressive grid removal to grayscale before thresholding if B&W detected
         gray_processed = gray
         if is_bw_log:
-            gray_processed = remove_grid_lines_aggressive(gray, aggressive=True)
+            # Enhanced with Hough Transform for better preservation of jagged curves
+            gray_processed = suppress_grid_hough(gray_processed)
+            # Use original morphology as backup but less aggressive
+            gray_processed = remove_grid_lines_aggressive(gray_processed, aggressive=False)
         
         color_mask = cv2.adaptiveThreshold(
             gray_processed,
