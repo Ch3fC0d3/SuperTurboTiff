@@ -1021,6 +1021,53 @@
                                 </div>
                                 <div class="hint-text" id="headerSelectionSummary">No header captured. Curve config will use defaults.</div>
                                 <div class="hint-text">Click and drag a box over the header strip (scale labels + colored lines) to auto-fill Step 4 curve config.</div>
+                                
+                                <!-- Header Metadata Inputs -->
+                                <div id="headerMetadataFields" style="margin-top: 12px; padding: 10px; background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 4px;">
+                                    <label style="margin-bottom: 8px; display: block; font-weight: 600;">Header Details (for LAS export)</label>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                        <div>
+                                            <label for="headerWell" style="font-size: 0.8em;">Well Name</label>
+                                            <input type="text" id="headerWell" placeholder="WELL" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerComp" style="font-size: 0.8em;">Company</label>
+                                            <input type="text" id="headerComp" placeholder="COMPANY" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerApi" style="font-size: 0.8em;">API Number</label>
+                                            <input type="text" id="headerApi" placeholder="API" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerDate" style="font-size: 0.8em;">Date</label>
+                                            <input type="text" id="headerDate" placeholder="DATE" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerFld" style="font-size: 0.8em;">Field</label>
+                                            <input type="text" id="headerFld" placeholder="FIELD" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerLoc" style="font-size: 0.8em;">Location</label>
+                                            <input type="text" id="headerLoc" placeholder="LOCATION" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerCnty" style="font-size: 0.8em;">County</label>
+                                            <input type="text" id="headerCnty" placeholder="COUNTY" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerState" style="font-size: 0.8em;">State</label>
+                                            <input type="text" id="headerState" placeholder="STATE" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerProv" style="font-size: 0.8em;">Province</label>
+                                            <input type="text" id="headerProv" placeholder="PROVINCE" style="width: 100%; padding: 4px;">
+                                        </div>
+                                        <div>
+                                            <label for="headerSrvc" style="font-size: 0.8em;">Service Co.</label>
+                                            <input type="text" id="headerSrvc" placeholder="SERVICE CO" style="width: 100%; padding: 4px;">
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                             <div class="form-group" style="margin-top: 8px; max-width: 420px;">
                                 <label>Depth values</label>
@@ -5308,6 +5355,25 @@
                 // Store extracted header metadata (company, well, field, etc.) if provided
                 headerMetadata = (data && data.header_metadata) ? data.header_metadata : null;
 
+                // Populate input fields if metadata exists
+                if (headerMetadata) {
+                    if (headerMetadata.well) document.getElementById('headerWell').value = headerMetadata.well;
+                    if (headerMetadata.comp) document.getElementById('headerComp').value = headerMetadata.comp;
+                    if (headerMetadata.company) document.getElementById('headerComp').value = headerMetadata.company;
+                    if (headerMetadata.api) document.getElementById('headerApi').value = headerMetadata.api;
+                    if (headerMetadata.date) document.getElementById('headerDate').value = headerMetadata.date;
+                    if (headerMetadata.fld) document.getElementById('headerFld').value = headerMetadata.fld;
+                    if (headerMetadata.field) document.getElementById('headerFld').value = headerMetadata.field;
+                    if (headerMetadata.loc) document.getElementById('headerLoc').value = headerMetadata.loc;
+                    if (headerMetadata.location) document.getElementById('headerLoc').value = headerMetadata.location;
+                    if (headerMetadata.county) document.getElementById('headerCnty').value = headerMetadata.county;
+                    if (headerMetadata.state) document.getElementById('headerState').value = headerMetadata.state;
+                    if (headerMetadata.prov) document.getElementById('headerProv').value = headerMetadata.prov;
+                    if (headerMetadata.province) document.getElementById('headerProv').value = headerMetadata.province;
+                    if (headerMetadata.srvc) document.getElementById('headerSrvc').value = headerMetadata.srvc;
+                    if (headerMetadata.service) document.getElementById('headerSrvc').value = headerMetadata.service;
+                }
+
                 // Update summary
                 const summaryEl = document.getElementById('headerSelectionSummary');
                 if (summaryEl) {
@@ -7950,6 +8016,30 @@
                     invert: !!(invertBtn && invertBtn.classList.contains('active')),
                     contrast: !!(contrastBtn && contrastBtn.classList.contains('active')),
                 };
+
+                // Scrape header metadata from inputs (user edits override AI detection)
+                if (!headerMetadata) headerMetadata = {};
+                const getVal = (id) => {
+                    const el = document.getElementById(id);
+                    return el ? el.value.trim() : '';
+                };
+                
+                headerMetadata.well = getVal('headerWell') || headerMetadata.well;
+                headerMetadata.comp = getVal('headerComp') || headerMetadata.comp;
+                headerMetadata.company = headerMetadata.comp; // sync
+                headerMetadata.api = getVal('headerApi') || headerMetadata.api;
+                headerMetadata.date = getVal('headerDate') || headerMetadata.date;
+                headerMetadata.fld = getVal('headerFld') || headerMetadata.fld;
+                headerMetadata.field = headerMetadata.fld;
+                headerMetadata.loc = getVal('headerLoc') || headerMetadata.loc;
+                headerMetadata.location = headerMetadata.loc;
+                headerMetadata.county = getVal('headerCnty') || headerMetadata.county;
+                headerMetadata.state = getVal('headerState') || headerMetadata.state;
+                headerMetadata.prov = getVal('headerProv') || headerMetadata.prov;
+                headerMetadata.province = headerMetadata.prov;
+                headerMetadata.srvc = getVal('headerSrvc') || headerMetadata.srvc;
+                headerMetadata.service = headerMetadata.srvc;
+
                 const response = await fetch('/digitize', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
