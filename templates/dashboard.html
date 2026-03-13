@@ -1034,7 +1034,7 @@
                             <p style="color: #666; font-size: 0.85em; margin-top: 6px;">
                                 Tip: Use the <strong>Top/Bottom depth</strong> fields below and the <strong>Top/Bottom pixel</strong> fields in Step 3 to align the depth guidelines with the printed scale; the mouse readout updates from those values.
                             </p>
-                            <div class="form-group" style="margin-top: 8px; max-width: 420px;">
+                            <div class="form-group" id="headerSelectionSection" style="margin-top: 8px; max-width: 420px; display: none;">
                                 <label>Header / key (optional)</label>
                                 <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px;">
                                     <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="beginHeaderSelection()">Capture header/key from image</button>
@@ -5997,12 +5997,18 @@
                 // Clear OCR-based overlays tied to the old coordinates
                 ocrSuggestions = null;
                 detectedText = null;
+                headerRegion = null;
+                clearHeaderRegionOverlay();
                 clearTrackOverlays();
                 clearLabelOverlays();
                 clearPhraseHighlight();
                 renderDepthOverlays();
                 renderPrimaryRegionOverlay();
                 updateSelectionSummary();
+
+                // Show header selection controls now that we have a cropped panel
+                const headerSection = document.getElementById('headerSelectionSection');
+                if (headerSection) headerSection.style.display = 'block';
 
                 showStatus('✂️ Cropped to working panel. All work now uses this shorter TIFF.', 'success');
             } catch (err) {
