@@ -1094,6 +1094,10 @@
                                     <div class="curve-actions">
                                         <label for="numCurves">Number of Curves (max 6)</label>
                                         <input type="number" id="numCurves" value="3" min="1" max="6">
+                                        
+                                        <label for="snapThreshold" style="margin-top: 8px;">Snap Threshold (1.2 = 20% brighter)</label>
+                                        <input type="number" id="snapThreshold" value="1.20" step="0.05" min="0.1" max="5.0" title="Lower (<1.0) = Greedier, Higher (>1.0) = Stricter">
+
                                         <div class="curve-action">
                                             <button class="btn" type="button" onclick="aiAutoCurves()">✨ AI auto-setup curves</button>
                                             <div class="hint-text">
@@ -3865,6 +3869,9 @@
             const selectedDistForReq = distSelectForReq ? Number(distSelectForReq.value) : 15;
             const requestMaxSnapDist = Math.min(Math.max(selectedDistForReq || 15, 4), 40);
 
+            // Get current snap settings
+            const snapThreshold = parseFloat(document.getElementById('snapThreshold')?.value || 1.20);
+
             // Call backend for multi-scale refinement
             try {
                 const response = await fetch('/refine_edit', {
@@ -3877,6 +3884,7 @@
                         editRelativeY: relativeEditY,
                         uiFilters: uiFilters,
                         maxSnapDist: requestMaxSnapDist,
+                        snapThreshold: snapThreshold,
                         track: {
                             leftX: targetTrack.leftX,
                             rightX: targetTrack.rightX,
@@ -7874,6 +7882,7 @@
                         blur: 3,
                         min_run: 2,
                         smooth_window: 5,
+                        snap_threshold: parseFloat(document.getElementById('snapThreshold')?.value || 1.20),
                         null: -999.25,
                     },
                     curves: [],
