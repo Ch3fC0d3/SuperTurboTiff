@@ -7334,8 +7334,10 @@ def refine_edit():
         request_max_snap_dist = data.get('maxSnapDist')
         try:
             snap_threshold = float(data.get('snapThreshold', 1.05))
+        except Exception:
+            snap_threshold = 1.05
 
-    if is_crop:
+        if is_crop:
         # Image is already cropped to the track/ROI
             track_crop = img
             # If editRelativeY is provided, use it; otherwise assume center
