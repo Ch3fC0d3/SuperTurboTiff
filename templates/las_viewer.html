@@ -296,6 +296,12 @@
             <input type="number" id="imgTopDepth" placeholder="Top" class="depth-input" title="Depth at top of image">
             <span style="color:#adb5bd;">–</span>
             <input type="number" id="imgBotDepth" placeholder="Btm" class="depth-input" title="Depth at bottom of image">
+            
+            <div class="toolbar-divider"></div>
+            
+            <span style="font-size:0.85em; font-weight:600; color:#495057;">Img Width:</span>
+            <input type="range" id="imgWidthSlider" min="10" max="200" value="100" style="width: 80px" title="Adjust image width %">
+            
             <label class="sync-toggle" title="Sync scrolling between Image and LAS">
                 <input type="checkbox" id="syncScroll"> Sync Scroll
             </label>
@@ -569,12 +575,53 @@ function toggleCurve(name, chip) {
     renderPlot();
 }
 
+// ── Image Controls ─────────────────────────────────────────────────────────
+document.getElementById('imgWidthSlider').addEventListener('input', function(e) {
+    const val = e.target.value;
+    const img = document.getElementById('uploadedImage');
+    if (img) {
+        img.style.width = val + '%';
+        img.style.maxWidth = 'none'; // Override default max-width
+    }
+});
+
 // ── Zoom ───────────────────────────────────────────────────────────────────
 function changeZoom(delta) {
+    if (!lasData) return;
+    
+    // 1. Calculate current center depth before zoom
+    const wrapper = document.getElementById('plotWrapper');
+    const scrollH = wrapper.scrollHeight - wrapper.clientHeight;
+    let centerDepth = null;
+    
+    if (scrollH > 0 && lasDepthRange.top !== null && lasDepthRange.bottom !== null) {
+        const pct = wrapper.scrollTop / scrollH;
+        centerDepth = lasDepthRange.top + (lasDepthRange.bottom - lasDepthRange.top) * pct;
+    }
+
+    // 2. Apply Zoom
     zoomLevel = Math.max(0.2, zoomLevel + delta);
     document.getElementById('zoomLabel').textContent = Math.round(zoomLevel * 100) + '%';
     document.getElementById('zoomOut').disabled = zoomLevel <= 0.2;
+    
+    // 3. Render
     renderPlot();
+
+    // 4. Restore scroll position to keep centerDepth in view
+    if (centerDepth !== null) {
+        // Recalculate new scroll height (approximated, or wait for render)
+        // Since renderPlot is synchronous in DOM update but layout might take a tick,
+        // we'll try immediate + timeout
+        const restoreScroll = () => {
+            const newScrollH = wrapper.scrollHeight - wrapper.clientHeight;
+            if (newScrollH > 0) {
+                const newPct = (centerDepth - lasDepthRange.top) / (lasDepthRange.bottom - lasDepthRange.top);
+                wrapper.scrollTop = newPct * newScrollH;
+            }
+        };
+        restoreScroll();
+        setTimeout(restoreScroll, 10); // Ensure it sticks after layout reflow
+    }
 }
 
 document.getElementById('plotWrapper').addEventListener('wheel', function(e) {
