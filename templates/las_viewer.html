@@ -765,11 +765,53 @@ function checkLibs() {
     if (w && wv) {
         // Libraries ready
         console.log('[LAS Viewer] Libraries verified ready');
-        document.getElementById('placeholder').innerHTML = `
-            <div class="icon">🗂️</div>
-            <p>Open a .LAS file to visualize the well log</p>
-            <small>Supports LAS 2.0 format &bull; up to 10 curves displayed</small>
-        `;
+        
+        // Check for session data passed from dashboard
+        const sessionLas = sessionStorage.getItem('lasViewerContent');
+        const sessionImg = sessionStorage.getItem('lasViewerImage');
+        const sessionDepths = sessionStorage.getItem('lasViewerDepths');
+
+        if (sessionLas) {
+             console.log('[LAS Viewer] Found session LAS data');
+             try {
+                 lasData = w.las2json(sessionLas);
+                 zoomLevel = 1.0;
+                 document.getElementById('zoomLabel').textContent = '100%';
+                 document.getElementById('placeholder').style.display = 'none';
+                 showInfo(lasData);
+                 buildCurveChips();
+                 document.getElementById('zoomControls').style.display = 'flex';
+                 renderPlot();
+             } catch (err) {
+                 console.error('Session LAS parse error:', err);
+                 showError('Failed to parse passed LAS data.');
+             }
+        } else {
+             document.getElementById('placeholder').innerHTML = `
+                <div class="icon">🗂️</div>
+                <p>Open a .LAS file to visualize the well log</p>
+                <small>Supports LAS 2.0 format &bull; up to 10 curves displayed</small>
+            `;
+        }
+
+        if (sessionImg) {
+            console.log('[LAS Viewer] Found session Image data');
+            const img = document.getElementById('uploadedImage');
+            img.onload = () => {
+                document.getElementById('imagePlaceholder').style.display = 'none';
+                document.getElementById('imageContent').style.display = 'block';
+                document.getElementById('imageControls').style.display = 'flex';
+            };
+            img.src = sessionImg;
+        }
+
+        if (sessionDepths) {
+            try {
+                const d = JSON.parse(sessionDepths);
+                if (d.top) document.getElementById('imgTopDepth').value = d.top;
+                if (d.bottom) document.getElementById('imgBotDepth').value = d.bottom;
+            } catch (e) {}
+        }
     }
 }
 

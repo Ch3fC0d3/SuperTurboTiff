@@ -856,7 +856,7 @@
         <div class="header">
             <h1>TIFF→LAS Digitizer</h1>
             <p>Convert legacy well log images to standard LAS files using Computer Vision</p>
-            <a href="/las_viewer" class="las-viewer-btn">📈 LAS Viewer</a>
+            <a href="/las_viewer" class="las-viewer-btn" onclick="openLasViewerWithData(event)">📈 LAS Viewer</a>
             <a href="/logout" class="logout-btn">Logout</a>
         </div>
         <div class="content">
@@ -1987,7 +1987,42 @@
             if (modal) modal.classList.remove('hidden');
         }
 
-        // Initialize overlay sizes from sliders on page load
+        function openLasViewerWithData(event) {
+            event.preventDefault();
+            try {
+                // Clear previous session data first
+                sessionStorage.removeItem('lasViewerContent');
+                sessionStorage.removeItem('lasViewerImage');
+                sessionStorage.removeItem('lasViewerDepths');
+
+                const img = document.getElementById('imagePreview');
+                // Only save if we have a valid image (data URL or blob)
+                if (img && img.src && (img.src.startsWith('data:') || img.src.startsWith('blob:'))) {
+                     try {
+                        sessionStorage.setItem('lasViewerImage', img.src);
+                     } catch (e) {
+                        console.warn('Image too large for sessionStorage');
+                     }
+                }
+                
+                if (lastLasContent) {
+                     sessionStorage.setItem('lasViewerContent', lastLasContent);
+                }
+                
+                // Pass depth config if available to pre-fill image depths
+                if (lastDepthConfig) {
+                     sessionStorage.setItem('lasViewerDepths', JSON.stringify({
+                         top: lastDepthConfig.top_depth,
+                         bottom: lastDepthConfig.bottom_depth
+                     }));
+                }
+            } catch (e) {
+                console.warn('Failed to save data for LAS Viewer:', e);
+            }
+            window.location.href = '/las_viewer';
+        }
+
+        // ── Initialization ─────────────────────────────────────────────────────────
         document.addEventListener('DOMContentLoaded', () => {
             loadOverlaySettingsFromStorage();
             loadOverlayUiStateFromStorage();
