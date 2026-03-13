@@ -960,8 +960,9 @@ def call_ai_auto_layout(layout_payload):
         "cropped the top portion of a single log panel. You see short text "
         "items (curve mnemonics and scale labels) with approximate x/y "
         "centers in pixels.\n\n"
-        "Your job is to infer the logging TRACKS present across the width of "
-        "the header and return JSON ONLY describing each track.\n\n"
+        "Your job is to:\n"
+        "1. Infer the logging TRACKS present across the width of the header.\n"
+        "2. Extract generic HEADER METADATA (Well, Company, API, etc.) if visible.\n\n"
         "Pixels are in the coordinate system of the provided header image, "
         "where x=0 is the left edge and x increases to the right. The overall "
         "image width in pixels is image.width_px.\n\n"
@@ -977,7 +978,19 @@ def call_ai_auto_layout(layout_payload):
         "      \"unit\": string or null,            // e.g. \"API\", \"G/CC\", \"V/V\", \"US/F\"\n"
         "      \"hot_side\": \"left\" | \"right\" | null  // which side is higher / hot values\n"
         "    }\n"
-        "  ]\n"
+        "  ],\n"
+        "  \"header_metadata\": {\n"
+        "    \"well\": string or null,\n"
+        "    \"company\": string or null,\n"
+        "    \"api\": string or null,\n"
+        "    \"date\": string or null,\n"
+        "    \"field\": string or null,\n"
+        "    \"location\": string or null,\n"
+        "    \"county\": string or null,\n"
+        "    \"state\": string or null,\n"
+        "    \"province\": string or null,\n"
+        "    \"service_company\": string or null\n"
+        "  }\n"
         "}\n\n"
         "GUIDELINES:\n"
         "- Group header items with similar x positions into the same track.\n"
@@ -997,6 +1010,8 @@ def call_ai_auto_layout(layout_payload):
         "- Infer left_x/right_x by placing boundaries midway between adjacent "
         "curve label centers along the x-axis.\n"
         "- Ensure left_x < right_x and tracks are ordered left-to-right.\n"
+        "- For header_metadata, look for text items like 'WELL:', 'COMPANY:', 'API:', etc.\n"
+        "  and try to associate the value next to them. If not found, use null.\n"
         "- If you are unsure about scale_min/scale_max or unit, use null.\n\n"
         "Here is the input JSON you should analyze:\n\n"
     )
@@ -1972,7 +1987,52 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         weak_edges = (edge_score > 0.05) & (edge_score < 0.3)
         edge_enhanced[weak_edges] = edge_score[weak_edges] * 1.5
         
-        prob = 0.2 * color_score + 0.5 * edge_enhanced + 0.3 * center_score
+        # --- Vertical Derivative Boost ---
+        # Calculate Sobel Y to detect horizontal changes (edges of horizontal lines/spikes)
+        # Vertical grid rails have dy ~ 0. Wiggly curves (even steep ones) have higher dy components.
+        sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        sobel_y = np.abs(sobel_y)
+        # Normalize
+        max_sy = sobel_y.max()
+        if max_sy > 0:
+            sobel_y_score = (sobel_y / max_sy).astype(np.float32)
+        else:
+            sobel_y_score = np.zeros_like(edge_score)
+
+        # --- Harris Corner Boost ---
+        # Harris response is high at "corners" (jagged peaks) and low on straight edges (grid lines).
+        # This is perfect for highlighting the high-frequency nature of GR curves.
+        # blockSize=2 (local), ksize=3 (gradients), k=0.04 (sensitivity)
+        harris = cv2.cornerHarris(gray, 2, 3, 0.04)
+        # Normalize strictly to 0-1
+        harris = np.maximum(0, harris) # Clip negatives (flat regions)
+        max_h = harris.max()
+        if max_h > 0:
+            harris_score = (harris / max_h).astype(np.float32)
+            # Dilate slightly to make the corner "dots" connect
+            harris_score = cv2.dilate(harris_score, np.ones((3,3), np.uint8))
+        else:
+            harris_score = np.zeros_like(edge_score)
+            
+        # --- Diagonal Derivative Boost ---
+        # Grid lines are 0 or 90 degrees. Curves have diagonal segments.
+        # Calculate diagonal gradients: |dx| + |dy| is a simple approx, but we can be more specific.
+        # Actually, just using the magnitude of the gradient vector (already largely covered by Canny)
+        # isn't enough. We want specifically 45/135 degree energy.
+        # Rotate 45 degrees? Easier: |dx| * |dy| is high only when BOTH are present (diagonal).
+        diag_score = (sobel_x.astype(np.float32)/255.0) * (sobel_y.astype(np.float32)/max_sy if max_sy > 0 else 0)
+        # Normalize
+        if diag_score.max() > 0:
+            diag_score /= diag_score.max()
+            
+        # Combine:
+        # - color_score (15%): Base intensity
+        # - edge_enhanced (30%): Canny + SobelX (strong edges) - reduced slightly
+        # - center_score (20%): Distance transform (center of strokes)
+        # - sobel_y_score (15%): Boost for wiggles/spikes (dy)
+        # - harris_score (10%): Boost for jagged peaks/corners
+        # - diag_score (10%): Boost for diagonal segments (non-grid orientations)
+        prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
@@ -3425,6 +3485,17 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     # The DP path can cut corners on very sharp spikes. Here we search
     # a wider horizontal window for a brighter pixel and snap to it.
     if curve_type.upper() == "GR":
+        # Pre-calculate global vertical grid lines using column projection
+        # Grid lines span the full height, so they appear as strong peaks in column averages.
+        # Wiggly curves have low column averages.
+        col_means = np.mean(prob, axis=0)
+        # Identify columns that are suspicious (likely grid rails)
+        # Threshold: if average intensity is > 10%, it's likely a rail.
+        grid_col_mask = col_means > 0.10
+        # Dilate mask to cover line width
+        if grid_col_mask.any():
+            grid_col_mask = cv2.dilate(grid_col_mask.astype(np.uint8), np.ones(3, np.uint8)).astype(bool)
+
         # Spike extension: search a horizontal window for a clearly brighter pixel
         # and snap to it. This is conservative enough to avoid false snaps.
         search_window = 15
@@ -3450,6 +3521,11 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
 
             # Only snap if the candidate is clearly better.
             if local_x != x_int and local_val > 0.1 and local_val >= current_val * snap_threshold:
+                # Grid Guard: Don't snap to a global vertical rail unless it's extremely bright (intersection)
+                if grid_col_mask[local_x]:
+                    if local_val < 0.6: # Require high confidence to snap to a known grid column
+                        continue
+                        
                 xs_fused[y] = float(local_x)
                 confidence[y] = float(local_val)
 
@@ -5513,6 +5589,25 @@ def auto_layout_tracks():
         }), 500
 
     raw_tracks = layout.get('tracks') or []
+    
+    # Merge AI-extracted metadata (often better than regex)
+    ai_meta = layout.get('header_metadata')
+    if ai_meta and isinstance(ai_meta, dict):
+        if header_metadata is None:
+            header_metadata = {}
+        for k, v in ai_meta.items():
+            if v and isinstance(v, str) and v.strip():
+                val = v.strip()
+                # Map AI keys to internal keys where they differ
+                if k == 'company': header_metadata['comp'] = val
+                elif k == 'field': header_metadata['fld'] = val
+                elif k == 'location': header_metadata['loc'] = val
+                elif k == 'province': header_metadata['prov'] = val
+                elif k == 'service_company': header_metadata['srvc'] = val
+                else:
+                    # well, api, date, county, state, etc. match or are new
+                    header_metadata[k] = val
+
     tracks_out = []
     for t in raw_tracks:
         try:
@@ -6870,32 +6965,22 @@ def digitize():
                 pass
             
         else:
-            # For black/other modes, use DP with smoothness constraints
-            xs, confidence = trace_curve_with_dp(
+            # For black/other modes, use enhanced multi-scale tracer
+            # This tracer now includes "Grid-Safe Snapping" to handle black grids.
+            # It fuses 5 different scales to find the most consistent path and rejects vertical rails.
+            xs, confidence = trace_curve_multiscale(
                 mask,
                 scale_min=left_value,
                 scale_max=right_value,
                 curve_type=curve_type,
                 max_step=max_step_dp,
                 smooth_lambda=dp_smooth_lambda,
-                curv_lambda=0.05,
                 hot_side=hot_side,
             )
             
-            # Snap the DP path toward obvious local maxima in the prob mask
-            xs = refine_trace_with_local_maxima(mask, xs, **refine_kwargs)
-            
-            # Refine peaks and valleys where curve changes direction sharply
-            xs = refine_peaks_and_valleys(mask, xs, search_radius=50, min_prob=0.03)
-            
-            # Ensure every significant peak has a traced point
-            xs = ensure_peaks_have_points(mask, xs, min_prob=0.08, min_peak_prominence=0.03, max_shift=40)
-            
-            # Final centerline refinement
-            xs = refine_to_stroke_centerline(mask, xs, window_size=6)
-
-            # Remove outliers and smooth
-            xs = remove_outliers_and_smooth(xs, window=curve_smooth_window, outlier_threshold=outlier_threshold)
+            # Optional final smoothing for non-GR curves (GR needs to stay jagged)
+            if curve_type.upper() != "GR":
+                 xs = remove_outliers_and_smooth(xs, window=curve_smooth_window, outlier_threshold=outlier_threshold)
 
         width_px = mask.shape[1]
 
