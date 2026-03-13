@@ -3395,7 +3395,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
             local_val = row_seg[local_idx]
 
             # Only snap if the candidate is clearly better.
-            if local_x != x_int and local_val > 0.1 and local_val >= current_val * 1.05:
+            if local_x != x_int and local_val > 0.1 and local_val >= current_val * snap_threshold:
                 xs_fused[y] = float(local_x)
                 confidence[y] = float(local_val)
 
@@ -6448,6 +6448,7 @@ def digitize():
     blur = int(gopt.get('blur', 3))
     min_run = int(gopt.get('min_run', 2))
     smooth_window = int(gopt.get('smooth_window', 5))
+    snap_threshold = float(gopt.get('snap_threshold', 1.20)) # Default to 1.20 (20% brighter) as requested/observed
 
     H, W, _ = img.shape
     top = max(0, int(depth_cfg['top_px']))
@@ -7329,12 +7330,10 @@ def refine_edit():
 
         request_max_snap_dist = data.get('maxSnapDist')
         try:
-            request_max_snap_dist = float(request_max_snap_dist)
-        except Exception:
-            request_max_snap_dist = None
+            snap_threshold = float(data.get('snapThreshold', 1.05))
 
-        if is_crop:
-            # Image is already cropped to the track/ROI
+    if is_crop:
+        # Image is already cropped to the track/ROI
             track_crop = img
             # If editRelativeY is provided, use it; otherwise assume center
             if edit_relative_y >= 0:
@@ -8317,4 +8316,5 @@ if __name__ == '__main__':
     print(f"📊 Google Vision API: {'✅ Available' if VISION_API_AVAILABLE else '⚠️  Not configured'}")
     print("🌐 Open: http://localhost:5000")
     
+    app.run(debug=False, use_reloader=False, host='0.0.0.0', port=5000)
     app.run(debug=False, use_reloader=False, host='0.0.0.0', port=5000)
