@@ -39,6 +39,7 @@ import pandas as pd
 import json
 from io import BytesIO, StringIO
 import base64
+import zipfile
 from typing import Dict, List, Tuple, Optional
 import tempfile
 from datetime import datetime
@@ -8227,6 +8228,56 @@ def _ml_resolve_curve_trace_model_path(requested_path: Optional[str]) -> str:
              continue
 
      return str(candidates[0])
+
+
+@app.route('/api/download_las_zip', methods=['POST'])
+def download_las_zip():
+    """Generate a ZIP file containing individual LAS files for each curve."""
+    data = request.json or {}
+    
+    depths = data.get('depths')
+    curves = data.get('curves')
+    header_metadata = data.get('header_metadata') or {}
+    depth_unit = data.get('depth_unit', 'FT')
+    
+    if not depths or not curves:
+        return jsonify({'error': 'Missing depth or curve data'}), 400
+        
+    try:
+        depth_arr = np.array(depths, dtype=np.float32)
+        
+        # Create in-memory ZIP
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            base_name = build_las_filename_from_metadata(header_metadata, default_name='digitized_log').replace('.las', '')
+            
+            for curve_name, curve_info in curves.items():
+                # Prepare single-curve data dict
+                single_curve_data = {
+                    curve_name: curve_info
+                }
+                
+                # Generate LAS content
+                las_content = write_las_simple(depth_arr, single_curve_data, depth_unit, header_metadata)
+                
+                # Add to ZIP
+                # Filename: WellName_CurveName.las
+                # Sanitize curve name for filename
+                safe_curve_name = "".join([c for c in curve_name if c.isalnum() or c in ('_', '-')])
+                filename = f"{base_name}_{safe_curve_name}.las"
+                zf.writestr(filename, las_content)
+                
+        zip_buffer.seek(0)
+        
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f"{base_name}_curves.zip"
+        )
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/ml_predict_curve_trace', methods=['POST'])

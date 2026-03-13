@@ -1170,9 +1170,15 @@
                                     <button class="btn" type="button" onclick="mlPredictCurve()" title="Use trained ML model to predict a single curve trace in the selected panel">
                                         🤖 ML predict curve
                                     </button>
-                                    <button class="btn" type="button" onclick="downloadLastLas()" id="downloadLasBtn" disabled>
-                                        💾 Download LAS
-                                    </button>
+                                    <div style="display: flex; gap: 0;">
+                                        <select id="downloadFormat" class="btn" style="border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: 1px solid rgba(0,0,0,0.1); padding-right: 25px; background-position: right 5px center;">
+                                            <option value="merged">Merged LAS</option>
+                                            <option value="individual">Individual Files (ZIP)</option>
+                                        </select>
+                                        <button class="btn" type="button" onclick="handleDownload()" id="downloadLasBtn" disabled style="border-top-left-radius: 0; border-bottom-left-radius: 0;">
+                                            💾 Download
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <div class="form-group" style="margin-top: 10px; max-width: 420px;">
@@ -8201,6 +8207,84 @@
                 if (downloadBtn && lastLasContent) {
                     downloadBtn.disabled = false;
                 }
+            }
+        }
+
+        function handleDownload() {
+            const fmt = document.getElementById('downloadFormat').value;
+            if (fmt === 'individual') {
+                downloadLasZip();
+            } else {
+                downloadLastLas();
+            }
+        }
+
+        async function downloadLasZip() {
+            if (!Array.isArray(lastDigitizedDepth) || !lastDigitizedCurves) {
+                showStatus('No digitized data available. Please run Digitize first.', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('downloadLasBtn');
+            if (btn) btn.disabled = true;
+            showStatus('⏳ Generating ZIP archive...', 'info');
+
+            try {
+                // Prepare merged curves object using current manual edits
+                // (Note: lastDigitizedCurves should already be updated by applyRefinedSegment/updateCurveData)
+                
+                const payload = {
+                    depths: lastDigitizedDepth,
+                    curves: lastDigitizedCurves,
+                    header_metadata: headerMetadata || {},
+                    depth_unit: lastDepthConfig ? lastDepthConfig.unit : 'FT'
+                };
+
+                const resp = await fetch('/api/download_las_zip', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!resp.ok) {
+                    const errText = await resp.text();
+                    let errMsg = errText;
+                    try {
+                        const jsonErr = JSON.parse(errText);
+                        if (jsonErr.error) errMsg = jsonErr.error;
+                    } catch (e) {}
+                    throw new Error(errMsg || `HTTP ${resp.status}`);
+                }
+
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                
+                // Try to get filename from Content-Disposition header
+                let filename = 'digitized_curves.zip';
+                const disposition = resp.headers.get('Content-Disposition');
+                if (disposition && disposition.indexOf('attachment') !== -1) {
+                    const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                    const matches = filenameRegex.exec(disposition);
+                    if (matches != null && matches[1]) { 
+                        filename = matches[1].replace(/['"]/g, '');
+                    }
+                }
+                
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                showStatus('✅ ZIP download started.', 'success');
+
+            } catch (err) {
+                console.error('ZIP download failed:', err);
+                showStatus(`ZIP download failed: ${err.message}`, 'error');
+            } finally {
+                if (btn) btn.disabled = false;
             }
         }
 
