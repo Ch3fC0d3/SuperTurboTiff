@@ -1272,10 +1272,6 @@
         let eraserStart = null;
         let eraserBox = null;
 
-        function revealDigitizationControls() {
-            document.querySelectorAll('.digitization-only').forEach(el => el.classList.remove('hidden'));
-        }
-
         function setEditModeUI() {
             const container = document.getElementById('workspace');
             const toolbar = document.getElementById('digitizerToolbar');
@@ -5027,7 +5023,9 @@
                     imageHeight = data.height;
                     allTracks = data.all_tracks || data.tracks || [];
                     detectedTracks = data.tracks || [];
-                    primaryRegion = data.primary_region || null;
+                    // User requested to NOT auto-select the panel on upload ("confusing blue bar").
+                    // We leave primaryRegion null so they can select it manually if desired.
+                    primaryRegion = null; 
                     // Carry through any lightweight OCR hints from the backend
                     ocrSuggestions = data.ocr_suggestions || data.ocrSuggestions || {};
                     detectedText = data.detected_text || data.detectedText || null;
@@ -5144,9 +5142,12 @@
                 return;
             }
 
-            if (!primaryRegion || !Number.isFinite(primaryRegion.left_px) || !Number.isFinite(primaryRegion.right_px)) {
-                showStatus('Please select a panel first (click "Select panel from image" and drag a box).', 'info');
-                return;
+            // Default to full image if no region selected
+            let leftPx = 0;
+            let rightPx = imageWidth;
+            if (primaryRegion && Number.isFinite(primaryRegion.left_px) && Number.isFinite(primaryRegion.right_px)) {
+                leftPx = Number(primaryRegion.left_px);
+                rightPx = Number(primaryRegion.right_px);
             }
 
             const topPxInput = document.getElementById('topPx');
@@ -5168,8 +5169,8 @@
                     body: JSON.stringify({
                         image: uploadedImage,
                         region: {
-                            left_px: primaryRegion.left_px,
-                            right_px: primaryRegion.right_px,
+                            left_px: leftPx,
+                            right_px: rightPx,
                             top_px: topPx,
                             bottom_px: bottomPx,
                         }
@@ -5345,9 +5346,12 @@
                 return;
             }
 
-            if (!primaryRegion || !Number.isFinite(primaryRegion.left_px) || !Number.isFinite(primaryRegion.right_px)) {
-                showStatus('Please select a panel first (click "Select panel from image" and drag a box).', 'info');
-                return;
+            // Default to full image if no region selected
+            let leftPx = 0;
+            let rightPx = imageWidth;
+            if (primaryRegion && Number.isFinite(primaryRegion.left_px) && Number.isFinite(primaryRegion.right_px)) {
+                leftPx = Number(primaryRegion.left_px);
+                rightPx = Number(primaryRegion.right_px);
             }
 
             const topPxInput = document.getElementById('topPx');
@@ -5369,8 +5373,8 @@
                     body: JSON.stringify({
                         image: uploadedImage,
                         region: {
-                            left_px: primaryRegion.left_px,
-                            right_px: primaryRegion.right_px,
+                            left_px: leftPx,
+                            right_px: rightPx,
                             top_px: topPx,
                             bottom_px: bottomPx,
                         }
@@ -5445,9 +5449,12 @@
                 return;
             }
 
-            if (!primaryRegion || !Number.isFinite(primaryRegion.left_px) || !Number.isFinite(primaryRegion.right_px)) {
-                showStatus('Please select a panel first (click "Select panel from image" and drag a box).', 'info');
-                return;
+            // Default to full image if no region selected
+            let leftPx = 0;
+            let rightPx = imageWidth;
+            if (primaryRegion && Number.isFinite(primaryRegion.left_px) && Number.isFinite(primaryRegion.right_px)) {
+                leftPx = Number(primaryRegion.left_px);
+                rightPx = Number(primaryRegion.right_px);
             }
 
             const topPxInput = document.getElementById('topPx');
@@ -5469,8 +5476,8 @@
                     body: JSON.stringify({
                         image: uploadedImage,
                         region: {
-                            left_px: primaryRegion.left_px,
-                            right_px: primaryRegion.right_px,
+                            left_px: leftPx,
+                            right_px: rightPx,
                             top_px: topPx,
                             bottom_px: bottomPx,
                         }
@@ -5611,11 +5618,9 @@
                 return;
             }
 
-            if (!primaryRegion || !Number.isFinite(primaryRegion.left_px) || !Number.isFinite(primaryRegion.right_px)) {
-                showStatus('❌ Please select a panel first: click "Select panel from image" in Step 3 and drag a box around the log panel.', 'error');
-                return;
-            }
-
+            // If no primary region selected, we'll use the full image width.
+            // (Previously this blocked the user).
+            
             const topPxInput = document.getElementById('topPx');
             const bottomPxInput = document.getElementById('bottomPx');
             const topPx = topPxInput ? parseFloat(topPxInput.value) : 0;
@@ -5678,12 +5683,14 @@
                         leftPx = Math.max(0, Math.floor(Number(track.leftX)));
                         rightPx = Math.min(imageWidth, Math.ceil(Number(track.rightX)));
                     } else {
-                        showStatus('❌ Please set up at least one curve track with valid left/right pixel bounds.', 'error');
-                        return;
+                        // Fallback to full width if track bounds are invalid
+                        leftPx = 0;
+                        rightPx = imageWidth;
                     }
                 } else {
-                    showStatus('❌ Please select a panel or set up at least one curve track first.', 'error');
-                    return;
+                    // No region and no tracks: default to full width
+                    leftPx = 0;
+                    rightPx = imageWidth;
                 }
             }
 
@@ -7981,9 +7988,6 @@
                 }
 
                 if (data.success) {
-                    // Reveal the curve controls now that we have data
-                    revealDigitizationControls();
-
                     // Store digitized data for cursor readout and later download
                     lastDigitizedDepth = Array.isArray(data.digitized_depth) ? data.digitized_depth : null;
                     lastDigitizedCurves = data.digitized_curves || null;
