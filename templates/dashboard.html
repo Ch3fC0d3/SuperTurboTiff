@@ -1272,6 +1272,10 @@
         let eraserStart = null;
         let eraserBox = null;
 
+        function revealDigitizationControls() {
+            document.querySelectorAll('.digitization-only').forEach(el => el.classList.remove('hidden'));
+        }
+
         function setEditModeUI() {
             const container = document.getElementById('workspace');
             const toolbar = document.getElementById('digitizerToolbar');
@@ -7977,6 +7981,9 @@
                 }
 
                 if (data.success) {
+                    // Reveal the curve controls now that we have data
+                    revealDigitizationControls();
+
                     // Store digitized data for cursor readout and later download
                     lastDigitizedDepth = Array.isArray(data.digitized_depth) ? data.digitized_depth : null;
                     lastDigitizedCurves = data.digitized_curves || null;
