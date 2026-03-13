@@ -48,6 +48,22 @@
         .logout-btn:hover {
             background: rgba(255, 255, 255, 0.3);
         }
+        .las-viewer-btn {
+            position: absolute;
+            top: 20px;
+            right: 110px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 0.9em;
+            transition: background 0.2s;
+        }
+        .las-viewer-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
         .content { padding: 30px; }
         .step {
             background: #f8f9fa;
@@ -840,6 +856,7 @@
         <div class="header">
             <h1>TIFF→LAS Digitizer</h1>
             <p>Convert legacy well log images to standard LAS files using Computer Vision</p>
+            <a href="/las_viewer" class="las-viewer-btn">📈 LAS Viewer</a>
             <a href="/logout" class="logout-btn">Logout</a>
         </div>
         <div class="content">

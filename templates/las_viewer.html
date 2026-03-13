@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LAS Viewer — TIFF→LAS Digitizer</title>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+    <script src="https://unpkg.com/wellio@0.1.16/dist/wellio.min.js"></script>
+    <script src="https://unpkg.com/wellioviz@0.0.34/dist/wellioviz.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 24px 30px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header-left { display: flex; align-items: center; gap: 16px; }
+        .header h1 { font-size: 1.8em; }
+        .header p { opacity: 0.85; font-size: 0.95em; margin-top: 4px; }
+        .back-btn {
+            background: rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9em;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+        .back-btn:hover { background: rgba(255,255,255,0.35); }
+
+        .toolbar {
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            padding: 14px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .file-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 9px 18px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.9em;
+            transition: opacity 0.2s;
+        }
+        .file-label:hover { opacity: 0.88; }
+        #fileInput { display: none; }
+
+        .zoom-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .zoom-btn {
+            background: white;
+            border: 1px solid #ced4da;
+            color: #495057;
+            padding: 7px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.88em;
+            font-weight: 600;
+            transition: background 0.15s;
+        }
+        .zoom-btn:hover:not(:disabled) { background: #e9ecef; }
+        .zoom-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .zoom-label {
+            min-width: 50px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 0.9em;
+            color: #495057;
+        }
+        .zoom-hint { font-size: 0.8em; color: #868e96; font-style: italic; }
+
+        .curve-toggles {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-left: auto;
+        }
+        .curve-toggle-label { font-size: 0.82em; color: #495057; font-weight: 600; }
+        .curve-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            border: 2px solid transparent;
+            cursor: pointer;
+            font-size: 0.8em;
+            font-weight: 600;
+            transition: all 0.15s;
+            user-select: none;
+        }
+        .curve-chip.active { opacity: 1; }
+        .curve-chip.inactive { opacity: 0.38; }
+        .curve-chip-dot {
+            width: 9px; height: 9px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .error-bar {
+            background: #fff5f5;
+            border-left: 4px solid #e03131;
+            color: #c92a2a;
+            padding: 12px 20px;
+            font-size: 0.9em;
+            display: none;
+        }
+        .error-bar.visible { display: block; }
+
+        .info-bar {
+            background: #f0f4ff;
+            border-bottom: 1px solid #dde4ff;
+            padding: 10px 24px;
+            display: none;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .info-bar.visible { display: flex; }
+        .info-item { font-size: 0.82em; color: #495057; }
+        .info-item strong { color: #364fc7; }
+
+        .plot-wrapper {
+            overflow: auto;
+            width: 100%;
+            min-height: 500px;
+            background: #fff;
+            position: relative;
+        }
+        #well-plot {
+            display: flex;
+            padding: 16px;
+            min-width: max-content;
+        }
+        .placeholder-msg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #868e96;
+        }
+        .placeholder-msg .icon { font-size: 3em; margin-bottom: 12px; }
+        .placeholder-msg p { font-size: 1em; }
+        .placeholder-msg small { font-size: 0.82em; color: #adb5bd; }
+
+        /* Fix wellioviz SVG text */
+        #well-plot text { fill: #333 !important; }
+        #well-plot .tick text { font-size: 10px !important; }
+
+        @media (max-width: 600px) {
+            .header { flex-direction: column; gap: 12px; text-align: center; }
+            .curve-toggles { margin-left: 0; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <div class="header-left">
+            <div>
+                <h1>LAS Viewer</h1>
+                <p>Visualize and inspect LAS well log files</p>
+            </div>
+        </div>
+        <a href="/dashboard" class="back-btn">← Back to Dashboard</a>
+    </div>
+
+    <div class="toolbar">
+        <label class="file-label" for="fileInput">
+            📂 Open LAS File
+        </label>
+        <input type="file" id="fileInput" accept=".las,.LAS">
+
+        <div class="zoom-controls" id="zoomControls" style="display:none;">
+            <button class="zoom-btn" id="zoomOut" onclick="changeZoom(-0.2)">− Zoom Out</button>
+            <span class="zoom-label" id="zoomLabel">100%</span>
+            <button class="zoom-btn" id="zoomIn" onclick="changeZoom(0.2)">+ Zoom In</button>
+            <span class="zoom-hint">Ctrl+Scroll to zoom</span>
+        </div>
+
+        <div class="curve-toggles" id="curveToggles" style="display:none;">
+            <span class="curve-toggle-label">Curves:</span>
+            <!-- chips injected by JS -->
+        </div>
+    </div>
+
+    <div class="error-bar" id="errorBar"></div>
+
+    <div class="info-bar" id="infoBar">
+        <!-- well info items injected by JS -->
+    </div>
+
+    <div class="plot-wrapper" id="plotWrapper">
+        <div class="placeholder-msg" id="placeholder">
+            <div class="icon">🗂️</div>
+            <p>Open a .LAS file to visualize the well log</p>
+            <small>Supports LAS 2.0 format &bull; up to 10 curves displayed</small>
+        </div>
+        <div id="well-plot"></div>
+    </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let lasData = null;
+let zoomLevel = 1.0;
+let activeCurves = new Set();
+const CURVE_COLORS = ['#1971c2','#2f9e44','#c2255c','#e67700','#7950f2','#0c8599','#862e9c','#d63031','#00b894','#fdcb6e'];
+const MAX_CURVES = 10;
+
+// ── Library resolution ─────────────────────────────────────────────────────
+function resolveWellio() {
+    if (typeof wellio !== 'undefined') return wellio;
+    if (window.wellio) return window.wellio;
+    return null;
+}
+
+function resolveWellioviz() {
+    // Try various export patterns
+    if (typeof wellioviz !== 'undefined') {
+        if (typeof wellioviz.multipleLogPlot === 'function') return wellioviz;
+        if (wellioviz.default && typeof wellioviz.default.multipleLogPlot === 'function') return wellioviz.default;
+    }
+    if (window.wellioviz) {
+        if (typeof window.wellioviz.multipleLogPlot === 'function') return window.wellioviz;
+        if (window.wellioviz.default && typeof window.wellioviz.default.multipleLogPlot === 'function') return window.wellioviz.default;
+    }
+    return null;
+}
+
+// ── Error / info helpers ───────────────────────────────────────────────────
+function showError(msg) {
+    const bar = document.getElementById('errorBar');
+    bar.textContent = msg;
+    bar.classList.add('visible');
+}
+function clearError() {
+    const bar = document.getElementById('errorBar');
+    bar.textContent = '';
+    bar.classList.remove('visible');
+}
+
+function showInfo(lasJson) {
+    const bar = document.getElementById('infoBar');
+    bar.innerHTML = '';
+    const wi = lasJson.WELL_INFORMATION || {};
+    const fields = [
+        ['Well', wi.WELL?.DATA || wi.WN?.DATA],
+        ['Company', wi.COMP?.DATA || wi.COMPANY?.DATA],
+        ['Field', wi.FLD?.DATA || wi.FIELD?.DATA],
+        ['Location', wi.LOC?.DATA || wi.LOCATION?.DATA],
+        ['API', wi.API?.DATA],
+        ['Date', wi.DATE?.DATA],
+        ['Start Depth', wi.STRT?.DATA ? `${wi.STRT.DATA} ${wi.STRT.UNIT || ''}`.trim() : null],
+        ['Stop Depth', wi.STOP?.DATA ? `${wi.STOP.DATA} ${wi.STOP.UNIT || ''}`.trim() : null],
+        ['Step', wi.STEP?.DATA ? `${wi.STEP.DATA} ${wi.STEP.UNIT || ''}`.trim() : null],
+    ];
+    let hasAny = false;
+    fields.forEach(([label, val]) => {
+        if (val && String(val).trim() && String(val).trim() !== '-999.25') {
+            const span = document.createElement('span');
+            span.className = 'info-item';
+            span.innerHTML = `<strong>${label}:</strong> ${String(val).trim()}`;
+            bar.appendChild(span);
+            hasAny = true;
+        }
+    });
+    bar.classList.toggle('visible', hasAny);
+}
+
+// ── File upload ────────────────────────────────────────────────────────────
+document.getElementById('fileInput').addEventListener('change', async function(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    clearError();
+
+    const wlio = resolveWellio();
+    if (!wlio) {
+        showError('wellio library failed to load. Please refresh the page.');
+        return;
+    }
+
+    try {
+        const text = await file.text();
+        lasData = wlio.las2json(text);
+        zoomLevel = 1.0;
+        document.getElementById('zoomLabel').textContent = '100%';
+        document.getElementById('placeholder').style.display = 'none';
+        showInfo(lasData);
+        buildCurveChips();
+        document.getElementById('zoomControls').style.display = 'flex';
+        renderPlot();
+    } catch (err) {
+        console.error('LAS parse error:', err);
+        showError('Failed to parse LAS file: ' + err.message + '. Please check that it is a valid LAS 2.0 file.');
+    }
+});
+
+// ── Curve chips ────────────────────────────────────────────────────────────
+function buildCurveChips() {
+    if (!lasData) return;
+    const curves = lasData.CURVES || {};
+    const names = Object.keys(curves);
+    const depthName = names.find(n => n === 'DEPT' || n === 'DEPTH') || names[0];
+    const curvesToShow = names.filter(n => n !== depthName).slice(0, MAX_CURVES);
+
+    activeCurves = new Set(curvesToShow); // all active by default
+
+    const container = document.getElementById('curveToggles');
+    // Remove existing chips (keep label)
+    container.querySelectorAll('.curve-chip').forEach(el => el.remove());
+
+    curvesToShow.forEach((name, idx) => {
+        const color = CURVE_COLORS[idx % CURVE_COLORS.length];
+        const chip = document.createElement('span');
+        chip.className = 'curve-chip active';
+        chip.dataset.curve = name;
+        chip.style.borderColor = color;
+        chip.style.backgroundColor = color + '18';
+        chip.innerHTML = `<span class="curve-chip-dot" style="background:${color}"></span>${name}`;
+        chip.addEventListener('click', () => toggleCurve(name, chip));
+        container.appendChild(chip);
+    });
+
+    container.style.display = 'flex';
+}
+
+function toggleCurve(name, chip) {
+    if (activeCurves.has(name)) {
+        activeCurves.delete(name);
+        chip.classList.replace('active', 'inactive');
+    } else {
+        activeCurves.add(name);
+        chip.classList.replace('inactive', 'active');
+    }
+    renderPlot();
+}
+
+// ── Zoom ───────────────────────────────────────────────────────────────────
+function changeZoom(delta) {
+    zoomLevel = Math.max(0.2, zoomLevel + delta);
+    document.getElementById('zoomLabel').textContent = Math.round(zoomLevel * 100) + '%';
+    document.getElementById('zoomOut').disabled = zoomLevel <= 0.2;
+    renderPlot();
+}
+
+document.getElementById('plotWrapper').addEventListener('wheel', function(e) {
+    if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        changeZoom(delta);
+    }
+}, { passive: false });
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function renderPlot() {
+    if (!lasData) return;
+
+    const wviz = resolveWellioviz();
+    if (!wviz) {
+        showError('wellioviz library failed to load. Cannot render plot. Please refresh the page.');
+        return;
+    }
+
+    const plotDiv = document.getElementById('well-plot');
+    plotDiv.innerHTML = '';
+
+    try {
+        const curves = lasData.CURVES || {};
+        const curveNames = Object.keys(curves);
+        const depthName = curveNames.find(n => n === 'DEPT' || n === 'DEPTH') || curveNames[0];
+        const dataLen = curves[depthName]?.length || 0;
+
+        if (dataLen === 0) {
+            showError('No data rows found in this LAS file.');
+            return;
+        }
+
+        // Build row-based data for wellioviz
+        const rowData = [];
+        for (let i = 0; i < dataLen; i++) {
+            const row = {};
+            curveNames.forEach(n => { row[n] = parseFloat(curves[n][i]); });
+            rowData.push(row);
+        }
+
+        const wellName = lasData.WELL_INFORMATION?.WELL?.DATA || lasData.WELL_INFORMATION?.WN?.DATA || 'Unknown';
+        const depthUnit = lasData.CURVE_INFORMATION?.[depthName]?.UNIT || 'm';
+
+        const curvesToPlot = curveNames
+            .filter(n => n !== depthName && activeCurves.has(n))
+            .slice(0, MAX_CURVES);
+
+        if (curvesToPlot.length === 0) {
+            plotDiv.innerHTML = '<p style="padding:40px;color:#868e96;text-align:center;">No curves selected — click a curve chip above to show it.</p>';
+            return;
+        }
+
+        const trackHeight = Math.round(800 * zoomLevel);
+        const trackWidth = 200;
+
+        const allTemplates = curvesToPlot.map((curveName, idx) => {
+            const color = CURVE_COLORS[idx % CURVE_COLORS.length];
+            const unit = lasData.CURVE_INFORMATION?.[curveName]?.UNIT || '';
+            return [{
+                curve_box: {
+                    div_id: 'placeholder_overwritten',
+                    width: trackWidth,
+                    height: trackHeight,
+                    height_multiplier_components: 1,
+                    show_depth_track: idx === 0 ? 'yes' : 'no',
+                    gridlines: 'yes',
+                    gridlines_color: '#E8E8E8',
+                    mouseover_yes_or_no: 'yes',
+                    mouseover_depth_or_depth_and_curve: 'depth_and_curve',
+                    header_sep_svg_or_not: 'yes',
+                    svg_header_height: '4em',
+                    margin: { top: 10, right: 10, bottom: 30, left: 60 },
+                    title: { text: curveName, title_font_size: '12px' },
+                    show_title: 'yes',
+                },
+                components: [{
+                    curves: [{
+                        curve_names: [curveName],
+                        curve_colors: [color],
+                        curve_stroke_dasharray: ['solid'],
+                        stroke_width: ['1.5px'],
+                        stroke_linecap: ['butt'],
+                        fill: [{
+                            curve_name: curveName,
+                            fill: 'yes',
+                            fill_direction: 'left',
+                            cutoffs: [],
+                            fill_colors: [color + '28'],
+                            curve2: '',
+                        }],
+                        curve_units: [unit],
+                        depth_limits: [{ min: 'autocalculate', max: 'autocalculate' }],
+                        curve_limits: [{ curve_name: curveName, min: 'autocalculate', max: 'autocalculate' }],
+                        data: rowData,
+                        depth_curve_name: depthName,
+                        data_id: [curveName],
+                        well_names: [wellName],
+                        scale_linear_log_or_yours: ['linear'],
+                        line_color: [color],
+                        max_depth: 'autocalculate',
+                        min_depth: 'autocalculate',
+                        depth_type_string: depthName,
+                        depth_units_string: depthUnit,
+                        null_value: ['-999.25'],
+                    }],
+                    lines: [],
+                    rectangles: [],
+                }],
+            }];
+        });
+
+        wviz.multipleLogPlot('well-plot', allTemplates);
+        clearError();
+
+    } catch (err) {
+        console.error('Render error:', err);
+        showError('Failed to render plot: ' + err.message);
+    }
+}
+
+// ── Library load check ─────────────────────────────────────────────────────
+window.addEventListener('load', function() {
+    const w = resolveWellio();
+    const wv = resolveWellioviz();
+    if (!w) console.warn('[LAS Viewer] wellio did not load from CDN');
+    if (!wv) console.warn('[LAS Viewer] wellioviz did not load from CDN');
+});
+</script>
+</body>
+</html>

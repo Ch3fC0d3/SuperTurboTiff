@@ -6500,6 +6500,12 @@ def dashboard():
     return render_template('dashboard.html', app_version=APP_VERSION, build_time=APP_BUILD_TIME)
 
 
+@app.route('/las_viewer')
+@login_required
+def las_viewer():
+    return render_template('las_viewer.html', app_version=APP_VERSION)
+
+
 @app.route('/favicon.ico')
 def favicon():
     """Return empty response for favicon to prevent 404 errors."""
