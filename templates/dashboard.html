@@ -635,7 +635,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            z-index: 1000;
+            z-index: 2000;
         }
         .intro-backdrop.hidden {
             display: none;
@@ -647,6 +647,8 @@
             border-radius: 10px;
             box-shadow: 0 20px 40px rgba(0,0,0,0.35);
             padding: 20px 24px;
+            position: relative;
+            z-index: 2001;
         }
         .intro-modal h2 {
             margin-bottom: 10px;
@@ -808,8 +810,8 @@
     </style>
 </head>
 <body>
-    <div id="introModalBackdrop" class="intro-backdrop hidden">
-        <div class="intro-modal">
+    <div id="introModalBackdrop" class="intro-backdrop hidden" onclick="closeIntroModal()">
+        <div id="introModal" class="intro-modal" onclick="event.stopPropagation()">
             <button type="button" class="intro-modal-close" onclick="closeIntroModal()" aria-label="Close">×</button>
             <h2>Welcome to TIFF→LAS Digitizer</h2>
             <p>This tool converts well log images (TIFF/PNG/JPG) into QuickSyn-style LAS 1.2 files. The AI suggests defaults, but you stay in control.</p>
