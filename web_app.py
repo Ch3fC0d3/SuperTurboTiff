@@ -3651,8 +3651,6 @@ def refine_subpixel_parabola(mask, xs, prob_map=None):
                 offset = max(-0.5, min(0.5, offset))
                 xs_refined[y] = float(ix) + offset
 
-        subpixel_conf[y] = float(v_curr)
-
     return xs_refined, subpixel_conf
 
 
