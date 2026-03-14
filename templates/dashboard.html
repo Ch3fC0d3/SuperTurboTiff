@@ -1282,6 +1282,7 @@
         let headerRegion = null; // { left_px, right_px, top_px, bottom_px }
         let headerTracks = null; // array of tracks from header capture
         let headerMetadata = null; // well/log metadata parsed from header OCR
+        let headerCaptureEnabled = true;
         let lastDigitizedDepth = null;   // array of depths from last /digitize
         let lastDigitizedCurves = null;  // { curveId: { unit, values[] } }
         let lastLasContent = null;       // LAS text from last digitization
@@ -2115,6 +2116,10 @@
                 showStatus('Turn off manual curve edit mode before changing the header selection.', 'info');
                 return;
             }
+            if (!headerCaptureEnabled) {
+                showStatus('Header capture is disabled until you crop to a panel.', 'info');
+                return;
+            }
             headerSelectMode = true;
             headerRegionStart = null;
             headerRegionDrag = false;
@@ -2122,6 +2127,26 @@
             const summaryEl = document.getElementById('headerSelectionSummary');
             if (summaryEl) {
                 summaryEl.textContent = 'Ready to capture header. Draw a box over the header strip.';
+            }
+        }
+
+        function updateHeaderCaptureState() {
+            const headerBtn = document.querySelector('button[onclick="beginHeaderSelection()"]');
+            const clearBtn = document.querySelector('button[onclick="clearHeaderSelection()"]');
+            const summaryEl = document.getElementById('headerSelectionSummary');
+
+            if (headerCaptureEnabled) {
+                if (headerBtn) headerBtn.disabled = false;
+                if (clearBtn) clearBtn.disabled = false;
+                if (summaryEl && (!headerRegion || !headerTracks)) {
+                    summaryEl.textContent = 'Ready to capture header. Draw a box over the header strip.';
+                }
+            } else {
+                if (headerBtn) headerBtn.disabled = true;
+                if (clearBtn) clearBtn.disabled = true;
+                if (summaryEl) {
+                    summaryEl.textContent = 'Header capture disabled until you crop to a panel.';
+                }
             }
         }
 
