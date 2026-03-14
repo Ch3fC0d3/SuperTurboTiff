@@ -6004,6 +6004,30 @@
                 renderPrimaryRegionOverlay();
                 updateSelectionSummary();
 
+                // Reset interaction modes to prevent ghost selections
+                panelSelectMode = false;
+                panelSelectStart = null;
+                primaryRegionDrag = { active: false, edge: null };
+
+                headerSelectMode = false;
+                headerRegionStart = null;
+                headerRegionDrag = false;
+                headerRegion = null;
+                headerTracks = null;
+                headerMetadata = null;
+                headerCaptureEnabled = false;
+
+                clearHeaderRegionOverlay();
+
+                const headerSummaryEl = document.getElementById('headerSelectionSummary');
+                if (headerSummaryEl) headerSummaryEl.textContent = 'No header captured. Curve config will use defaults.';
+
+                // Show header selection controls now that we have a cropped panel
+                const headerSection = document.getElementById('headerSelectionSection');
+                if (headerSection) headerSection.style.display = 'block';
+                headerCaptureEnabled = true;
+                updateHeaderCaptureState();
+
                 showStatus('✂️ Cropped to working panel. All work now uses this shorter TIFF.', 'success');
             } catch (err) {
                 showStatus(`Crop failed: ${err.message}`, 'error');
