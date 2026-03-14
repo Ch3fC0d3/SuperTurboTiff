@@ -3266,11 +3266,12 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
         """Refine based on local curvature analysis to catch missed peaks"""
         h, w = prob_map.shape
         xs_refined = xs.copy()
+        curv_conf = np.ones(h, dtype=np.float32)
         
         # Calculate curvature using second derivative
         valid_mask = np.isfinite(xs)
         if np.sum(valid_mask) < 5:
-            return xs, np.zeros(h)
+            return xs_refined, curv_conf
         
         # Fill NaNs for curvature calculation
         xs_smooth = xs.copy()
@@ -3308,7 +3309,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                 if local_max_val > current_val * 1.05:  # 5% improvement threshold (Medium Greedy)
                     xs_refined[y] = start + local_max_idx
         
-        return xs_refined
+        return xs_refined, curv_conf
 
     def ensure_peak_crests(xs, conf, prob_map, peaks, hot_side=None, y_merge_window=3):
         """Ensure each vertical GR peak cluster has at least one crest sample.
@@ -3533,10 +3534,10 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     xs_refined, subpixel_conf = refine_subpixel_parabola(curve_mask, xs_fused, prob)
     
     # Final curvature-based refinement for any remaining missed peaks
-    xs_final = curvature_based_refinement(xs_refined, prob, curve_type)
+    xs_final, curv_conf = curvature_based_refinement(xs_refined, prob, curve_type)
     
-    # Update confidence with sub-pixel accuracy
-    confidence = confidence * subpixel_conf
+    # Update confidence with sub-pixel and curvature-based accuracy
+    confidence = confidence * subpixel_conf * curv_conf
     
     # Adaptive smoothing based on local curvature
     # Skip for GR logs to preserve sharp peaks - they need to be raw to catch single-pixel spikes
