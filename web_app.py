@@ -3270,7 +3270,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
         # Calculate curvature using second derivative
         valid_mask = np.isfinite(xs)
         if np.sum(valid_mask) < 5:
-            return xs, np.zeros(h)
+            return xs
         
         # Fill NaNs for curvature calculation
         xs_smooth = xs.copy()
