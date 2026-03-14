@@ -3429,27 +3429,16 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
         valid_indices = []
         valid_xs = []
         valid_confs = []
-        valid_scales = []
+        cand_scales = []  # accumulator for per-candidate scale values (renamed to avoid shadowing outer valid_scales)
         
-        for i, (xs, conf, scale) in enumerate(zip(all_xs, all_confs, valid_scales)):
-            if xs is not None and y < xs.size and np.isfinite(xs[y]):
-                x_int = int(round(xs[y]))
+        for i, (xs_s, conf_s, scale) in enumerate(zip(all_xs, all_confs, valid_scales)):
+            if xs_s is not None and y < xs_s.size and np.isfinite(xs_s[y]):
+                x_int = int(round(xs_s[y]))
                 if 0 <= x_int < w:
-                    # Enhanced peak-aware weighting
-                    if curve_type.upper() == "GR":
-                        if is_near_peak(y, peaks):
-                            # Aggressive peak detection near known peaks
-                            weight = conf[y] * (scale ** 2.5)  # Stronger fine scale preference
-                        else:
-                            # Standard weighting away from peaks
-                            weight = conf[y] * scale
-                    else:
-                        weight = conf[y] * scale
-                    
                     valid_indices.append(i)
-                    valid_xs.append(xs[y])
-                    valid_confs.append(conf[y])
-                    valid_scales.append(scale)
+                    valid_xs.append(xs_s[y])
+                    valid_confs.append(conf_s[y])
+                    cand_scales.append(scale)
         
         if valid_xs:
             # Fusion strategy
@@ -3471,15 +3460,14 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                     xs_fused[y] = best_x
                     confidence[y] = best_val
                 else:
-                    # Fallback to weighted average if everything is very weak
-                    weights = np.array(valid_confs) * np.array(valid_scales)
+                    weights = np.array(valid_confs) * np.array(cand_scales)
                     if weights.sum() > 0:
                         weights = weights / weights.sum()
                         xs_fused[y] = float(np.sum(np.array(valid_xs) * weights))
                         confidence[y] = float(np.sum(np.array(valid_confs) * weights))
             else:
                 # Original weighted-average fusion for smoother curves
-                weights = np.array(valid_confs) * np.array(valid_scales)
+                weights = np.array(valid_confs) * np.array(cand_scales)
                 if weights.sum() > 0:
                     weights = weights / weights.sum()
                     xs_fused[y] = float(np.sum(np.array(valid_xs) * weights))
