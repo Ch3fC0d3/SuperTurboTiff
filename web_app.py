@@ -6713,6 +6713,14 @@ def digitize():
         # and centerline boost that works well
         mask = compute_prob_map(roi, mode=mode, ui_filters=preview_filters)
 
+        if mode not in {"green", "red", "blue", "auto", "cyan", "magenta", "yellow", "orange", "purple"}:
+            _pm = mask.astype(np.float32) / 255.0
+            _pct_nonzero = float(np.mean(_pm > 0.01) * 100)
+            _pm_max = float(_pm.max())
+            _pm_mean = float(_pm.mean())
+            print(f"[DEBUG black] curve={name} prob_map: shape={mask.shape} max={_pm_max:.3f} mean={_pm_mean:.4f} pct_nonzero={_pct_nonzero:.1f}%")
+            curve_warnings.append({'curve': name, 'debug': f'prob_map max={_pm_max:.3f} mean={_pm_mean:.4f} nonzero={_pct_nonzero:.1f}%'})
+
         # NEW: Use DP-based smooth path tracing with plausibility checks
         curve_type = c.get('type', 'GR')  # Get curve type for plausibility
 
@@ -6995,7 +7003,11 @@ def digitize():
                 smooth_lambda=dp_smooth_lambda,
                 hot_side=hot_side,
             )
-            
+            _valid_after_trace = int(np.sum(~np.isnan(xs)))
+            _std_after_trace = float(np.nanstd(xs)) if _valid_after_trace > 0 else 0.0
+            print(f"[DEBUG black] curve={name} after trace: valid_rows={_valid_after_trace}/{xs.size} std={_std_after_trace:.2f} width={mask.shape[1]}")
+            curve_warnings.append({'curve': name, 'debug': f'after_trace valid={_valid_after_trace}/{xs.size} std={_std_after_trace:.2f}px'})
+
             # Optional final smoothing for non-GR curves (GR needs to stay jagged)
             if curve_type.upper() != "GR":
                  xs = remove_outliers_and_smooth(xs, window=curve_smooth_window, outlier_threshold=outlier_threshold)
@@ -7098,10 +7110,13 @@ def digitize():
 
             if xs_valid.size > 0:
                 std_x = float(np.nanstd(xs_valid))
+                std_threshold = max(1.0, 0.005 * float(width_px))
+                print(f"[DEBUG black] curve={name} std_x={std_x:.2f} threshold={std_threshold:.2f} width={width_px} -> {'WIPED' if std_x < std_threshold else 'OK'}")
+                curve_warnings.append({'curve': name, 'debug': f'std_check std={std_x:.2f} threshold={std_threshold:.2f} -> {"WIPED" if std_x < std_threshold else "OK"}'})
                 # Only reject near-perfectly-vertical traces (rail lock-on).
                 # Use a very tight threshold: 0.5% of track width or 1.0px minimum.
                 # Slow curves like DTC/RHOB can legitimately have low std.
-                if std_x < max(1.0, 0.005 * float(width_px)):
+                if std_x < std_threshold:
                     xs[:] = np.nan
 
         vals = np.full(xs.shape, np.nan, dtype=np.float32)
