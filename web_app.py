@@ -7492,7 +7492,7 @@ def refine_edit():
             snap_threshold = 1.05
 
         if is_crop:
-        # Image is already cropped to the track/ROI
+            # Image is already cropped to the track/ROI
             track_crop = img
             # If editRelativeY is provided, use it; otherwise assume center
             if edit_relative_y >= 0:
