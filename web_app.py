@@ -2183,6 +2183,20 @@ def trace_curve_with_dp(
     if skeleton_score is not None:
         live_score = np.maximum(live_score, 0.55 * skeleton_score + 0.05 * bin_mask.astype(np.float32))
     live_score = np.clip(live_score, eps, 1.0)
+
+    # Blend in distance transform so the DP prefers the *center* of thick
+    # ink strokes over their edges.  A pixel at the stroke center gets a
+    # bonus proportional to its distance from the nearest background pixel.
+    # 70% original score + 30% centredness keeps the colour/intensity
+    # signal dominant while removing the edge-of-stroke bias.
+    if bin_mask.any():
+        _dist = cv2.distanceTransform(bin_mask.astype(np.uint8), cv2.DIST_L2, 3)
+        _d_max = _dist.max()
+        if _d_max > 0:
+            _dist_norm = (_dist / _d_max).astype(np.float32)
+            live_score = live_score * (0.7 + 0.3 * _dist_norm)
+            live_score = np.clip(live_score, eps, 1.0)
+
     cost = -np.log(live_score)
 
     # Soft rail penalty: down-weight columns that stay on for many rows, without banning them
