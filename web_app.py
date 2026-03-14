@@ -3530,7 +3530,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                 confidence[y] = float(local_val)
 
     # Apply sub-pixel refinement for maximum accuracy
-    xs_refined, subpixel_conf = refine_subpixel_parabola(mask, xs_fused, prob)
+    xs_refined, subpixel_conf = refine_subpixel_parabola(curve_mask, xs_fused, prob)
     
     # Final curvature-based refinement for any remaining missed peaks
     xs_final = curvature_based_refinement(xs_refined, prob, curve_type)

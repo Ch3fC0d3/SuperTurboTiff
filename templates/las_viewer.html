@@ -245,9 +245,16 @@
         .placeholder-msg p { font-size: 1em; }
         .placeholder-msg small { font-size: 0.82em; color: #adb5bd; }
 
-        /* Fix wellioviz SVG text */
+        /* Fix wellioviz SVG text and hide unwanted header elements */
         #well-plot text { fill: #333 !important; }
         #well-plot .tick text { font-size: 10px !important; }
+        /* Force hide the header group or title rects if wellioviz generates them */
+        #well-plot .header-component, 
+        #well-plot .title-box,
+        #well-plot g[class*="header"],
+        #well-plot rect[fill*="url"] { 
+            display: none !important; 
+        }
 
         @media (max-width: 600px) {
             .header { flex-direction: column; gap: 12px; text-align: center; }
@@ -544,9 +551,9 @@ function getSyncState() {
 
 // Helper: Convert Image Scroll Y -> Depth
 function imgScrollToDepth(scrollTop, containerH, state) {
-    // Center of viewport
-    const centerY_screen = scrollTop + containerH / 2;
-    const centerY_original = centerY_screen / state.scale;
+    // Top-Locked Sync (align top edge of view)
+    const y_screen = scrollTop;
+    const y_original = y_screen / state.scale;
     
     const pxRange = state.imgBotPx - state.imgTopPx;
     const depthRange = state.imgBotD - state.imgTopD;
@@ -554,7 +561,7 @@ function imgScrollToDepth(scrollTop, containerH, state) {
     if (Math.abs(pxRange) < 0.1) return state.imgTopD;
     
     // depth = topD + (y_orig - topPx) * (depthRange / pxRange)
-    const depth = state.imgTopD + (centerY_original - state.imgTopPx) * (depthRange / pxRange);
+    const depth = state.imgTopD + (y_original - state.imgTopPx) * (depthRange / pxRange);
     return depth;
 }
 
@@ -568,31 +575,30 @@ function depthToImgScroll(depth, containerH, state) {
     const y_original = state.imgTopPx + (depth - state.imgTopD) * (pxRange / depthRange);
     const y_screen = y_original * state.scale;
     
-    return y_screen - containerH / 2;
+    return y_screen;
 }
 
 // Helper: Convert LAS Scroll Y -> Depth
 function lasScrollToDepth(scrollTop, containerH, state) {
-    const centerY = scrollTop + containerH / 2;
-    // LAS Plot: y = (depth - top) * pxPerUnit + headerOffset + manualOffset
-    // depth = top + (y - headerOffset - manualOffset) / pxPerUnit
+    // Top-Locked Sync
+    const y_plot = scrollTop;
     
     // Header removed, padding removed. 0px = start.
     const headerOffset = 0; 
     const effectiveOffset = headerOffset + state.offset;
     
-    const depth = state.lasTop + (centerY - effectiveOffset) / state.pxPerUnitLas;
+    const depth = state.lasTop + (y_plot - effectiveOffset) / state.pxPerUnitLas;
     return depth;
 }
 
 // Helper: Convert Depth -> LAS Scroll Y
 function depthToLasScroll(depth, containerH, state) {
-    // Header removed, padding removed. 0px = start.
+    // Top-Locked Sync
     const headerOffset = 0;
     const effectiveOffset = headerOffset + state.offset;
     
     const y_plot = (depth - state.lasTop) * state.pxPerUnitLas + effectiveOffset;
-    return y_plot - containerH / 2;
+    return y_plot;
 }
 
 
