@@ -1195,7 +1195,7 @@
                                     <label>Curve Configuration</label>
                                     <div class="curve-actions">
                                         <label for="numCurves">Number of Curves (max 6)</label>
-                                        <input type="number" id="numCurves" value="3" min="1" max="6">
+                                        <input type="number" id="numCurves" value="0" min="0" max="6">
                                         
                                         <label for="snapThreshold" style="margin-top: 8px;">Snap Threshold (1.2 = 20% brighter)</label>
                                         <input type="number" id="snapThreshold" value="1.20" step="0.05" min="0.1" max="5.0" title="Lower (<1.0) = Greedier, Higher (>1.0) = Stricter">
@@ -4300,8 +4300,8 @@
         if (numCurvesInputEl) {
             const clampAndRegenerateCurves = () => {
                 let val = parseInt(numCurvesInputEl.value);
-                if (!Number.isFinite(val)) val = 1;
-                val = Math.max(1, Math.min(6, val));
+                if (!Number.isFinite(val)) val = 0;
+                val = Math.max(0, Math.min(6, val));
                 numCurvesInputEl.value = val;
                 // Sync toolbar and header
                 if (numCurvesToolbarEl) numCurvesToolbarEl.value = val;
@@ -4318,9 +4318,9 @@
                 if (!Number.isFinite(val)) val = 0;
                 val = Math.max(0, Math.min(6, val));
                 numCurvesToolbarEl.value = val;
-                // Sync main selector and header (clamp to min 1 for main)
+                // Sync main selector and header
                 if (numCurvesHeaderEl) numCurvesHeaderEl.value = val;
-                if (numCurvesInputEl && val > 0) {
+                if (numCurvesInputEl) {
                     numCurvesInputEl.value = val;
                     generateCurveInputs();
                 }
@@ -4335,9 +4335,9 @@
                 if (!Number.isFinite(val)) val = 0;
                 val = Math.max(0, Math.min(6, val));
                 numCurvesHeaderEl.value = val;
-                // Sync main selector and toolbar (clamp to min 1 for main)
+                // Sync main selector and toolbar
                 if (numCurvesToolbarEl) numCurvesToolbarEl.value = val;
-                if (numCurvesInputEl && val > 0) {
+                if (numCurvesInputEl) {
                     numCurvesInputEl.value = val;
                     generateCurveInputs();
                 }
