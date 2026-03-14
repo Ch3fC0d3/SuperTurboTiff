@@ -2188,7 +2188,7 @@ def trace_curve_with_dp(
     # Soft rail penalty: down-weight columns that stay on for many rows, without banning them
     if h >= 4 and w >= 2:
         col_frac = bin_mask.mean(axis=0)
-        rail_mask = col_frac > 0.25
+        rail_mask = col_frac > 0.60
         # Expand to runs of length ≥3 using a 3-wide moving window
         rail_run = np.convolve(rail_mask.astype(np.float32), np.ones(3, dtype=np.float32), mode='same') >= 2.5
         rail_weight = 15.0  # keep modest per guidance (5–30)
@@ -2208,15 +2208,20 @@ def trace_curve_with_dp(
         side_penalty = side_lambda * dist
         cost += side_penalty[np.newaxis, :]
     
-    # Add plausibility penalty (reduced from 10.0 to 2.0 to be less aggressive)
+    # Add plausibility penalty only when the display scale is in physical units.
+    # If scale_min/scale_max don't overlap the known physical range at all (e.g.
+    # display range 0-150 vs RHOB physical 1.5-3.5 g/cc), skip the penalty to
+    # avoid penalising every column and forcing the DP toward one edge.
     if curve_type.upper() in plausible_ranges:
         pmin, pmax = plausible_ranges[curve_type.upper()]
-        for x in range(w):
-            # Map x to value
-            value = scale_min + (x / max(1, w - 1)) * (scale_max - scale_min)
-            if value < pmin or value > pmax:
-                # Penalize implausible values (but not too harshly)
-                cost[:, x] += 1.0
+        scale_lo = min(scale_min, scale_max)
+        scale_hi = max(scale_min, scale_max)
+        # Only apply if the display range meaningfully overlaps the physical range
+        if scale_lo <= pmax and scale_hi >= pmin:
+            for x in range(w):
+                value = scale_min + (x / max(1, w - 1)) * (scale_max - scale_min)
+                if value < pmin or value > pmax:
+                    cost[:, x] += 1.0
     
     # Run optimized DP (Forward Pass)
     xs_fwd, conf_fwd = fast_tracer.run_viterbi(
@@ -6733,7 +6738,7 @@ def digitize():
         dp_smooth_lambda = 0.001 if mode in colored_modes else 0.5
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
         dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
-        max_step_dp = 200 if mode in colored_modes else 3  # Allow unlimited movement to follow gamma ray spikes
+        max_step_dp = 200 if mode in colored_modes else 10  # Allow unlimited movement to follow gamma ray spikes
 
         # Optional pixel-perfect skeleton tracer (preserve every bump)
         if ai_tracer.is_available() and trace_mode == "ai_tracer":
