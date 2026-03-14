@@ -2223,16 +2223,20 @@ def trace_curve_with_dp(
                 if value < pmin or value > pmax:
                     cost[:, x] += 1.0
     
-    # Horizontal grid line suppression: rows where ≥60% of columns are active
-    # are horizontal grid lines. Make their cost uniform so the DP has no
-    # horizontal gradient and stays at the previous position via smoothness penalty.
-    if h >= 4 and w >= 2:
-        row_frac_bin = bin_mask.mean(axis=1)
-        horiz_mask = row_frac_bin > 0.60
+    # Horizontal grid line suppression using morphological opening.
+    # A true grid line has many *consecutive* pixels across the row; the actual
+    # curve only spans ~1-5 pixels per row and won't survive a wide horizontal
+    # opening. This is more discriminative than a raw row-fraction threshold.
+    if h >= 4 and w >= 8:
+        horiz_kernel_w = max(5, w // 4)
+        horiz_kern = cv2.getStructuringElement(cv2.MORPH_RECT, (horiz_kernel_w, 1))
+        horiz_detected = cv2.morphologyEx(bin_mask.astype(np.uint8), cv2.MORPH_OPEN, horiz_kern)
+        horiz_row_frac = horiz_detected.mean(axis=1)
+        horiz_mask = horiz_row_frac > 0.30  # >30% of row survived wide-kernel opening → true grid line
         if np.any(horiz_mask):
-            uniform_cost = float(-np.log(1e-3))  # high uniform cost for all columns
+            uniform_cost = float(-np.log(1e-3))
             cost[horiz_mask, :] = uniform_cost
-            prob[horiz_mask, :] = 1e-3  # low confidence for grid line rows
+            prob[horiz_mask, :] = 1e-3
 
     # Run optimized DP (Forward Pass)
     xs_fwd, conf_fwd = fast_tracer.run_viterbi(
