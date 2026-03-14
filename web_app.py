@@ -1903,15 +1903,19 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     if h >= 4 and w >= 2:
         col_on_frac = (color_score > 0).mean(axis=0)
         
-        # Detect rail-like columns (on for many rows)
-        rail_cols = col_on_frac > 0.35  # Threshold for grid line detection
+        # For black mode, slow-varying curves (DTC, RHOB) can occupy one column for
+        # 40-70% of the image height — use a high threshold to only kill near-solid
+        # gridline/border columns (~90%+ occupancy). Colored modes can stay at 0.35
+        # since their color_score is already hue-gated and gridlines are unsaturated.
+        col_rail_threshold = 0.80 if mode not in colored_modes else 0.35
+        rail_cols = col_on_frac > col_rail_threshold
         if np.any(rail_cols):
             color_score[:, rail_cols] *= 0.005  # Almost eliminate vertical rails
             edge_score[:, rail_cols] *= 0.005
 
         if mode not in colored_modes:
             row_on_frac = (color_score > 0).mean(axis=1)
-            rail_rows = row_on_frac > 0.35
+            rail_rows = row_on_frac > 0.80
             if np.any(rail_rows):
                 color_score[rail_rows, :] *= 0.02
                 edge_score[rail_rows, :] *= 0.02
