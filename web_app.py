@@ -2223,6 +2223,17 @@ def trace_curve_with_dp(
                 if value < pmin or value > pmax:
                     cost[:, x] += 1.0
     
+    # Horizontal grid line suppression: rows where ≥60% of columns are active
+    # are horizontal grid lines. Make their cost uniform so the DP has no
+    # horizontal gradient and stays at the previous position via smoothness penalty.
+    if h >= 4 and w >= 2:
+        row_frac_bin = bin_mask.mean(axis=1)
+        horiz_mask = row_frac_bin > 0.60
+        if np.any(horiz_mask):
+            uniform_cost = float(-np.log(1e-3))  # high uniform cost for all columns
+            cost[horiz_mask, :] = uniform_cost
+            prob[horiz_mask, :] = 1e-3  # low confidence for grid line rows
+
     # Run optimized DP (Forward Pass)
     xs_fwd, conf_fwd = fast_tracer.run_viterbi(
         cost.astype(np.float32), 
