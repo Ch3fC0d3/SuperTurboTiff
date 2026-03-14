@@ -1008,6 +1008,11 @@
                                 <button class="tool-btn" id="btnFilterInvert" title="Invert Colors" onclick="toggleFilter('invert')">🌗</button>
                                 <button class="tool-btn" id="btnFilterContrast" title="High Contrast" onclick="toggleFilter('contrast')">◐</button>
                             </div>
+                            <div class="toolbar-divider"></div>
+                            <div class="toolbar-group" style="display: flex; align-items: center; padding: 0 8px; gap: 6px;">
+                                <label style="font-size: 0.75em; color: #333; white-space: nowrap;">Curves:</label>
+                                <input type="number" id="numCurvesToolbar" value="0" min="0" max="6" style="width: 45px; padding: 2px 4px; font-size: 0.75em; border: 1px solid #ccc; border-radius: 3px;" title="Number of Curves (max 6)">
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -4260,16 +4265,36 @@
         });
 
         const numCurvesInputEl = document.getElementById('numCurves');
+        const numCurvesToolbarEl = document.getElementById('numCurvesToolbar');
+        
         if (numCurvesInputEl) {
             const clampAndRegenerateCurves = () => {
                 let val = parseInt(numCurvesInputEl.value);
                 if (!Number.isFinite(val)) val = 1;
                 val = Math.max(1, Math.min(6, val));
                 numCurvesInputEl.value = val;
+                // Sync toolbar
+                if (numCurvesToolbarEl) numCurvesToolbarEl.value = val;
                 generateCurveInputs();
             };
             numCurvesInputEl.addEventListener('change', clampAndRegenerateCurves);
             numCurvesInputEl.addEventListener('input', clampAndRegenerateCurves);
+        }
+        
+        if (numCurvesToolbarEl) {
+            const toolbarCurveChange = () => {
+                let val = parseInt(numCurvesToolbarEl.value);
+                if (!Number.isFinite(val)) val = 0;
+                val = Math.max(0, Math.min(6, val));
+                numCurvesToolbarEl.value = val;
+                // Sync main selector (clamp to min 1 for main)
+                if (numCurvesInputEl && val > 0) {
+                    numCurvesInputEl.value = val;
+                    generateCurveInputs();
+                }
+            };
+            numCurvesToolbarEl.addEventListener('change', toolbarCurveChange);
+            numCurvesToolbarEl.addEventListener('input', toolbarCurveChange);
         }
 
         // Depth anchor & panel/region interaction on image
