@@ -64,6 +64,31 @@
         .las-viewer-btn:hover {
             background: rgba(255, 255, 255, 0.3);
         }
+        .header-curve-selector {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 8px 15px;
+            border-radius: 5px;
+        }
+        .header-curve-selector label {
+            color: white;
+            font-weight: bold;
+            font-size: 0.9em;
+            margin: 0;
+        }
+        .header-curve-selector input {
+            width: 50px;
+            padding: 4px 6px;
+            font-size: 0.9em;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.9);
+        }
         .content { padding: 30px; }
         .step {
             background: #f8f9fa;
@@ -854,6 +879,10 @@
 
     <div class="container">
         <div class="header">
+            <div class="header-curve-selector">
+                <label for="numCurvesHeader">Curves:</label>
+                <input type="number" id="numCurvesHeader" value="0" min="0" max="6" title="Number of Curves (max 6)">
+            </div>
             <h1>TIFF→LAS Digitizer</h1>
             <p>Convert legacy well log images to standard LAS files using Computer Vision</p>
             <a href="/las_viewer" class="las-viewer-btn" onclick="openLasViewerWithData(event)">📈 LAS Viewer</a>
@@ -4266,6 +4295,7 @@
 
         const numCurvesInputEl = document.getElementById('numCurves');
         const numCurvesToolbarEl = document.getElementById('numCurvesToolbar');
+        const numCurvesHeaderEl = document.getElementById('numCurvesHeader');
         
         if (numCurvesInputEl) {
             const clampAndRegenerateCurves = () => {
@@ -4273,8 +4303,9 @@
                 if (!Number.isFinite(val)) val = 1;
                 val = Math.max(1, Math.min(6, val));
                 numCurvesInputEl.value = val;
-                // Sync toolbar
+                // Sync toolbar and header
                 if (numCurvesToolbarEl) numCurvesToolbarEl.value = val;
+                if (numCurvesHeaderEl) numCurvesHeaderEl.value = val;
                 generateCurveInputs();
             };
             numCurvesInputEl.addEventListener('change', clampAndRegenerateCurves);
@@ -4287,7 +4318,8 @@
                 if (!Number.isFinite(val)) val = 0;
                 val = Math.max(0, Math.min(6, val));
                 numCurvesToolbarEl.value = val;
-                // Sync main selector (clamp to min 1 for main)
+                // Sync main selector and header (clamp to min 1 for main)
+                if (numCurvesHeaderEl) numCurvesHeaderEl.value = val;
                 if (numCurvesInputEl && val > 0) {
                     numCurvesInputEl.value = val;
                     generateCurveInputs();
@@ -4295,6 +4327,23 @@
             };
             numCurvesToolbarEl.addEventListener('change', toolbarCurveChange);
             numCurvesToolbarEl.addEventListener('input', toolbarCurveChange);
+        }
+        
+        if (numCurvesHeaderEl) {
+            const headerCurveChange = () => {
+                let val = parseInt(numCurvesHeaderEl.value);
+                if (!Number.isFinite(val)) val = 0;
+                val = Math.max(0, Math.min(6, val));
+                numCurvesHeaderEl.value = val;
+                // Sync main selector and toolbar (clamp to min 1 for main)
+                if (numCurvesToolbarEl) numCurvesToolbarEl.value = val;
+                if (numCurvesInputEl && val > 0) {
+                    numCurvesInputEl.value = val;
+                    generateCurveInputs();
+                }
+            };
+            numCurvesHeaderEl.addEventListener('change', headerCurveChange);
+            numCurvesHeaderEl.addEventListener('input', headerCurveChange);
         }
 
         // Depth anchor & panel/region interaction on image
