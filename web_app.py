@@ -3605,45 +3605,55 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     return xs_final, confidence
 
 
-def refine_subpixel_parabola(mask, xs):
+def refine_subpixel_parabola(mask, xs, prob_map=None):
     """
     Refine positions using parabolic sub-pixel interpolation.
     Given peak pixel x, fits parabola to (x-1), x, (x+1) to find true max.
     
     Formula: offset = 0.5 * (left - right) / (left - 2*center + right)
-    """
-    if mask is None or xs is None:
-        return xs
-        
-    h, w = mask.shape
-    prob = mask.astype(np.float32) / 255.0
-    xs_refined = xs.copy()
     
+    Returns:
+        (xs_refined, subpixel_conf): refined positions and per-row confidence
+    """
+    ones = np.ones(len(xs), dtype=np.float32)
+    if mask is None or xs is None:
+        return xs, ones
+
+    h, w = mask.shape
+    if prob_map is not None and prob_map.shape == mask.shape:
+        prob = prob_map.astype(np.float32)
+        if prob.max() > 1.0:
+            prob = prob / 255.0
+    else:
+        prob = mask.astype(np.float32) / 255.0
+
+    xs_refined = xs.copy()
+    subpixel_conf = np.ones(h, dtype=np.float32)
+
     for y in range(h):
         x = xs_refined[y]
         if not np.isfinite(x):
+            subpixel_conf[y] = 0.0
             continue
-            
+
         ix = int(round(x))
         if ix < 1 or ix >= w - 1:
             continue
-            
-        # Get values of 3 neighbors
+
         v_left = prob[y, ix - 1]
         v_curr = prob[y, ix]
         v_right = prob[y, ix + 1]
-        
-        # Only fit if current is indeed a local peak (or plateau)
+
         if v_curr >= v_left and v_curr >= v_right:
             denominator = v_left - 2 * v_curr + v_right
-            # Avoid division by zero (flat region)
             if abs(denominator) > 1e-4:
                 offset = 0.5 * (v_left - v_right) / denominator
-                # Clamp offset to [-0.5, 0.5] to prevent instability
                 offset = max(-0.5, min(0.5, offset))
                 xs_refined[y] = float(ix) + offset
-                
-    return xs_refined
+
+        subpixel_conf[y] = float(v_curr)
+
+    return xs_refined, subpixel_conf
 
 
 def refine_trace_gradient_ascent(mask, xs, iterations=5):
