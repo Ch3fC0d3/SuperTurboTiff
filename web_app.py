@@ -1185,12 +1185,12 @@ def preprocess_curve_track(roi, mode="black"):
         edge_mask[-edge_margin:] = True
 
         # Strong spines near the left/right edges (likely track borders)
-        edge_spines = (col_fraction > 0.5) & edge_mask
+        # Use 0.90 threshold: true borders span ~100% of height; slow curves (RHOB/DTC)
+        # can occupy 40-80% of one column and must not be removed.
+        edge_spines = (col_fraction > 0.90) & edge_mask
 
-        # Very strong vertical spines anywhere inside the band. Requiring a
-        # higher occupancy threshold here helps avoid deleting the true curve,
-        # which rarely stays in exactly one column for most of the depth.
-        interior_spines = (col_fraction > 0.7) & ~edge_mask
+        # Very strong vertical spines anywhere inside the band.
+        interior_spines = (col_fraction > 0.90) & ~edge_mask
 
         spine_cols = edge_spines | interior_spines
         if np.any(spine_cols):
@@ -7098,7 +7098,10 @@ def digitize():
 
             if xs_valid.size > 0:
                 std_x = float(np.nanstd(xs_valid))
-                if std_x < max(1.5, 0.03 * float(width_px)):
+                # Only reject near-perfectly-vertical traces (rail lock-on).
+                # Use a very tight threshold: 0.5% of track width or 1.0px minimum.
+                # Slow curves like DTC/RHOB can legitimately have low std.
+                if std_x < max(1.0, 0.005 * float(width_px)):
                     xs[:] = np.nan
 
         vals = np.full(xs.shape, np.nan, dtype=np.float32)
