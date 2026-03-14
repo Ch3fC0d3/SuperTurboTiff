@@ -3265,7 +3265,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
         
         h, w = prob_map.shape
         xs_refined = xs.copy()
-        subpixel_conf = np.zeros_like(xs)
+        subpixel_conf = np.ones(h, dtype=np.float32)
         
         for y in range(h):
             if not np.isfinite(xs[y]):
@@ -3289,13 +3289,10 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                 # Only apply if offset is reasonable (< 1 pixel)
                 if abs(offset) < 1.0:
                     xs_refined[y] = x + offset
-                    subpixel_conf[y] = 1.0 - abs(offset)  # Confidence decreases with offset
                 else:
                     xs_refined[y] = xs[y]
-                    subpixel_conf[y] = 0.5
             else:
                 xs_refined[y] = xs[y]
-                subpixel_conf[y] = 0.3
         
         return xs_refined, subpixel_conf
     
@@ -3305,6 +3302,11 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
         h, w = prob_map.shape
         xs_refined = xs.copy()
         curv_conf = np.ones(h, dtype=np.float32)
+        # Only meaningful for jagged GR logs; for smooth curves (RHOB, DTC, etc.)
+        # the ±5px snap with a 5% threshold causes hundreds of random jumps on a
+        # noisy prob_map, making the trace more erratic than it started.
+        if curve_type.upper() != "GR":
+            return xs_refined, curv_conf
         # Calculate curvature using second derivative
         valid_mask = np.isfinite(xs)
         if np.sum(valid_mask) < 5:
