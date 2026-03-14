@@ -2228,7 +2228,7 @@ def trace_curve_with_dp(
     # horizontal gradient and stays at the previous position via smoothness penalty.
     if h >= 4 and w >= 2:
         row_frac_bin = bin_mask.mean(axis=1)
-        horiz_mask = row_frac_bin > 0.60
+        horiz_mask = row_frac_bin > 0.45
         if np.any(horiz_mask):
             uniform_cost = float(-np.log(1e-3))  # high uniform cost for all columns
             cost[horiz_mask, :] = uniform_cost
@@ -6746,7 +6746,7 @@ def digitize():
             # Use user threshold for non-colored modes too (default was 1.1)
             refine_kwargs = {"dominance_ratio": snap_threshold}
         # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
-        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.5
+        dp_smooth_lambda = 0.001 if mode in colored_modes else 2.0
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
         dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
         max_step_dp = 200 if mode in colored_modes else 10  # Allow unlimited movement to follow gamma ray spikes
