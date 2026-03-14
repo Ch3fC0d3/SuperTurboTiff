@@ -1034,13 +1034,13 @@
                             <p style="color: #666; font-size: 0.85em; margin-top: 6px;">
                                 Tip: Use the <strong>Top/Bottom depth</strong> fields below and the <strong>Top/Bottom pixel</strong> fields in Step 3 to align the depth guidelines with the printed scale; the mouse readout updates from those values.
                             </p>
-                            <div class="form-group" id="headerSelectionSection" style="margin-top: 8px; max-width: 420px;">
+                            <div class="form-group" style="margin-top: 8px; max-width: 420px;">
                                 <label>Header / key (optional)</label>
                                 <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px;">
-                                    <button type="button" class="btn" id="btnCaptureHeader" style="padding: 6px 12px; font-size: 0.85em;" onclick="beginHeaderSelection()">Capture header/key from image</button>
-                                    <button type="button" class="btn" id="btnClearHeader" style="padding: 6px 12px; font-size: 0.85em;" onclick="clearHeaderSelection()">Clear header/key</button>
+                                    <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="beginHeaderSelection()">Capture header/key from image</button>
+                                    <button type="button" class="btn" style="padding: 6px 12px; font-size: 0.85em;" onclick="clearHeaderSelection()">Clear header/key</button>
                                 </div>
-                                <div class="hint-text" id="headerSelectionSummary">No header captured. Crop to your working panel, then capture the header if needed.</div>
+                                <div class="hint-text" id="headerSelectionSummary">No header captured. Curve config will use defaults.</div>
                                 <div class="hint-text"><strong>To capture details:</strong> Click and drag a box over the <strong>entire header</strong> (including Company/Well info AND scale labels).</div>
                                 
                                 <!-- Header Metadata Inputs -->
@@ -1282,7 +1282,6 @@
         let headerRegion = null; // { left_px, right_px, top_px, bottom_px }
         let headerTracks = null; // array of tracks from header capture
         let headerMetadata = null; // well/log metadata parsed from header OCR
-        let headerCaptureEnabled = false; // gated until crop
         let lastDigitizedDepth = null;   // array of depths from last /digitize
         let lastDigitizedCurves = null;  // { curveId: { unit, values[] } }
         let lastLasContent = null;       // LAS text from last digitization
@@ -2127,6 +2126,10 @@
         }
 
         function clearHeaderSelection() {
+            if (editMode) {
+                showStatus('Turn off manual curve edit mode before clearing the header selection.', 'info');
+                return;
+            }
             headerSelectMode = false;
             headerRegionStart = null;
             headerRegionDrag = false;
@@ -2138,56 +2141,7 @@
             if (summaryEl) {
                 summaryEl.textContent = 'No header captured. Curve config will use defaults.';
             }
-            renderHeaderRegions();
-        }
-
-        function setHeaderMetadata(meta, source = '') {
-            if (!meta || typeof meta !== 'object') {
-                headerMetadata = null;
-            } else {
-                headerMetadata = { ...meta };
-            }
-
-            const setIf = (id, val) => {
-                const el = document.getElementById(id);
-                if (el && val && typeof val === 'string' && val.trim()) {
-                    el.value = val.trim();
-                }
-            };
-
-            if (headerMetadata) {
-                setIf('headerWell', headerMetadata.well);
-                setIf('headerComp', headerMetadata.comp || headerMetadata.company);
-                setIf('headerApi', headerMetadata.api);
-                setIf('headerDate', headerMetadata.date);
-                setIf('headerFld', headerMetadata.fld || headerMetadata.field);
-                setIf('headerLoc', headerMetadata.loc || headerMetadata.location);
-                setIf('headerCnty', headerMetadata.county);
-                setIf('headerState', headerMetadata.state);
-                setIf('headerProv', headerMetadata.prov || headerMetadata.province);
-                setIf('headerSrvc', headerMetadata.srvc || headerMetadata.service || headerMetadata.service_company);
-            }
-
-            const summaryEl = document.getElementById('headerSelectionSummary');
-            if (summaryEl) {
-                if (headerMetadata) {
-                    const bits = [];
-                    if (headerMetadata.well) bits.push(`WELL=${headerMetadata.well}`);
-                    if (headerMetadata.comp || headerMetadata.company) bits.push(`COMP=${headerMetadata.comp || headerMetadata.company}`);
-                    if (headerMetadata.fld || headerMetadata.field) bits.push(`FLD=${headerMetadata.fld || headerMetadata.field}`);
-                    if (headerMetadata.state) bits.push(`STATE=${headerMetadata.state}`);
-                    summaryEl.textContent = `Header info captured${source ? ` via ${source}` : ''}. ${bits.join(' | ')}` || 'Header info captured.';
-                } else {
-                    summaryEl.textContent = 'No header captured. Curve config will use defaults.';
-                }
-            }
-        }
-
-        function updateHeaderCaptureState() {
-            const captureBtn = document.getElementById('btnCaptureHeader');
-            const clearBtn = document.getElementById('btnClearHeader');
-            if (captureBtn) captureBtn.disabled = !headerCaptureEnabled;
-            if (clearBtn) clearBtn.disabled = false;
+            showStatus('Cleared header/key selection.', 'info');
         }
 
         function updateSelectionSummary() {
@@ -2616,7 +2570,7 @@
                 if (!found || !found.entry || !Array.isArray(found.entry.values)) return;
                 const entry = found.entry;
 
-                ensureTracePointsHaveDepthIndex(curveId);
+                ensureTracePointsHaveDepthIndex(traceKey);
 
                 const nullVal = (typeof lastNullValue === 'number') ? lastNullValue : -999.25;
                 const newValues = new Array(entry.values.length).fill(nullVal);
@@ -3934,7 +3888,7 @@
                 if (candidateIdx != null && candidateIdx >= 0 && candidateIdx < pts.length && Array.isArray(pts[candidateIdx])) {
                     const y = pts[candidateIdx][1];
                     const depth = pixelToDepthFromConfig(y, depthCfg);
-                    if (Number.isFinite(depth)) {
+                    if (Number.isFinite(depth) && Array.isArray(lastDigitizedDepth)) {
                         depthIndex = findNearestDepthIndex(depth, lastDigitizedDepth);
                     }
                 }
@@ -4887,8 +4841,7 @@
 
                             const newVal = pixelToTrackValue(xNow, targetTrack);
                             if (Number.isFinite(newVal)) {
-                                const depthIdx = (Array.isArray(pts[pIdx]) && Number.isInteger(pts[pIdx][2])) ? pts[pIdx][2] : -1;
-                                if (depthIdx >= 0 && depthIdx < entry.values.length) entry.values[depthIdx] = newVal;
+                                entry.values[newDepthIdx] = newVal;
                             }
 
                             if (Number.isInteger(oldDepthIdx) && oldDepthIdx !== newDepthIdx && oldDepthIdx >= 0 && oldDepthIdx < entry.values.length) {
@@ -5070,7 +5023,7 @@
                             left_px: left,
                             right_px: right,
                             top_px: topPx,
-                            bottom_px: bottomPx,
+                            bottom_px: bottomPx
                         }
                     };
                     const resp = await fetch('/reanalyze_panel', {
@@ -5083,9 +5036,6 @@
                         if (data.success) {
                             ocrSuggestions = data.ocr_suggestions || ocrSuggestions;
                             detectedText = data.detected_text || detectedText;
-                            if (data.header_metadata) {
-                                setHeaderMetadata(data.header_metadata, 'panel-reanalyze');
-                            }
                             applyOcrSuggestions();
                             renderAiInsights();
                         }
@@ -5135,8 +5085,6 @@
             headerRegionDrag = false;
             headerRegion = null;
             headerTracks = null;
-            headerMetadata = null;
-            headerCaptureEnabled = false;
             detectedTracks = [];
             allTracks = [];
             ocrSuggestions = null;
@@ -5154,12 +5102,6 @@
             clearLabelOverlays();
             clearPhraseHighlight();
             clearDepthOverlays();
-
-            updateHeaderCaptureState();
-
-            // Hide header selection controls until crop
-            const headerSection = document.getElementById('headerSelectionSection');
-            if (headerSection) headerSection.style.display = 'none';
 
             const curvesContainer = document.getElementById('curvesContainer');
             if (curvesContainer) {
@@ -5470,8 +5412,26 @@
                 headerTracks = tracks;
 
                 // Store extracted header metadata (company, well, field, etc.) if provided
-                const meta = (data && data.header_metadata) ? data.header_metadata : null;
-                setHeaderMetadata(meta, 'header-capture');
+                headerMetadata = (data && data.header_metadata) ? data.header_metadata : null;
+
+                // Populate input fields if metadata exists
+                if (headerMetadata) {
+                    if (headerMetadata.well) document.getElementById('headerWell').value = headerMetadata.well;
+                    if (headerMetadata.comp) document.getElementById('headerComp').value = headerMetadata.comp;
+                    if (headerMetadata.company) document.getElementById('headerComp').value = headerMetadata.company;
+                    if (headerMetadata.api) document.getElementById('headerApi').value = headerMetadata.api;
+                    if (headerMetadata.date) document.getElementById('headerDate').value = headerMetadata.date;
+                    if (headerMetadata.fld) document.getElementById('headerFld').value = headerMetadata.fld;
+                    if (headerMetadata.field) document.getElementById('headerFld').value = headerMetadata.field;
+                    if (headerMetadata.loc) document.getElementById('headerLoc').value = headerMetadata.loc;
+                    if (headerMetadata.location) document.getElementById('headerLoc').value = headerMetadata.location;
+                    if (headerMetadata.county) document.getElementById('headerCnty').value = headerMetadata.county;
+                    if (headerMetadata.state) document.getElementById('headerState').value = headerMetadata.state;
+                    if (headerMetadata.prov) document.getElementById('headerProv').value = headerMetadata.prov;
+                    if (headerMetadata.province) document.getElementById('headerProv').value = headerMetadata.province;
+                    if (headerMetadata.srvc) document.getElementById('headerSrvc').value = headerMetadata.srvc;
+                    if (headerMetadata.service) document.getElementById('headerSrvc').value = headerMetadata.service;
+                }
 
                 // Update summary
                 const summaryEl = document.getElementById('headerSelectionSummary');
@@ -6037,36 +5997,12 @@
                 // Clear OCR-based overlays tied to the old coordinates
                 ocrSuggestions = null;
                 detectedText = null;
-                
-                // Reset interaction modes to prevent ghost selections
-                panelSelectMode = false;
-                panelSelectStart = null;
-                primaryRegionDrag = { active: false, edge: null };
-                
-                headerSelectMode = false;
-                headerRegionStart = null;
-                headerRegionDrag = false;
-                headerRegion = null;
-                headerTracks = null;
-                headerMetadata = null;
-                headerCaptureEnabled = false;
-
-                clearHeaderRegionOverlay();
                 clearTrackOverlays();
                 clearLabelOverlays();
                 clearPhraseHighlight();
                 renderDepthOverlays();
                 renderPrimaryRegionOverlay();
                 updateSelectionSummary();
-                
-                const headerSummaryEl = document.getElementById('headerSelectionSummary');
-                if (headerSummaryEl) headerSummaryEl.textContent = 'No header captured. Curve config will use defaults.';
-
-                // Show header selection controls now that we have a cropped panel
-                const headerSection = document.getElementById('headerSelectionSection');
-                if (headerSection) headerSection.style.display = 'block';
-                headerCaptureEnabled = true;
-                updateHeaderCaptureState();
 
                 showStatus('✂️ Cropped to working panel. All work now uses this shorter TIFF.', 'success');
             } catch (err) {
