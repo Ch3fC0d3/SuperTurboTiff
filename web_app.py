@@ -2034,7 +2034,9 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         # - sobel_y_score (15%): Boost for wiggles/spikes (dy)
         # - harris_score (10%): Boost for jagged peaks/corners
         # - diag_score (10%): Boost for diagonal segments (non-grid orientations)
-        prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
+        # Grid lines score high on color+edge but low on sobel_y/harris/diag.
+        # Curves score high on ALL signals. Emphasize the discriminating features.
+        prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.25 * sobel_y_score + 0.15 * harris_score + 0.15 * diag_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
