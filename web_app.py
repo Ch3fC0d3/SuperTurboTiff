@@ -1874,13 +1874,18 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     color_score = color_mask.astype(np.float32) / 255.0
 
     # Compute 1-pixel skeleton for black mode using ximgproc thinning.
-    # Applied AFTER grid removal so only curve pixels are thinned, not grid lines.
+    # Use gray_processed (Hough grid-suppressed) as source so grid lines are
+    # already erased before thinning — prevents skeleton reinforcing grid pixels.
     skel_thin = None
     if mode not in colored_modes:
         try:
             if hasattr(cv2, 'ximgproc'):
+                _skel_src = gray_processed if is_bw_log else gray
+                _, _skel_bin = cv2.threshold(
+                    _skel_src, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+                )
                 skel_thin = cv2.ximgproc.thinning(
-                    color_mask, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
+                    _skel_bin, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
                 )
         except Exception:
             skel_thin = None
