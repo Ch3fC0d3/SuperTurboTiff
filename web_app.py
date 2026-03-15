@@ -1839,7 +1839,7 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         
         color_mask = cv2.adaptiveThreshold(
             gray_processed, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-            cv2.THRESH_BINARY_INV, 21, 10
+            cv2.THRESH_BINARY_INV, 21, 4
         )
 
         # Suppress colored pixels (grid/track lines are often red/green/blue).
