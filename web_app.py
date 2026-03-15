@@ -1837,14 +1837,21 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             # Use original morphology as backup but less aggressive
             gray_processed = remove_grid_lines_aggressive(gray_processed, aggressive=False)
         
-        color_mask = cv2.adaptiveThreshold(
-            gray_processed,
-            255,
-            cv2.ADAPTIVE_THRESH_MEAN_C,
-            cv2.THRESH_BINARY_INV,
-            21,
-            10,
-        )
+        try:
+            if hasattr(cv2, 'ximgproc'):
+                # Sauvola thresholding: adapts to local std dev, better for
+                # scanned docs with uneven illumination or faded ink.
+                color_mask = cv2.ximgproc.niBlackThreshold(
+                    gray_processed, 255, cv2.THRESH_BINARY_INV, 25, 0.2,
+                    binarizationMethod=cv2.ximgproc.BINARIZATION_SAUVOLA
+                )
+            else:
+                raise AttributeError
+        except Exception:
+            color_mask = cv2.adaptiveThreshold(
+                gray_processed, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                cv2.THRESH_BINARY_INV, 21, 10
+            )
 
         # Suppress colored pixels (grid/track lines are often red/green/blue).
         # In black mode we want low-saturation dark ink.
@@ -1876,6 +1883,18 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel, 1)
     color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel, 1)
     color_score = color_mask.astype(np.float32) / 255.0
+
+    # Compute 1-pixel skeleton for black mode using ximgproc thinning.
+    # Applied AFTER grid removal so only curve pixels are thinned, not grid lines.
+    skel_thin = None
+    if mode not in colored_modes:
+        try:
+            if hasattr(cv2, 'ximgproc'):
+                skel_thin = cv2.ximgproc.thinning(
+                    color_mask, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
+                )
+        except Exception:
+            skel_thin = None
 
     # 2) Enhanced edge detection using both Canny and Sobel.
     #    Canny finds strong edges; Sobel emphasizes horizontal gradients
@@ -2036,7 +2055,19 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         # - sobel_y_score (15%): Boost for wiggles/spikes (dy)
         # - harris_score (10%): Boost for jagged peaks/corners
         # - diag_score (10%): Boost for diagonal segments (non-grid orientations)
-        prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
+        # Build skeleton score from ximgproc thinning (1-pixel centerline)
+        skel_score = None
+        if skel_thin is not None and skel_thin.any():
+            skel_f = cv2.GaussianBlur(skel_thin.astype(np.float32), (5, 5), 0)
+            skel_max = float(skel_f.max())
+            if skel_max > 0:
+                skel_score = skel_f / skel_max
+
+        if skel_score is not None:
+            # Skeleton gets 20% — reduces edge bias, pulls DP to true centerline
+            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score + 0.20 * skel_score
+        else:
+            prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
