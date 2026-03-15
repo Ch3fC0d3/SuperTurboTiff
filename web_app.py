@@ -1452,61 +1452,6 @@ def suppress_grid_hough(gray, h_thresh_ratio=0.25, v_thresh_ratio=0.25):
     return cleaned
 
 
-def _steger_ridge_score(gray, sigmas=(1.5, 2.5, 3.5), dark_line=True):
-    """Vectorized multi-scale Steger (1998) ridge detector.
-
-    Computes the Hessian at each pixel, finds the dominant eigenvalue/vector,
-    and marks pixels as ridges when the sub-pixel Taylor offset is within ±0.5.
-    Returns a float32 ridge-strength map normalised to [0, 1].
-    """
-    h, w = gray.shape
-    response = np.zeros((h, w), dtype=np.float32)
-    for sigma in sigmas:
-        ksize = max(3, 2 * int(np.ceil(3.0 * sigma)) + 1)
-        img_f = gray.astype(np.float32)
-        if dark_line:
-            img_f = 255.0 - img_f  # invert: dark lines become bright ridges
-        blurred = cv2.GaussianBlur(img_f, (ksize, ksize), sigma)
-        dx  = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3)
-        dy  = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3)
-        dxx = cv2.Sobel(blurred, cv2.CV_32F, 2, 0, ksize=3)
-        dyy = cv2.Sobel(blurred, cv2.CV_32F, 0, 2, ksize=3)
-        dxy = cv2.Sobel(blurred, cv2.CV_32F, 1, 1, ksize=3)
-        # Eigenvalues of symmetric 2x2 Hessian per pixel
-        trace = dxx + dyy
-        disc  = np.sqrt(np.maximum(0.0, (dxx - dyy) ** 2 * 0.25 + dxy * dxy))
-        lam1  = trace * 0.5 + disc
-        lam2  = trace * 0.5 - disc
-        # Dominant eigenvalue = one with larger absolute magnitude
-        lam_dom = np.where(np.abs(lam1) >= np.abs(lam2), lam1, lam2)
-        # Eigenvector of dominant eigenvalue
-        nx = dxy.copy()
-        ny = lam_dom - dxx
-        norm = np.sqrt(nx * nx + ny * ny)
-        safe_norm = np.where(norm > 1e-8, norm, 1.0)
-        nx /= safe_norm
-        ny /= safe_norm
-        # Sub-pixel Taylor offset T along the normal direction
-        denom = dxx * nx * nx + dyy * ny * ny + 2.0 * dxy * nx * ny
-        num   = -(dx * nx + dy * ny)
-        safe_denom = np.where(np.abs(denom) > 1e-8, denom, 1e-8)
-        T = num / safe_denom
-        # Ridge mask: offset within ±0.5 in both nx and ny, and eigenvalue is negative (ridge)
-        ridge_mask = (
-            (np.abs(T * nx) <= 0.5) &
-            (np.abs(T * ny) <= 0.5) &
-            (np.abs(denom) > 1e-8) &
-            (lam_dom < 0)
-        )
-        strength = np.abs(lam_dom) * float(sigma ** 2)
-        strength[~ridge_mask] = 0.0
-        response = np.maximum(response, strength)
-    rmax = float(response.max())
-    if rmax > 0:
-        response /= rmax
-    return response
-
-
 def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allowed=True):
     """Build a soft probability map for the curve in a track ROI.
 
@@ -2100,32 +2045,9 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             if skel_max > 0:
                 skel_score = skel_f / skel_max
 
-        # Steger multi-scale ridge detector on grid-suppressed grayscale
-        ridge_score = None
-        try:
-            _rs = _steger_ridge_score(
-                gray_processed if is_bw_log else gray,
-                sigmas=(1.5, 2.5, 3.5),
-                dark_line=True,
-            )
-            if _rs.any():
-                ridge_score = _rs
-        except Exception:
-            ridge_score = None
-
-        # Combine skeleton and Steger ridge into a single centerline signal
-        if skel_score is not None and ridge_score is not None:
-            center_line = np.maximum(skel_score, ridge_score)
-        elif skel_score is not None:
-            center_line = skel_score
-        elif ridge_score is not None:
-            center_line = ridge_score
-        else:
-            center_line = None
-
-        if center_line is not None:
-            # Centerline (skel + Steger) gets 20% — pulls DP to true ink center
-            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score + 0.20 * center_line
+        if skel_score is not None:
+            # Skeleton gets 20% — reduces edge bias, pulls DP to true centerline
+            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score + 0.20 * skel_score
         else:
             prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
 
