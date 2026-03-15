@@ -2058,7 +2058,7 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         # Build skeleton score from ximgproc thinning (1-pixel centerline)
         skel_score = None
         if skel_thin is not None and skel_thin.any():
-            skel_f = cv2.GaussianBlur(skel_thin.astype(np.float32), (5, 5), 0)
+            skel_f = cv2.GaussianBlur(skel_thin.astype(np.float32), (3, 3), 0)
             skel_max = float(skel_f.max())
             if skel_max > 0:
                 skel_score = skel_f / skel_max
@@ -2188,7 +2188,13 @@ def trace_curve_with_dp(
     skeleton_score = np.zeros_like(prob, dtype=np.float32)
     if np.any(bin_mask):
         try:
-            skel = _morphological_skeleton((bin_mask.astype(np.uint8) * 255))
+            if hasattr(cv2, 'ximgproc'):
+                skel = cv2.ximgproc.thinning(
+                    bin_mask.astype(np.uint8) * 255,
+                    thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
+                )
+            else:
+                skel = _morphological_skeleton((bin_mask.astype(np.uint8) * 255))
             if skel is not None and skel.size == prob.size:
                 skel_f = skel.astype(np.float32) / 255.0
                 # Feather skeleton to nearby pixels so DP can stay on the ridge
