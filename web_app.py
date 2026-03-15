@@ -1837,21 +1837,10 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             # Use original morphology as backup but less aggressive
             gray_processed = remove_grid_lines_aggressive(gray_processed, aggressive=False)
         
-        try:
-            if hasattr(cv2, 'ximgproc'):
-                # Sauvola thresholding: adapts to local std dev, better for
-                # scanned docs with uneven illumination or faded ink.
-                color_mask = cv2.ximgproc.niBlackThreshold(
-                    gray_processed, 255, cv2.THRESH_BINARY_INV, 25, 0.2,
-                    binarizationMethod=cv2.ximgproc.BINARIZATION_SAUVOLA
-                )
-            else:
-                raise AttributeError
-        except Exception:
-            color_mask = cv2.adaptiveThreshold(
-                gray_processed, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                cv2.THRESH_BINARY_INV, 21, 10
-            )
+        color_mask = cv2.adaptiveThreshold(
+            gray_processed, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+            cv2.THRESH_BINARY_INV, 21, 10
+        )
 
         # Suppress colored pixels (grid/track lines are often red/green/blue).
         # In black mode we want low-saturation dark ink.
