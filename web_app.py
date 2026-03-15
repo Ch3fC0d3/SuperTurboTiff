@@ -1857,7 +1857,8 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             if is_bw_log:
                 # Lighter grid removal since we already did aggressive removal
                 k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(8, min(40, h // 3))))
-                k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (max(8, min(40, w // 3)), 1))
+                # AGGRESSIVE: Remove horizontal lines > 10px to kill grid shelves
+                k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 1))
             else:
                 # Standard grid removal for non-B&W images
                 k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, min(60, h // 2))))
@@ -2948,8 +2949,9 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     
     # For GR curves, we want to allow very sharp peaks, so we lower the smoothing significantly.
     # For other curves (like Res), we keep it higher to avoid noise.
-    if curve_type.upper() == "GR":
-        smooth_lambda = 0.00001
+    # Note: We respect the passed smooth_lambda, but ensure it's not too high for GR.
+    if curve_type.upper() == "GR" and smooth_lambda > 0.01:
+        smooth_lambda = 0.001
     
     h, w = curve_mask.shape
     if h < 4 or w < 4:
@@ -3006,7 +3008,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
             # Adjust based on jaggedness
             return {
                 "smooth_lambda": max(0.000001, smooth_lambda * scale * jaggedness_factor),
-                "max_step": max(1, int(max_step * scale * 2.5)),  # Allow more movement for GR
+                "max_step": max(1, int(max_step * scale * 1.2)),  # Moderate movement to prevent teleportation
                 "rail_threshold": max(0.01, 0.1 * scale * jaggedness_factor),
                 "curv_lambda": max(0.000001, 0.001 * scale * jaggedness_factor)
             }
@@ -6799,10 +6801,10 @@ def digitize():
             # Use user threshold for non-colored modes too (default was 1.1)
             refine_kwargs = {"dominance_ratio": snap_threshold}
         # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
-        dp_smooth_lambda = 0.001 if mode in colored_modes else (0.00001 if curve_type == 'GR' else 0.02)
+        dp_smooth_lambda = 0.001 if mode in colored_modes else (0.001 if curve_type == 'GR' else 0.02)
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
-        dp_curv_lambda = 0.001 if mode in colored_modes else (0.00001 if curve_type == 'GR' else 0.005)
-        max_step_dp = 200 if mode in colored_modes else (300 if curve_type == 'GR' else 50)  # Allow large movement to follow steep gamma ray spikes
+        dp_curv_lambda = 0.001 if mode in colored_modes else (0.001 if curve_type == 'GR' else 0.005)
+        max_step_dp = 200 if mode in colored_modes else (30 if curve_type == 'GR' else 50)  # Restrict movement to prevent teleportation
 
         # Optional pixel-perfect skeleton tracer (preserve every bump)
         if ai_tracer.is_available() and trace_mode == "ai_tracer":
