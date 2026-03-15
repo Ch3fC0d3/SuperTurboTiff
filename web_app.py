@@ -2184,18 +2184,37 @@ def trace_curve_with_dp(
         live_score = np.maximum(live_score, 0.55 * skeleton_score + 0.05 * bin_mask.astype(np.float32))
     live_score = np.clip(live_score, eps, 1.0)
 
-    # Blend in distance transform so the DP prefers the *center* of thick
-    # ink strokes over their edges.  A pixel at the stroke center gets a
-    # bonus proportional to its distance from the nearest background pixel.
-    # 70% original score + 30% centredness keeps the colour/intensity
-    # signal dominant while removing the edge-of-stroke bias.
+    # Ridge detection for centerline bias: use OpenCV's ridge filter if available,
+    # otherwise fall back to distance transform. Ridge detection is more accurate
+    # for finding the true centerline of varying-width strokes.
     if bin_mask.any():
-        _dist = cv2.distanceTransform(bin_mask.astype(np.uint8), cv2.DIST_L2, 3)
-        _d_max = _dist.max()
-        if _d_max > 0:
-            _dist_norm = (_dist / _d_max).astype(np.float32)
-            live_score = live_score * (0.7 + 0.3 * _dist_norm)
-            live_score = np.clip(live_score, eps, 1.0)
+        ridge_score = None
+        try:
+            # Try using OpenCV's ridge detection filter (ximgproc module)
+            if hasattr(cv2, 'ximgproc'):
+                # Convert prob to grayscale uint8 for ridge detection
+                prob_gray = (prob * 255).astype(np.uint8)
+                ridge_filter = cv2.ximgproc.RidgeDetectionFilter_create()
+                ridge_map = ridge_filter.getRidgeFilteredImage(prob_gray)
+                ridge_score = ridge_map.astype(np.float32) / 255.0
+                _r_max = ridge_score.max()
+                if _r_max > 0:
+                    ridge_score /= _r_max
+        except Exception:
+            ridge_score = None
+        
+        # Fallback to distance transform if ridge detection unavailable
+        if ridge_score is None:
+            _dist = cv2.distanceTransform(bin_mask.astype(np.uint8), cv2.DIST_L2, 3)
+            _d_max = _dist.max()
+            if _d_max > 0:
+                ridge_score = (_dist / _d_max).astype(np.float32)
+            else:
+                ridge_score = np.zeros_like(live_score)
+        
+        # Blend ridge/centerline score into live_score
+        live_score = live_score * (0.5 + 0.5 * ridge_score)
+        live_score = np.clip(live_score, eps, 1.0)
 
     cost = -np.log(live_score)
 
