@@ -2184,13 +2184,22 @@ def trace_curve_with_dp(
         live_score = np.maximum(live_score, 0.55 * skeleton_score + 0.05 * bin_mask.astype(np.float32))
     live_score = np.clip(live_score, eps, 1.0)
 
-    # Ridge detection for centerline bias: use OpenCV's ridge filter if available,
-    # otherwise fall back to distance transform. Ridge detection is more accurate
-    # for finding the true centerline of varying-width strokes.
+    # Dual centerline detection: combine ridge detection (eigenvalue-based centerline)
+    # with distance transform (geometric center). Ridge detection finds the true
+    # structural centerline, while distance transform provides robust geometric center.
+    # Using both gives the best of both approaches.
     if bin_mask.any():
+        # 1. Distance transform: geometric center (always available)
+        _dist = cv2.distanceTransform(bin_mask.astype(np.uint8), cv2.DIST_L2, 3)
+        _d_max = _dist.max()
+        if _d_max > 0:
+            dist_score = (_dist / _d_max).astype(np.float32)
+        else:
+            dist_score = np.zeros_like(live_score)
+        
+        # 2. Ridge detection: structural centerline (if ximgproc available)
         ridge_score = None
         try:
-            # Try using OpenCV's ridge detection filter (ximgproc module)
             if hasattr(cv2, 'ximgproc'):
                 # Convert prob to grayscale uint8 for ridge detection
                 prob_gray = (prob * 255).astype(np.uint8)
@@ -2203,17 +2212,15 @@ def trace_curve_with_dp(
         except Exception:
             ridge_score = None
         
-        # Fallback to distance transform if ridge detection unavailable
-        if ridge_score is None:
-            _dist = cv2.distanceTransform(bin_mask.astype(np.uint8), cv2.DIST_L2, 3)
-            _d_max = _dist.max()
-            if _d_max > 0:
-                ridge_score = (_dist / _d_max).astype(np.float32)
-            else:
-                ridge_score = np.zeros_like(live_score)
+        # Combine both signals: if ridge detection available, use 60% ridge + 40% distance
+        # Otherwise use distance transform alone
+        if ridge_score is not None:
+            centerline_score = 0.6 * ridge_score + 0.4 * dist_score
+        else:
+            centerline_score = dist_score
         
-        # Blend ridge/centerline score into live_score
-        live_score = live_score * (0.5 + 0.5 * ridge_score)
+        # Blend centerline score into live_score (50% boost at centerline)
+        live_score = live_score * (0.5 + 0.5 * centerline_score)
         live_score = np.clip(live_score, eps, 1.0)
 
     cost = -np.log(live_score)
