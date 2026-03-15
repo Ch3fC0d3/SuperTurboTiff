@@ -2949,7 +2949,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     # For GR curves, we want to allow very sharp peaks, so we lower the smoothing significantly.
     # For other curves (like Res), we keep it higher to avoid noise.
     if curve_type.upper() == "GR":
-        smooth_lambda = 0.001
+        smooth_lambda = 0.00001
     
     h, w = curve_mask.shape
     if h < 4 or w < 4:
@@ -3005,10 +3005,10 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
         if curve_type.upper() == "GR":
             # Adjust based on jaggedness
             return {
-                "smooth_lambda": max(0.0001, smooth_lambda * scale * jaggedness_factor),
+                "smooth_lambda": max(0.000001, smooth_lambda * scale * jaggedness_factor),
                 "max_step": max(1, int(max_step * scale * 2.5)),  # Allow more movement for GR
                 "rail_threshold": max(0.01, 0.1 * scale * jaggedness_factor),
-                "curv_lambda": max(0.0001, 0.001 * scale * jaggedness_factor)
+                "curv_lambda": max(0.000001, 0.001 * scale * jaggedness_factor)
             }
         else:
             return {
@@ -6776,8 +6776,7 @@ def digitize():
             _pct_nonzero = float(np.mean(_pm > 0.01) * 100)
             _pm_max = float(_pm.max())
             _pm_mean = float(_pm.mean())
-            print(f"[DEBUG black] curve={name} prob_map: shape={mask.shape} max={_pm_max:.3f} mean={_pm_mean:.4f} pct_nonzero={_pct_nonzero:.1f}%")
-            curve_warnings.append({'curve': name, 'debug': f'prob_map max={_pm_max:.3f} mean={_pm_mean:.4f} nonzero={_pct_nonzero:.1f}%'})
+            # Debug info removed
 
         # NEW: Use DP-based smooth path tracing with plausibility checks
         curve_type = c.get('type', 'GR')  # Get curve type for plausibility
@@ -6800,10 +6799,10 @@ def digitize():
             # Use user threshold for non-colored modes too (default was 1.1)
             refine_kwargs = {"dominance_ratio": snap_threshold}
         # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
-        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.02
+        dp_smooth_lambda = 0.001 if mode in colored_modes else (0.00001 if curve_type == 'GR' else 0.02)
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
-        dp_curv_lambda = 0.001 if mode in colored_modes else 0.005
-        max_step_dp = 200 if mode in colored_modes else 50  # Allow large movement to follow steep gamma ray spikes
+        dp_curv_lambda = 0.001 if mode in colored_modes else (0.00001 if curve_type == 'GR' else 0.005)
+        max_step_dp = 200 if mode in colored_modes else (300 if curve_type == 'GR' else 50)  # Allow large movement to follow steep gamma ray spikes
 
         # Optional pixel-perfect skeleton tracer (preserve every bump)
         if ai_tracer.is_available() and trace_mode == "ai_tracer":
@@ -7061,10 +7060,6 @@ def digitize():
                 smooth_lambda=dp_smooth_lambda,
                 hot_side=hot_side,
             )
-            _valid_after_trace = int(np.sum(~np.isnan(xs)))
-            _std_after_trace = float(np.nanstd(xs)) if _valid_after_trace > 0 else 0.0
-            print(f"[DEBUG black] curve={name} after trace: valid_rows={_valid_after_trace}/{xs.size} std={_std_after_trace:.2f} width={mask.shape[1]}")
-            curve_warnings.append({'curve': name, 'debug': f'after_trace valid={_valid_after_trace}/{xs.size} std={_std_after_trace:.2f}px'})
 
             # Optional final smoothing for non-GR curves (GR needs to stay jagged)
             if curve_type.upper() != "GR":
