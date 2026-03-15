@@ -1873,7 +1873,17 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel, 1)
     color_score = color_mask.astype(np.float32) / 255.0
 
-    skel_thin = None  # Skeleton in prob map was reinforcing residual grid lines
+    # Compute 1-pixel skeleton for black mode using ximgproc thinning.
+    # Applied AFTER grid removal so only curve pixels are thinned, not grid lines.
+    skel_thin = None
+    if mode not in colored_modes:
+        try:
+            if hasattr(cv2, 'ximgproc'):
+                skel_thin = cv2.ximgproc.thinning(
+                    color_mask, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
+                )
+        except Exception:
+            skel_thin = None
 
     # 2) Enhanced edge detection using both Canny and Sobel.
     #    Canny finds strong edges; Sobel emphasizes horizontal gradients
@@ -2027,55 +2037,19 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         if diag_score.max() > 0:
             diag_score /= diag_score.max()
             
-        # Multi-scale ridge detection (Steger 1998) for precise centerline.
-        # Runs on the grid-suppressed grayscale so grid lines are already weakened.
-        ridge_score = np.zeros((h, w), dtype=np.float32)
-        try:
-            from ridge_detector import RidgeDetector as _RD
-            _rd = _RD(
-                line_width=[2, 3, 4],   # Target well log curve widths (px)
-                low_contrast=20,        # Permissive for faded scans
-                high_contrast=150,
-                min_len=15,             # Ignore very short noise fragments
-                max_len=0,
-                dark_line=True,         # Black curves on light background
-                estimate_width=False,
-                extend_line=False,
-                correct_pos=False,
-            )
-            _rd.detect_lines(gray_processed if is_bw_log else gray)
-            _lines = getattr(_rd, 'lines', None) or getattr(_rd, 'result', None)
-            if _lines is not None and len(_lines) > 0:
-                _ridge_map = np.zeros((h, w), dtype=np.float32)
-                for _ln in _lines:
-                    _pts = (getattr(_ln, 'points', None) or
-                            getattr(_ln, 'coords', None) or
-                            getattr(_ln, 'row', None))
-                    if _pts is not None:
-                        _pts_arr = np.asarray(_pts)
-                        if _pts_arr.ndim == 2 and _pts_arr.shape[1] >= 2:
-                            xs_r = np.clip(np.round(_pts_arr[:, 0]).astype(int), 0, w - 1)
-                            ys_r = np.clip(np.round(_pts_arr[:, 1]).astype(int), 0, h - 1)
-                            _ridge_map[ys_r, xs_r] = 1.0
-                if _ridge_map.any():
-                    ridge_score = cv2.GaussianBlur(_ridge_map, (3, 3), 0)
-                    _rmax = float(ridge_score.max())
-                    if _rmax > 0:
-                        ridge_score /= _rmax
-        except ImportError:
-            pass
-        except Exception:
-            pass
+        # Build skeleton score from ximgproc thinning (1-pixel centerline)
+        skel_score = None
+        if skel_thin is not None and skel_thin.any():
+            skel_f = cv2.GaussianBlur(skel_thin.astype(np.float32), (3, 3), 0)
+            skel_max = float(skel_f.max())
+            if skel_max > 0:
+                skel_score = skel_f / skel_max
 
-        # Grid lines score high on color+edge but low on sobel_y/harris/diag.
-        # Curves score high on ALL signals. Emphasize the discriminating features.
-        if ridge_score.any():
-            # Ridge detector found curvilinear structures: 35% weight on precise centerline
-            prob = (0.08 * color_score + 0.12 * edge_enhanced + 0.10 * center_score +
-                    0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score +
-                    0.35 * ridge_score)
+        if skel_score is not None:
+            # Skeleton gets 20% — reduces edge bias, pulls DP to true centerline
+            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score + 0.20 * skel_score
         else:
-            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.25 * sobel_y_score + 0.15 * harris_score + 0.15 * diag_score
+            prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
@@ -2196,7 +2170,13 @@ def trace_curve_with_dp(
     skeleton_score = np.zeros_like(prob, dtype=np.float32)
     if np.any(bin_mask):
         try:
-            skel = _morphological_skeleton((bin_mask.astype(np.uint8) * 255))
+            if hasattr(cv2, 'ximgproc'):
+                skel = cv2.ximgproc.thinning(
+                    bin_mask.astype(np.uint8) * 255,
+                    thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
+                )
+            else:
+                skel = _morphological_skeleton((bin_mask.astype(np.uint8) * 255))
             if skel is not None and skel.size == prob.size:
                 skel_f = skel.astype(np.float32) / 255.0
                 # Feather skeleton to nearby pixels so DP can stay on the ridge
@@ -6813,7 +6793,7 @@ def digitize():
             # Use user threshold for non-colored modes too (default was 1.1)
             refine_kwargs = {"dominance_ratio": snap_threshold}
         # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
-        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.5
+        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.15
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
         dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
         max_step_dp = 200 if mode in colored_modes else 10  # Allow unlimited movement to follow gamma ray spikes
