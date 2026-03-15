@@ -2033,12 +2033,10 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         # - color_score (15%): Base intensity
         # - edge_enhanced (30%): Canny + SobelX (strong edges) - reduced slightly
         # - center_score (20%): Distance transform (center of strokes)
-        # - sobel_y_score (20%): Boost for wiggles/spikes (dy) - discriminates curve from straight grid
+        # - sobel_y_score (15%): Boost for wiggles/spikes (dy)
         # - harris_score (10%): Boost for jagged peaks/corners
-        # - diag_score (05%): Boost for diagonal segments (non-grid orientations)
-        # Note: edge_enhanced reduced (edges peak at ink boundaries not center),
-        #       center_score raised (distance transform peaks at true stroke centerline)
-        prob = 0.15 * color_score + 0.15 * edge_enhanced + 0.35 * center_score + 0.20 * sobel_y_score + 0.10 * harris_score + 0.05 * diag_score
+        # - diag_score (10%): Boost for diagonal segments (non-grid orientations)
+        prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
@@ -2185,16 +2183,6 @@ def trace_curve_with_dp(
     if skeleton_score is not None:
         live_score = np.maximum(live_score, 0.55 * skeleton_score + 0.05 * bin_mask.astype(np.float32))
     live_score = np.clip(live_score, eps, 1.0)
-
-    # Distance transform centerline bias: prefer pixels at the center of thick
-    # ink strokes over their edges (30% boost at stroke center).
-    if bin_mask.any():
-        _dist = cv2.distanceTransform(bin_mask.astype(np.uint8), cv2.DIST_L2, 3)
-        _d_max = _dist.max()
-        if _d_max > 0:
-            _dist_norm = (_dist / _d_max).astype(np.float32)
-            live_score = live_score * (0.7 + 0.3 * _dist_norm)
-            live_score = np.clip(live_score, eps, 1.0)
 
     cost = -np.log(live_score)
 
