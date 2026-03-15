@@ -1862,7 +1862,8 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             else:
                 # Standard grid removal for non-B&W images
                 k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, min(60, h // 2))))
-                k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, min(60, w // 2)), 1))
+                # AGGRESSIVE: Remove horizontal lines > 15px to kill grid shelves even if not detected as B&W
+                k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
             
             v_lines = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, k_v)
             h_lines = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, k_h)
@@ -7166,8 +7167,6 @@ def digitize():
             if xs_valid.size > 0:
                 std_x = float(np.nanstd(xs_valid))
                 std_threshold = max(1.0, 0.005 * float(width_px))
-                print(f"[DEBUG black] curve={name} std_x={std_x:.2f} threshold={std_threshold:.2f} width={width_px} -> {'WIPED' if std_x < std_threshold else 'OK'}")
-                curve_warnings.append({'curve': name, 'debug': f'std_check std={std_x:.2f} threshold={std_threshold:.2f} -> {"WIPED" if std_x < std_threshold else "OK"}'})
                 # Only reject near-perfectly-vertical traces (rail lock-on).
                 # Use a very tight threshold: 0.5% of track width or 1.0px minimum.
                 # Slow curves like DTC/RHOB can legitimately have low std.
