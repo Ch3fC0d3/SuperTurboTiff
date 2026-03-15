@@ -2033,10 +2033,12 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         # - color_score (15%): Base intensity
         # - edge_enhanced (30%): Canny + SobelX (strong edges) - reduced slightly
         # - center_score (20%): Distance transform (center of strokes)
-        # - sobel_y_score (15%): Boost for wiggles/spikes (dy)
+        # - sobel_y_score (20%): Boost for wiggles/spikes (dy) - discriminates curve from straight grid
         # - harris_score (10%): Boost for jagged peaks/corners
-        # - diag_score (10%): Boost for diagonal segments (non-grid orientations)
-        prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
+        # - diag_score (05%): Boost for diagonal segments (non-grid orientations)
+        # Note: edge_enhanced reduced (edges peak at ink boundaries not center),
+        #       center_score raised (distance transform peaks at true stroke centerline)
+        prob = 0.15 * color_score + 0.15 * edge_enhanced + 0.35 * center_score + 0.20 * sobel_y_score + 0.10 * harris_score + 0.05 * diag_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
