@@ -7070,26 +7070,27 @@ def digitize():
 
         width_px = mask.shape[1]
 
-        # For colored modes, aggressively interpolate to fill ALL gaps
-        if mode in colored_modes:
-            # Fill any remaining NaN gaps with linear interpolation
+        # UNIVERSAL GAP FILLING:
+        # Aggressive grid removal can leave small gaps where the curve crossed a grid line.
+        # We linearly interpolate these gaps for all modes to ensure continuity.
+        if xs.size > 0:
             s = pd.Series(xs)
-            # First forward fill, then backward fill to handle edges
             h_mask, w_mask = mask.shape
+            # Allow filling gaps up to 2% of image height or 10px, whichever is larger
             max_gap = max(10, int(h_mask * 0.02))
             s = s.interpolate(method='linear', limit_direction='both', limit=max_gap, limit_area=None)
-            # If still any NaNs at the very edges, fill with nearest valid value
+            # Handle edge cases
             if s.isna().any():
                 s = s.fillna(method='ffill', limit=max_gap).fillna(method='bfill', limit=max_gap)
             xs = s.to_numpy(dtype=np.float32)
 
+        # For colored modes, apply specific enhancements (GR peaks, centerline refinement)
+        if mode in colored_modes:
             if curve_type.upper() == "GR":
                 prob_map = mask.astype(np.float32) / 255.0
                 xs = ensure_gr_peak_crests(xs, prob_map, hot_side=hot_side)
 
-            # Final centerline snap for ALL colored modes (green/red/blue/auto).
-            # This helps achieve near pixel-perfect centerline after interpolation
-            # and GR peak tweaks.
+            # Final centerline snap for ALL colored modes
             try:
                 xs = refine_to_stroke_centerline(mask, xs, threshold_ratio=0.5, window_size=10)
             except Exception:
@@ -7615,38 +7616,42 @@ def refine_edit():
         colored_modes = {'green', 'red', 'blue', 'auto', 'cyan', 'magenta', 'yellow', 'orange', 'purple'}
         
         try:
-            if mode in colored_modes:
-                mask = compute_prob_map(track_proc, mode, ui_filters=ui_filters)
-            else:
-                source_roi = track_proc if track_proc is not None else track_crop
-                gray = cv2.cvtColor(source_roi, cv2.COLOR_BGR2GRAY) if len(source_roi.shape) == 3 else source_roi
-                mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+            # ALWAYS use compute_prob_map so we get grid removal, UI filters, and enhanced detection
+            # for both colored and black modes.
+            mask = compute_prob_map(track_proc, mode, ui_filters=ui_filters)
         except Exception as _prob_err:
             print(f'refine_edit: compute_prob_map failed ({_prob_err}), returning edit position')
             return jsonify({'success': True, 'refinedX': float(edit_x), 'confidence': 0.0,
                             'originalX': float(edit_x), 'refinedPath': []})
 
         weight_map = mask.astype(np.float32)
-        if mode not in colored_modes:
-            try:
-                bin_mask = (mask > 0).astype(np.uint8)
-                dist = cv2.distanceTransform(bin_mask, cv2.DIST_L2, 3)
-                if dist is not None and dist.size:
-                    maxv = float(np.max(dist))
-                    if maxv > 1e-6:
-                        weight_map = (dist / maxv) * 255.0
-            except Exception:
-                weight_map = mask.astype(np.float32)
+        # Calculate distance transform for weighting if needed (compute_prob_map already does this internally,
+        # but we do it here for the refined_centroid helper)
+        try:
+            bin_mask = (mask > 0).astype(np.uint8)
+            dist = cv2.distanceTransform(bin_mask, cv2.DIST_L2, 3)
+            if dist is not None and dist.size:
+                maxv = float(np.max(dist))
+                if maxv > 1e-6:
+                    weight_map = (dist / maxv) * 255.0
+        except Exception:
+            weight_map = mask.astype(np.float32)
         
         # Run multi-scale tracing on this segment
+        # Use parameters consistent with the main digitization loop
+        smooth_l = 0.001 if (mode in colored_modes or curve_type == 'GR') else 0.02
+        curv_l = 0.001 if (mode in colored_modes or curve_type == 'GR') else 0.005
+        max_s = 200 if mode in colored_modes else (30 if curve_type == 'GR' else 50)
+
         try:
             xs_refined, confidence = trace_curve_multiscale(
                 mask,
                 scale_min=left_value,
                 scale_max=right_value,
                 curve_type=curve_type,
-                max_step=100,
-                smooth_lambda=0.5,
+                max_step=max_s,
+                smooth_lambda=smooth_l,
+                curv_lambda=curv_l,
                 hot_side=None,
             )
         except Exception as _trace_err:
