@@ -1879,8 +1879,11 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     if mode not in colored_modes:
         try:
             if hasattr(cv2, 'ximgproc'):
+                _, bin_for_skel = cv2.threshold(
+                    gray_processed, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+                )
                 skel_thin = cv2.ximgproc.thinning(
-                    color_mask, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
+                    bin_for_skel, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
                 )
         except Exception:
             skel_thin = None
