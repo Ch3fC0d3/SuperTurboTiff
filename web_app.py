@@ -6802,8 +6802,8 @@ def digitize():
         # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
         dp_smooth_lambda = 0.001 if mode in colored_modes else 0.02
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
-        dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
-        max_step_dp = 200 if mode in colored_modes else 10  # Allow unlimited movement to follow gamma ray spikes
+        dp_curv_lambda = 0.001 if mode in colored_modes else 0.005
+        max_step_dp = 200 if mode in colored_modes else 50  # Allow large movement to follow steep gamma ray spikes
 
         # Optional pixel-perfect skeleton tracer (preserve every bump)
         if ai_tracer.is_available() and trace_mode == "ai_tracer":
