@@ -2155,13 +2155,7 @@ def trace_curve_with_dp(
     skeleton_score = np.zeros_like(prob, dtype=np.float32)
     if np.any(bin_mask):
         try:
-            if hasattr(cv2, 'ximgproc'):
-                skel = cv2.ximgproc.thinning(
-                    bin_mask.astype(np.uint8) * 255,
-                    thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
-                )
-            else:
-                skel = _morphological_skeleton((bin_mask.astype(np.uint8) * 255))
+            skel = _morphological_skeleton((bin_mask.astype(np.uint8) * 255))
             if skel is not None and skel.size == prob.size:
                 skel_f = skel.astype(np.float32) / 255.0
                 # Feather skeleton to nearby pixels so DP can stay on the ridge
@@ -6778,7 +6772,7 @@ def digitize():
             # Use user threshold for non-colored modes too (default was 1.1)
             refine_kwargs = {"dominance_ratio": snap_threshold}
         # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
-        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.25
+        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.5
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
         dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
         max_step_dp = 200 if mode in colored_modes else 10  # Allow unlimited movement to follow gamma ray spikes
