@@ -2027,16 +2027,55 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         if diag_score.max() > 0:
             diag_score /= diag_score.max()
             
-        # Combine:
-        # - color_score (15%): Base intensity
-        # - edge_enhanced (30%): Canny + SobelX (strong edges) - reduced slightly
-        # - center_score (20%): Distance transform (center of strokes)
-        # - sobel_y_score (15%): Boost for wiggles/spikes (dy)
-        # - harris_score (10%): Boost for jagged peaks/corners
-        # - diag_score (10%): Boost for diagonal segments (non-grid orientations)
+        # Multi-scale ridge detection (Steger 1998) for precise centerline.
+        # Runs on the grid-suppressed grayscale so grid lines are already weakened.
+        ridge_score = np.zeros((h, w), dtype=np.float32)
+        try:
+            from ridge_detector import RidgeDetector as _RD
+            _rd = _RD(
+                line_width=[2, 3, 4],   # Target well log curve widths (px)
+                low_contrast=20,        # Permissive for faded scans
+                high_contrast=150,
+                min_len=15,             # Ignore very short noise fragments
+                max_len=0,
+                dark_line=True,         # Black curves on light background
+                estimate_width=False,
+                extend_line=False,
+                correct_pos=False,
+            )
+            _rd.detect_lines(gray_processed if is_bw_log else gray)
+            _lines = getattr(_rd, 'lines', None) or getattr(_rd, 'result', None)
+            if _lines is not None and len(_lines) > 0:
+                _ridge_map = np.zeros((h, w), dtype=np.float32)
+                for _ln in _lines:
+                    _pts = (getattr(_ln, 'points', None) or
+                            getattr(_ln, 'coords', None) or
+                            getattr(_ln, 'row', None))
+                    if _pts is not None:
+                        _pts_arr = np.asarray(_pts)
+                        if _pts_arr.ndim == 2 and _pts_arr.shape[1] >= 2:
+                            xs_r = np.clip(np.round(_pts_arr[:, 0]).astype(int), 0, w - 1)
+                            ys_r = np.clip(np.round(_pts_arr[:, 1]).astype(int), 0, h - 1)
+                            _ridge_map[ys_r, xs_r] = 1.0
+                if _ridge_map.any():
+                    ridge_score = cv2.GaussianBlur(_ridge_map, (3, 3), 0)
+                    _rmax = float(ridge_score.max())
+                    if _rmax > 0:
+                        ridge_score /= _rmax
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
         # Grid lines score high on color+edge but low on sobel_y/harris/diag.
         # Curves score high on ALL signals. Emphasize the discriminating features.
-        prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.25 * sobel_y_score + 0.15 * harris_score + 0.15 * diag_score
+        if ridge_score.any():
+            # Ridge detector found curvilinear structures: 35% weight on precise centerline
+            prob = (0.08 * color_score + 0.12 * edge_enhanced + 0.10 * center_score +
+                    0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score +
+                    0.35 * ridge_score)
+        else:
+            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.25 * sobel_y_score + 0.15 * harris_score + 0.15 * diag_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that

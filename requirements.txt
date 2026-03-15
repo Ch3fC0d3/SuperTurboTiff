@@ -1,4 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
+scikit-image
+ridge-detector>=0.1.2
 flask==3.0.0
 opencv-contrib-python-headless==4.8.1.78
 numpy==1.26.2
