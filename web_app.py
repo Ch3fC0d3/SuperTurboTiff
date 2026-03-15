@@ -2194,7 +2194,7 @@ def trace_curve_with_dp(
         _d_max = _dist.max()
         if _d_max > 0:
             _dist_norm = (_dist / _d_max).astype(np.float32)
-            live_score = live_score * (0.5 + 0.5 * _dist_norm)
+            live_score = live_score * (0.7 + 0.3 * _dist_norm)
             live_score = np.clip(live_score, eps, 1.0)
 
     cost = -np.log(live_score)
