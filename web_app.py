@@ -3106,8 +3106,6 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
         # Use raw probability map for maximum sensitivity (no blur)
         raw = prob_map
         
-        # Ultra-aggressive peak detection parameters
-        min_prominence = 0.005  # Extremely low threshold
         search_window = 2       # Very small neighborhood
         
         # Multi-scale detection with different sensitivities
@@ -3168,10 +3166,6 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     
     def is_near_peak(y, peaks, window=4):
         """Check if y coordinate is near a detected peak with expanded window"""
-        return any(abs(py - y) <= window for py, px, prom in peaks)
-    
-    def is_near_peak(y, peaks, window=3):
-        """Check if y coordinate is near a detected peak"""
         return any(abs(py - y) <= window for py, px, prom in peaks)
     
     # AI-powered peak detection fallback
@@ -3488,7 +3482,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     confidence = np.zeros(h, dtype=np.float32)
     
     # Peak-aware fusion with curvature refinement
-    peaks = detect_local_peaks(prob, min_prominence=0.03) if curve_type.upper() == "GR" else []
+    peaks = detect_local_peaks(prob, min_prominence=0.01) if curve_type.upper() == "GR" else []
     
     for y in range(h):
         valid_indices = []
@@ -3555,7 +3549,8 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
 
         # Spike extension: search a horizontal window for a clearly brighter pixel
         # and snap to it. This is conservative enough to avoid false snaps.
-        search_window = 15
+        # Increased to 25px to help bridge gaps left by aggressive grid removal.
+        search_window = 25
         for y in range(h):
             x0 = xs_fused[y]
             if not np.isfinite(x0):
@@ -7076,8 +7071,8 @@ def digitize():
         if xs.size > 0:
             s = pd.Series(xs)
             h_mask, w_mask = mask.shape
-            # Allow filling gaps up to 2% of image height or 10px, whichever is larger
-            max_gap = max(10, int(h_mask * 0.02))
+            # Allow filling gaps up to 2% of image height or 25px (to cover 15px grid cuts), whichever is larger
+            max_gap = max(25, int(h_mask * 0.02))
             s = s.interpolate(method='linear', limit_direction='both', limit=max_gap, limit_area=None)
             # Handle edge cases
             if s.isna().any():
@@ -7659,6 +7654,20 @@ def refine_edit():
             return jsonify({'success': True, 'refinedX': float(edit_x), 'confidence': 0.0,
                             'originalX': float(edit_x), 'refinedPath': []})
         
+        # UNIVERSAL GAP FILLING (Same as main loop):
+        # Fill gaps from grid removal so the refined path is continuous
+        if xs_refined is not None and xs_refined.size > 0:
+            try:
+                s = pd.Series(xs_refined)
+                # Use at least 25px gap fill to bridge grid cuts
+                max_gap = 25
+                s = s.interpolate(method='linear', limit_direction='both', limit=max_gap, limit_area=None)
+                if s.isna().any():
+                    s = s.fillna(method='ffill', limit=max_gap).fillna(method='bfill', limit=max_gap)
+                xs_refined = s.to_numpy(dtype=np.float32)
+            except Exception:
+                pass
+
         # Helper for centroid refinement
         def get_refined_centroid(x_viterbi, row_idx):
             try:
