@@ -1873,17 +1873,7 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel, 1)
     color_score = color_mask.astype(np.float32) / 255.0
 
-    # Compute 1-pixel skeleton for black mode using ximgproc thinning.
-    # Applied AFTER grid removal so only curve pixels are thinned, not grid lines.
-    skel_thin = None
-    if mode not in colored_modes:
-        try:
-            if hasattr(cv2, 'ximgproc'):
-                skel_thin = cv2.ximgproc.thinning(
-                    color_mask, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
-                )
-        except Exception:
-            skel_thin = None
+    skel_thin = None  # Skeleton in prob map was reinforcing residual grid lines
 
     # 2) Enhanced edge detection using both Canny and Sobel.
     #    Canny finds strong edges; Sobel emphasizes horizontal gradients
@@ -2044,19 +2034,7 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
         # - sobel_y_score (15%): Boost for wiggles/spikes (dy)
         # - harris_score (10%): Boost for jagged peaks/corners
         # - diag_score (10%): Boost for diagonal segments (non-grid orientations)
-        # Build skeleton score from ximgproc thinning (1-pixel centerline)
-        skel_score = None
-        if skel_thin is not None and skel_thin.any():
-            skel_f = cv2.GaussianBlur(skel_thin.astype(np.float32), (3, 3), 0)
-            skel_max = float(skel_f.max())
-            if skel_max > 0:
-                skel_score = skel_f / skel_max
-
-        if skel_score is not None:
-            # Skeleton gets 20% — reduces edge bias, pulls DP to true centerline
-            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score + 0.20 * skel_score
-        else:
-            prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
+        prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
 
     # 6) Reuse the stronger grid-removal heuristics from preprocess_curve_track
     #    as a gating mask. This aggressively down-weights columns/rows that
@@ -6800,7 +6778,7 @@ def digitize():
             # Use user threshold for non-colored modes too (default was 1.1)
             refine_kwargs = {"dominance_ratio": snap_threshold}
         # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
-        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.15
+        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.25
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
         dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
         max_step_dp = 200 if mode in colored_modes else 10  # Allow unlimited movement to follow gamma ray spikes
