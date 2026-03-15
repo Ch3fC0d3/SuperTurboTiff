@@ -8256,6 +8256,14 @@
                             }
                         }
 
+                        if (data.curve_warnings && data.curve_warnings.length) {
+                            const dbgLines = data.curve_warnings.filter(w => w.debug).map(w => `${w.curve}: ${w.debug}`);
+                            if (dbgLines.length) {
+                                console.log('[DEBUG black mode]', dbgLines.join(' | '));
+                                message += ` 🔍 Debug: ${dbgLines.join(' | ')}`;
+                            }
+                        }
+
                         renderCurveTraceOverlays(traces);
                     } else {
                         clearCurveTraceOverlays();
