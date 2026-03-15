@@ -1879,11 +1879,8 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     if mode not in colored_modes:
         try:
             if hasattr(cv2, 'ximgproc'):
-                _, bin_for_skel = cv2.threshold(
-                    gray_processed, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-                )
                 skel_thin = cv2.ximgproc.thinning(
-                    bin_for_skel, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
+                    color_mask, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN
                 )
         except Exception:
             skel_thin = None
@@ -2056,8 +2053,8 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
                 skel_score = skel_f / skel_max
 
         if skel_score is not None:
-            # Skeleton gets 20% — reduces edge bias, pulls DP to true centerline
-            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score + 0.20 * skel_score
+            # Skeleton gets 35% — massive bias to true centerline to prevent corner cutting
+            prob = 0.10 * color_score + 0.15 * edge_enhanced + 0.15 * center_score + 0.10 * sobel_y_score + 0.10 * harris_score + 0.05 * diag_score + 0.35 * skel_score
         else:
             prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
 
@@ -6803,7 +6800,7 @@ def digitize():
             # Use user threshold for non-colored modes too (default was 1.1)
             refine_kwargs = {"dominance_ratio": snap_threshold}
         # Effectively zero smoothness penalty for colored modes to prefer jagged ink over smooth artifacts
-        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.05
+        dp_smooth_lambda = 0.001 if mode in colored_modes else 0.02
         # ALSO zero out curvature penalty to allow high-frequency wiggles/jitter
         dp_curv_lambda = 0.001 if mode in colored_modes else 0.05
         max_step_dp = 200 if mode in colored_modes else 10  # Allow unlimited movement to follow gamma ray spikes
