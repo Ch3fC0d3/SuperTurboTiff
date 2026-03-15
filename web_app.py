@@ -1452,63 +1452,6 @@ def suppress_grid_hough(gray, h_thresh_ratio=0.25, v_thresh_ratio=0.25):
     return cleaned
 
 
-def _filter_skeleton_by_direction(skel, min_angle_deg=18.0, min_length=25):
-    """Remove grid-line skeleton components via per-component PCA direction analysis.
-
-    A component is discarded when it is BOTH long enough (>= min_length px) AND
-    its dominant PCA direction is within min_angle_deg of horizontal (0°) or
-    vertical (90°).  Short segments and diagonal segments are always kept.
-
-    Parameters
-    ----------
-    skel        : uint8 binary skeleton image (255 = skeleton pixel)
-    min_angle_deg : tolerance around 0° / 90° considered "grid-like"
-    min_length  : minimum component length before direction check is applied
-
-    Returns
-    -------
-    Filtered uint8 binary skeleton image.
-    """
-    if skel is None or not skel.any():
-        return skel
-
-    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        (skel > 0).astype(np.uint8), connectivity=8
-    )
-    result = np.zeros_like(skel, dtype=np.uint8)
-
-    for i in range(1, n_labels):
-        area = int(stats[i, cv2.CC_STAT_AREA])
-        component_mask = labels == i
-
-        if area < min_length:
-            result[component_mask] = 255
-            continue
-
-        ys, xs = np.where(component_mask)
-        pts = np.column_stack([xs.astype(np.float32), ys.astype(np.float32)])
-        mean = pts.mean(axis=0)
-        pts_c = pts - mean
-
-        try:
-            _, _, vt = np.linalg.svd(pts_c, full_matrices=False)
-            direction = vt[0]
-            angle_deg = abs(np.degrees(np.arctan2(float(direction[1]), float(direction[0]))))
-            if angle_deg > 90.0:
-                angle_deg = 180.0 - angle_deg
-        except np.linalg.LinAlgError:
-            result[component_mask] = 255
-            continue
-
-        is_horizontal = angle_deg < min_angle_deg
-        is_vertical   = angle_deg > (90.0 - min_angle_deg)
-
-        if not (is_horizontal or is_vertical):
-            result[component_mask] = 255
-
-    return result
-
-
 def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allowed=True):
     """Build a soft probability map for the curve in a track ROI.
 
@@ -2095,15 +2038,12 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             diag_score /= diag_score.max()
             
         # Build skeleton score from ximgproc thinning (1-pixel centerline)
-        # Direction-filter first: discard long horizontal/vertical components (grid lines).
         skel_score = None
         if skel_thin is not None and skel_thin.any():
-            skel_filtered = _filter_skeleton_by_direction(skel_thin, min_angle_deg=18.0, min_length=25)
-            if skel_filtered is not None and skel_filtered.any():
-                skel_f = cv2.GaussianBlur(skel_filtered.astype(np.float32), (3, 3), 0)
-                skel_max = float(skel_f.max())
-                if skel_max > 0:
-                    skel_score = skel_f / skel_max
+            skel_f = cv2.GaussianBlur(skel_thin.astype(np.float32), (3, 3), 0)
+            skel_max = float(skel_f.max())
+            if skel_max > 0:
+                skel_score = skel_f / skel_max
 
         if skel_score is not None:
             # Skeleton gets 20% — reduces edge bias, pulls DP to true centerline
