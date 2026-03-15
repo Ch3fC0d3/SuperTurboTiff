@@ -1452,86 +1452,6 @@ def suppress_grid_hough(gray, h_thresh_ratio=0.25, v_thresh_ratio=0.25):
     return cleaned
 
 
-def _imagej_ridge_detection(gray, sigma=2.5, low_thresh=0.05, high_thresh=0.20, dark_line=True):
-    """ImageJ-style ridge detector: Hessian eigenvalues + vectorized NMS + hysteresis.
-
-    Matches the algorithm of the ImageJ Ridge Detection plugin (Steger 1998,
-    extended with Canny-style hysteresis).  Pure NumPy/OpenCV — no extra deps.
-    Returns a float32 map in [0, 1] where 1 = confirmed ridge pixel.
-    """
-    h, w = gray.shape
-    img_f = 255.0 - gray.astype(np.float32) if dark_line else gray.astype(np.float32)
-
-    ksize = max(3, 2 * int(np.ceil(3.0 * sigma)) + 1)
-    blurred = cv2.GaussianBlur(img_f, (ksize, ksize), sigma)
-
-    dxx = cv2.Sobel(blurred, cv2.CV_32F, 2, 0, ksize=3)
-    dyy = cv2.Sobel(blurred, cv2.CV_32F, 0, 2, ksize=3)
-    dxy = cv2.Sobel(blurred, cv2.CV_32F, 1, 1, ksize=3)
-
-    # Eigenvalues of symmetric 2x2 Hessian per pixel
-    trace = dxx + dyy
-    disc  = np.sqrt(np.maximum(0.0, (dxx - dyy) ** 2 + 4.0 * dxy * dxy))
-    lam1  = 0.5 * (trace + disc)   # larger eigenvalue
-    lam2  = 0.5 * (trace - disc)   # smaller eigenvalue
-
-    # Ridgeness: for dark-on-light ridges lam2 should be large & negative
-    ridgeness = np.where(lam2 < 0, np.abs(lam2), 0.0).astype(np.float32)
-    rmax = float(ridgeness.max())
-    if rmax <= 0:
-        return ridgeness
-    ridgeness /= rmax
-
-    # --- Vectorized Non-Maximum Suppression ---
-    # Normal direction to the ridge = eigenvector of lam2
-    nx = dxy.copy()
-    ny = lam2 - dxx
-    norm = np.sqrt(nx * nx + ny * ny)
-    norm = np.where(norm > 1e-8, norm, 1.0)
-    nx /= norm
-    ny /= norm
-    angle = np.abs(np.arctan2(ny, nx) * (180.0 / np.pi)) % 180.0
-
-    # Four quantized directions (horizontal, 45°, vertical, 135°)
-    is_h   = (angle <  22.5) | (angle >= 157.5)
-    is_d45 = (angle >= 22.5) & (angle <  67.5)
-    is_v   = (angle >= 67.5) & (angle < 112.5)
-    is_d135= (angle >= 112.5)& (angle < 157.5)
-
-    # Shifted neighbours (use constant padding to avoid wrap-around artefacts)
-    pad = np.pad(ridgeness, 1, mode='edge')
-    n_right = pad[1:-1, 2:]
-    n_left  = pad[1:-1, :-2]
-    n_down  = pad[2:,   1:-1]
-    n_up    = pad[:-2,  1:-1]
-    n_dr    = pad[2:,   2:]
-    n_ul    = pad[:-2,  :-2]
-    n_ur    = pad[:-2,  2:]
-    n_dl    = pad[2:,   :-2]
-
-    suppressed = ridgeness.copy()
-    suppressed[is_h    & ((ridgeness < n_right) | (ridgeness < n_left))]  = 0.0
-    suppressed[is_d45  & ((ridgeness < n_ur)    | (ridgeness < n_dl))]    = 0.0
-    suppressed[is_v    & ((ridgeness < n_up)    | (ridgeness < n_down))]  = 0.0
-    suppressed[is_d135 & ((ridgeness < n_ul)    | (ridgeness < n_dr))]    = 0.0
-
-    # --- Hysteresis Thresholding (Canny-style) ---
-    strong = (suppressed >= high_thresh).astype(np.uint8)
-    weak   = ((suppressed >= low_thresh) & (suppressed < high_thresh)).astype(np.uint8)
-
-    # Any connected weak component that touches a strong pixel is kept
-    _, labels = cv2.connectedComponents((strong | weak).astype(np.uint8), 8)
-    # Which labels touch a strong pixel?
-    strong_labels = set(np.unique(labels[strong > 0]))
-    strong_labels.discard(0)
-
-    final = np.zeros_like(suppressed)
-    for lbl in strong_labels:
-        final[labels == lbl] = suppressed[labels == lbl]
-
-    return final
-
-
 def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allowed=True):
     """Build a soft probability map for the curve in a track ROI.
 
@@ -2125,29 +2045,9 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             if skel_max > 0:
                 skel_score = skel_f / skel_max
 
-        # ImageJ-style Hessian ridge detection (NMS + hysteresis) on grid-suppressed gray
-        ridge_score = None
-        try:
-            _src = gray_processed if is_bw_log else gray
-            _rs = _imagej_ridge_detection(_src, sigma=2.5, low_thresh=0.05, high_thresh=0.20, dark_line=True)
-            if _rs.any():
-                ridge_score = _rs
-        except Exception:
-            ridge_score = None
-
-        # Combined centerline: take the stronger signal at each pixel
-        if skel_score is not None and ridge_score is not None:
-            center_line = np.maximum(skel_score, ridge_score)
-        elif ridge_score is not None:
-            center_line = ridge_score
-        elif skel_score is not None:
-            center_line = skel_score
-        else:
-            center_line = None
-
-        if center_line is not None:
-            # Centerline gets 20% — pulls DP to true ink center
-            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score + 0.20 * center_line
+        if skel_score is not None:
+            # Skeleton gets 20% — reduces edge bias, pulls DP to true centerline
+            prob = 0.10 * color_score + 0.20 * edge_enhanced + 0.15 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score + 0.20 * skel_score
         else:
             prob = 0.15 * color_score + 0.30 * edge_enhanced + 0.20 * center_score + 0.15 * sobel_y_score + 0.10 * harris_score + 0.10 * diag_score
 
