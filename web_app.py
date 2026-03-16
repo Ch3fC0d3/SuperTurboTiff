@@ -3142,13 +3142,8 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                         right_valley = np.percentile(right_region, 20)
                         prominence = row[x] - max(left_valley, right_valley)
                         
-                        # Ultra-low threshold for GR logs
-                        if curve_type.upper() == "GR":
-                            prominence_threshold = 0.005  # Almost any peak
-                        else:
-                            prominence_threshold = 0.01
-                        
-                        if prominence > prominence_threshold:
+                        # Use provided min_prominence
+                        if prominence > min_prominence:
                             # Accept even flat peaks
                             peaks.append((y, x, prominence))
         
@@ -3403,7 +3398,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                 continue
             # Use either provided prominence or local prob as strength
             strength = float(prom) if np.isfinite(prom) else float(prob_map[py_i, px_i])
-            if strength <= 0.01:
+            if strength <= 0.005:
                 continue
             strong_peaks.append((py_i, px_i, strength))
 
@@ -3424,20 +3419,40 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
 
         for cluster in clusters:
             # Pick a crest candidate within this vertical group.
-            # We bias toward the hot side (right/left) while still requiring
-            # a strong probability value.
+            # Strategy: Find the strongest peak, but prefer "tips" (hot side)
+            # if they are reasonably strong (at least 50% of the max score in the cluster).
+            
+            # 1. Find max score in cluster
+            max_s = -1.0
+            for py, px, prom in cluster:
+                s = float(prob_map[py, px])
+                if s > max_s:
+                    max_s = s
+            
+            # 2. Select best candidate among those with reasonable score
+            threshold = max(0.01, max_s * 0.5)
+            best_key = None
             best_py, best_px, best_score = None, None, -1.0
+            
             for py, px, prom in cluster:
                 score = float(prob_map[py, px])
+                if score < threshold:
+                    continue
+                    
+                # Bias toward the hot side for the "key" (tie-breaking or primary sort)
                 if hot_side == "right":
+                    # Prioritize right-most X, then score
                     key = (px, score)
                 elif hot_side == "left":
+                    # Prioritize left-most X (largest -px), then score
                     key = (-px, score)
                 else:
-                    key = (score,)
+                    # Just score
+                    key = (score, 0)
 
-                # Simple dominance: prefer higher score, then more extreme X
-                if score > best_score:
+                # Select best candidate based on direction-aware key
+                if best_key is None or key > best_key:
+                    best_key = key
                     best_score = score
                     best_py, best_px = py, px
 
@@ -3450,6 +3465,27 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                 continue
 
             x_curr = xs_out[y] if np.isfinite(xs_out[y]) else None
+            
+            # TELEPORTATION GUARD:
+            # Prevent snapping to peaks far from the existing trace.
+            # If the current row has no trace, check neighbors to establish context.
+            ref_x = x_curr
+            if ref_x is None:
+                # Search neighbors for a valid reference point
+                for offset in [1, -1, 2, -2, 3, -3, 4, -4, 5, -5]:
+                    ny = y + offset
+                    if 0 <= ny < h and np.isfinite(xs_out[ny]):
+                        ref_x = xs_out[ny]
+                        break
+            
+            # If we have a reference, enforce distance limit (30px)
+            if ref_x is not None:
+                if abs(x_peak - ref_x) > 30:
+                    continue
+            else:
+                # If no reference nearby (isolated point), unsafe to snap -> skip
+                continue
+
             x_curr_int = int(round(x_curr)) if x_curr is not None else None
 
             p_peak = float(prob_map[y, x_peak])
@@ -3482,7 +3518,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     confidence = np.zeros(h, dtype=np.float32)
     
     # Peak-aware fusion with curvature refinement
-    peaks = detect_local_peaks(prob, min_prominence=0.01) if curve_type.upper() == "GR" else []
+    peaks = detect_local_peaks(prob, min_prominence=0.005) if curve_type.upper() == "GR" else []
     
     for y in range(h):
         valid_indices = []
@@ -7013,7 +7049,8 @@ def digitize():
             # Run the peak pusher on the original resolution to catch the absolute edges
             # that might have been smoothed by downsampling.
             # Use small buffer (0.2) to be very sticky to tips.
-            xs = refine_peaks_and_valleys(mask, xs, search_radius=100, min_prob=0.005)
+            # Reduced search radius to 30px to prevent teleporting to distant noise.
+            xs = refine_peaks_and_valleys(mask, xs, search_radius=30, min_prob=0.005)
 
             # Gentle centerline refinement to re-center on ink after outer-edge bias and fusion
             try:
