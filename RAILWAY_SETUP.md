@@ -49,7 +49,7 @@ Hugging Face support depends on your account and which models are available via 
 ## How to Set Environment Variables in Railway
 
 1. Go to your Railway project dashboard
-2. Click on your service (tifflas-production)
+2. Click on your service (turbotifflas-production)
 3. Go to **Variables** tab
 4. Add each variable:
    - Click **+ New Variable**
@@ -110,7 +110,7 @@ def debug_env():
     })
 ```
 
-Then visit: `https://tifflas-production.up.railway.app/debug-env`
+Then visit: `https://turbotifflas-production.up.railway.app/debug-env`
 
 ### Common Issues
 - **OCR not working**: Google Vision credentials not set or invalid

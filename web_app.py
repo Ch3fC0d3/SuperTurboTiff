@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-web_app.py — Flask web app for TIFF→LAS digitizer with Google Vision API
+web_app.py — Flask web app for TurboTIFFLAS with Google Vision API
 
 Setup:
 1. pip install flask google-cloud-vision opencv-python numpy pandas
@@ -11,6 +11,17 @@ Setup:
 
 Free hosting: Deploy to Render.com, Railway.app, or Google Cloud Run
 """
+import sys
+
+# Avoid Windows console encoding crashes from existing log messages.
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 # Vision API is optional; initialize later after env vars are loaded.
 VISION_API_AVAILABLE = False
 vision_client = None
@@ -1537,29 +1548,40 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     # Use enhanced image for better hue detection in faded areas
     colored_modes = {"green", "red", "blue", "auto", "cyan", "magenta", "yellow", "orange", "purple"}
     detected_hue = None
+    black_horizontal_grid_mask = None
     if mode in colored_modes:
         detected_hue = detect_dominant_curve_hue(roi_enhanced)
     
     if mode == "green":
-        # PERMISSIVE green detection again - we need to catch the faint tips
-        # We'll rely on the tracer logic to ignore grid noise
-        # Increased saturation min from 30 to 50 to reject gray vertical lines
-        lower = np.array([25, 50, 30], dtype=np.uint8)
-        upper = np.array([95, 255, 255], dtype=np.uint8)
+        # Keep green detection inclusive enough for faint tips, but tighten it
+        # around the observed hue so nearby blue/cyan ink does not pull the path.
+        if detected_hue is not None:
+            hue_center, hue_range = detected_hue
+            if 28 <= hue_center <= 105:
+                band = max(8, min(14, int(round(hue_range))))
+                h_lo = max(25, int(round(hue_center)) - band)
+                h_hi = min(105, int(round(hue_center)) + band)
+            else:
+                h_lo, h_hi = 30, 95
+        else:
+            h_lo, h_hi = 30, 95
+        lower = np.array([h_lo, 45, 25], dtype=np.uint8)
+        upper = np.array([h_hi, 255, 255], dtype=np.uint8)
         color_mask = cv2.inRange(hsv, lower, upper)
         
-        # Suppress red/orange pixels
+        # Suppress obviously non-green ink from nearby overplotted curves.
         b, g, r = cv2.split(roi_enhanced)
         r16 = r.astype(np.int16)
         g16 = g.astype(np.int16)
         b16 = b.astype(np.int16)
         
-        # Only suppress clearly red pixels
         clearly_red = (r16 > g16 + 30) & (r16 > b16 + 30)
+        clearly_blue = (b16 > g16 + 12) & (b16 > r16 + 8)
         color_mask[clearly_red] = 0
+        color_mask[clearly_blue] = 0
         
-        # Weak G-dominance check (allow if G is just slightly higher or equal)
-        g_dominant = (g16 >= r16 - 5) & (g16 >= b16 - 5)
+        # Require a slight green lead over blue so cyan/blue neighbors do not leak in.
+        g_dominant = (g16 + 4 >= r16) & (g16 >= b16 + 2)
         color_mask[~g_dominant] = 0
 
     elif mode == "auto":
@@ -1867,6 +1889,7 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
             
             v_lines = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, k_v)
             h_lines = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, k_h)
+            black_horizontal_grid_mask = h_lines > 0
             lines = cv2.bitwise_or(v_lines, h_lines)
             color_mask = cv2.bitwise_and(color_mask, cv2.bitwise_not(lines))
 
@@ -1905,6 +1928,12 @@ def compute_prob_map(roi_bgr, mode="black", ui_filters=None, _dual_polarity_allo
     # For color modes, gate edges by color mask to suppress non-colored edges
     if mode in colored_modes:
         edge_score *= color_score
+    elif black_horizontal_grid_mask is not None:
+        try:
+            if black_horizontal_grid_mask.shape == edge_score.shape:
+                edge_score[black_horizontal_grid_mask] *= 0.08
+        except Exception:
+            pass
 
     # 3) Suppress vertical "rails" (grid / borders) and track edges
     # REMOVED morphological erasure because it was deleting steep curve segments.
@@ -4710,6 +4739,200 @@ def remove_outliers_and_smooth(xs, window=5, outlier_threshold=3.0):
     return s.to_numpy(dtype=np.float32)
 
 
+def suppress_isolated_trace_teleports(
+    xs,
+    confidence=None,
+    width_px=None,
+    iterations=2,
+    max_run=1,
+    confidence_guard=1.15,
+    run_spread_px=None,
+):
+    """Remove short teleport excursions without flattening real curve structure."""
+    if xs is None or not hasattr(xs, "size") or xs.size < 5:
+        return xs
+
+    xs_out = xs.astype(np.float32, copy=True)
+    conf = None
+    if confidence is not None and hasattr(confidence, "size") and confidence.size == xs_out.size:
+        conf = confidence.astype(np.float32, copy=False)
+
+    try:
+        width_est = float(width_px)
+    except Exception:
+        width_est = float("nan")
+
+    if not np.isfinite(width_est) or width_est <= 0:
+        jump_px = 12.0
+    else:
+        jump_px = max(6.0, min(28.0, width_est * 0.08))
+    bridge_px = max(2.5, jump_px * 0.35)
+
+    for _ in range(max(1, int(iterations))):
+        changed = False
+        valid = np.isfinite(xs_out)
+        i = 2
+        while i < xs_out.size - 2:
+            if not valid[i]:
+                i += 1
+                continue
+
+            replaced = False
+            max_local_run = max(1, int(max_run))
+            for run_len in range(1, max_local_run + 1):
+                j = i + run_len - 1
+                if j >= xs_out.size - 2:
+                    break
+
+                run_vals = xs_out[i:j + 1]
+                if not np.all(np.isfinite(run_vals)):
+                    continue
+                if run_len > 1 and run_spread_px is not None:
+                    try:
+                        run_spread_limit = float(run_spread_px)
+                    except Exception:
+                        run_spread_limit = float("nan")
+                    if np.isfinite(run_spread_limit):
+                        if float(np.max(run_vals) - np.min(run_vals)) > run_spread_limit:
+                            continue
+
+                left_vals = xs_out[i - 2:i][np.isfinite(xs_out[i - 2:i])]
+                right_vals = xs_out[j + 1:j + 3][np.isfinite(xs_out[j + 1:j + 3])]
+                if left_vals.size == 0 or right_vals.size == 0:
+                    continue
+
+                left_ref = float(np.median(left_vals))
+                right_ref = float(np.median(right_vals))
+                if abs(left_ref - right_ref) > bridge_px:
+                    continue
+
+                pred = 0.5 * (left_ref + right_ref)
+                run_dist = np.abs(run_vals.astype(np.float32) - pred)
+                if not np.all(run_dist > jump_px):
+                    continue
+
+                if np.any(np.abs(run_vals.astype(np.float32) - left_ref) <= jump_px):
+                    continue
+                if np.any(np.abs(run_vals.astype(np.float32) - right_ref) <= jump_px):
+                    continue
+
+                if conf is not None:
+                    neigh_conf = np.concatenate((conf[i - 2:i], conf[j + 1:j + 3]))
+                    neigh_conf = neigh_conf[np.isfinite(neigh_conf)]
+                    run_conf = conf[i:j + 1]
+                    run_conf = run_conf[np.isfinite(run_conf)]
+                    if neigh_conf.size >= 2 and run_conf.size > 0:
+                        if float(np.median(run_conf)) > max(0.12, float(np.median(neigh_conf)) * float(confidence_guard)):
+                            continue
+
+                left_anchor = float(xs_out[i - 1]) if np.isfinite(xs_out[i - 1]) else left_ref
+                right_anchor = float(xs_out[j + 1]) if np.isfinite(xs_out[j + 1]) else right_ref
+                interp = np.linspace(left_anchor, right_anchor, run_len + 2, dtype=np.float32)[1:-1]
+                xs_out[i:j + 1] = interp
+                changed = True
+                replaced = True
+                i = j + 1
+                break
+
+            i += 1
+            if replaced:
+                continue
+
+        if not changed:
+            break
+
+    return xs_out
+
+
+def get_trace_cleanup_kwargs(mode=None, curve_type=None):
+    """Tune short-run teleport cleanup per trace family."""
+    mode_name = str(mode or "black").strip().lower()
+    curve_name = str(curve_type or "").strip().upper()
+
+    cleanup = {
+        "iterations": 2,
+        "max_run": 1,
+        "confidence_guard": 1.15,
+    }
+
+    if mode_name == "black":
+        cleanup.update({
+            "iterations": 2,
+            "max_run": 3,
+            "confidence_guard": 1.25,
+            "run_spread_px": 2.5,
+        })
+        if curve_name == "GR":
+            cleanup.update({
+                "max_run": 2,
+                "confidence_guard": 1.2,
+                "run_spread_px": 2.0,
+            })
+
+    return cleanup
+
+
+def suppress_sparse_lateral_outliers(xs, confidence=None, width_px=None, window=9, max_run=2, confidence_guard=1.1):
+    """Trim short low-confidence excursions that sit far off the local trend."""
+    if xs is None or not hasattr(xs, "size") or xs.size < 7:
+        return xs
+
+    xs_out = xs.astype(np.float32, copy=True)
+    trend = pd.Series(xs_out).rolling(int(max(3, window)), min_periods=3, center=True).median().to_numpy(dtype=np.float32)
+    valid = np.isfinite(xs_out) & np.isfinite(trend)
+    if not np.any(valid):
+        return xs_out
+
+    conf = None
+    if confidence is not None and hasattr(confidence, "size") and confidence.size == xs_out.size:
+        conf = confidence.astype(np.float32, copy=False)
+
+    try:
+        width_est = float(width_px)
+    except Exception:
+        width_est = float("nan")
+
+    if not np.isfinite(width_est) or width_est <= 0:
+        jump_px = 10.0
+    else:
+        jump_px = max(8.0, min(24.0, width_est * 0.065))
+
+    i = 0
+    n = xs_out.size
+    while i < n:
+        if not valid[i] or abs(float(xs_out[i]) - float(trend[i])) <= jump_px:
+            i += 1
+            continue
+
+        j = i
+        while j + 1 < n and valid[j + 1] and abs(float(xs_out[j + 1]) - float(trend[j + 1])) > jump_px:
+            j += 1
+
+        run_len = j - i + 1
+        if run_len <= max(1, int(max_run)):
+            if conf is not None:
+                neigh_conf = conf[max(0, i - 2):i].tolist() + conf[j + 1:min(n, j + 3)].tolist()
+                neigh_conf = np.asarray([v for v in neigh_conf if np.isfinite(v)], dtype=np.float32)
+                run_conf = conf[i:j + 1]
+                run_conf = run_conf[np.isfinite(run_conf)]
+                if neigh_conf.size >= 2 and run_conf.size > 0:
+                    if float(np.median(run_conf)) > max(0.12, float(np.median(neigh_conf)) * float(confidence_guard)):
+                        i = j + 1
+                        continue
+
+            left_anchor = xs_out[i - 1] if i - 1 >= 0 and np.isfinite(xs_out[i - 1]) else np.nan
+            right_anchor = xs_out[j + 1] if j + 1 < n and np.isfinite(xs_out[j + 1]) else np.nan
+            if np.isfinite(left_anchor) and np.isfinite(right_anchor):
+                repl = np.linspace(float(left_anchor), float(right_anchor), run_len + 2, dtype=np.float32)[1:-1]
+            else:
+                repl = trend[i:j + 1]
+            xs_out[i:j + 1] = repl
+
+        i = j + 1
+
+    return xs_out
+
+
 def pick_curve_x_per_row(mask, min_run=2):
     h, w = mask.shape
     xs = np.full(h, np.nan, dtype=np.float32)
@@ -7115,6 +7338,12 @@ def digitize():
             if s.isna().any():
                 s = s.fillna(method='ffill', limit=max_gap).fillna(method='bfill', limit=max_gap)
             xs = s.to_numpy(dtype=np.float32)
+            xs = suppress_isolated_trace_teleports(
+                xs,
+                confidence=confidence,
+                width_px=width_px,
+                **get_trace_cleanup_kwargs(mode, curve_type),
+            )
 
         # For colored modes, apply specific enhancements (GR peaks, centerline refinement)
         if mode in colored_modes:
@@ -7185,7 +7414,37 @@ def digitize():
                             xs_refined_final[y] = x_min + local_peak_idx
                 
                 xs = xs_refined_final
+
+            xs = suppress_isolated_trace_teleports(
+                xs,
+                confidence=confidence,
+                width_px=width_px,
+                **get_trace_cleanup_kwargs(mode, curve_type),
+            )
         else:
+            try:
+                xs = refine_to_stroke_centerline(
+                    mask,
+                    xs,
+                    threshold_ratio=0.45,
+                    window_size=8 if curve_type.upper() == "GR" else 10,
+                )
+            except Exception:
+                pass
+
+            xs = suppress_isolated_trace_teleports(
+                xs,
+                confidence=confidence,
+                width_px=width_px,
+                **get_trace_cleanup_kwargs(mode, curve_type),
+            )
+            if mode == "black":
+                xs = suppress_sparse_lateral_outliers(
+                    xs,
+                    confidence=confidence,
+                    width_px=width_px,
+                )
+
             # For non-colored modes, keep the original vertical-rail rejection logic
             xs_valid = xs[~np.isnan(xs)]
             if xs_valid.size > 0:
@@ -7702,6 +7961,31 @@ def refine_edit():
                 if s.isna().any():
                     s = s.fillna(method='ffill', limit=max_gap).fillna(method='bfill', limit=max_gap)
                 xs_refined = s.to_numpy(dtype=np.float32)
+            except Exception:
+                pass
+            if mode not in colored_modes:
+                try:
+                    xs_refined = refine_to_stroke_centerline(
+                        mask,
+                        xs_refined,
+                        threshold_ratio=0.45,
+                        window_size=8 if curve_type == 'GR' else 10,
+                    )
+                except Exception:
+                    pass
+            try:
+                xs_refined = suppress_isolated_trace_teleports(
+                    xs_refined,
+                    confidence=confidence,
+                    width_px=mask.shape[1] if mask is not None else None,
+                    **get_trace_cleanup_kwargs(mode, curve_type),
+                )
+                if mode == "black":
+                    xs_refined = suppress_sparse_lateral_outliers(
+                        xs_refined,
+                        confidence=confidence,
+                        width_px=mask.shape[1] if mask is not None else None,
+                    )
             except Exception:
                 pass
 
@@ -8647,7 +8931,7 @@ if __name__ == '__main__':
     os.makedirs('templates', exist_ok=True)
     os.makedirs('static', exist_ok=True)
     
-    print("🚀 Starting TIFF→LAS Web App")
+    print("🚀 Starting TurboTIFFLAS Web App")
     print(f"📊 Google Vision API: {'✅ Available' if VISION_API_AVAILABLE else '⚠️  Not configured'}")
     print("🌐 Open: http://localhost:5000")
     

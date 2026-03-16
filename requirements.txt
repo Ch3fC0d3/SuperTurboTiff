@@ -6,7 +6,7 @@ pandas==2.1.4
 gunicorn==21.2.0
 google-cloud-vision==3.5.0
 lasio==0.30.0
-setuptools>=65.0.0
+setuptools>=65.0.0,<81.0.0
 requests>=2.31.0
 huggingface-hub>=0.25.0
 openai>=0.28.0,<1.0.0

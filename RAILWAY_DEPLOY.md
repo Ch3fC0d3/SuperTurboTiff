@@ -1,6 +1,6 @@
 # 🚂 Deploy to Railway.app (Supports Large Files!)
 
-Railway.app is better for your TIFF→LAS app because:
+Railway.app is better for your TurboTIFFLAS app because:
 - ✅ **100MB+ file uploads** (vs Vercel's 4.5MB limit)
 - ✅ **Longer processing time** (no 10-second timeout)
 - ✅ **Real server** (not serverless functions)
@@ -12,12 +12,12 @@ Railway.app is better for your TIFF→LAS app because:
 
 1. **Push code to GitHub** (if not already):
    ```bash
-   cd D:\Users\gabep\Desktop\tifflas
+   cd D:\Users\gabep\Desktop\turbotifflas
    git init
    git add .
    git commit -m "TIFF to LAS web app"
    git branch -M main
-   git remote add origin https://github.com/yourusername/tifflas.git
+   git remote add origin https://github.com/yourusername/turbotifflas.git
    git push -u origin main
    ```
 
@@ -25,11 +25,11 @@ Railway.app is better for your TIFF→LAS app because:
    - Go to https://railway.app
    - Click "Start a New Project"
    - Choose "Deploy from GitHub repo"
-   - Select your `tifflas` repository
+   - Select your `turbotifflas` repository
    - Railway auto-detects Python and deploys!
 
 3. **Get your URL**:
-   - Railway gives you a URL like: `https://tifflas-production.up.railway.app`
+   - Railway gives you a URL like: `https://turbotifflas-production.up.railway.app`
    - Share this with users!
 
 ### Option 2: Deploy from CLI
@@ -41,7 +41,7 @@ Railway.app is better for your TIFF→LAS app because:
 
 2. **Login and deploy**:
    ```bash
-   cd D:\Users\gabep\Desktop\tifflas
+   cd D:\Users\gabep\Desktop\turbotifflas
    railway login
    railway init
    railway up

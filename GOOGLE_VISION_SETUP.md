@@ -11,7 +11,7 @@
 2. **Create a new project**
    - Click the project dropdown at the top (next to "Google Cloud")
    - Click "NEW PROJECT"
-   - Project name: `tifflas-ocr` (or any name you like)
+   - Project name: `turbotifflas-ocr` (or any name you like)
    - Click "CREATE"
    - Wait for the project to be created (takes ~30 seconds)
 
@@ -28,7 +28,7 @@
 
 1. **Enable the API**
    - Go to: https://console.cloud.google.com/apis/library/vision.googleapis.com
-   - Make sure your project (`tifflas-ocr`) is selected at the top
+   - Make sure your project (`turbotifflas-ocr`) is selected at the top
    - Click "ENABLE"
    - Wait for it to enable (~10 seconds)
 
@@ -40,7 +40,7 @@
 
 2. **Create service account**
    - Click "CREATE SERVICE ACCOUNT"
-   - Service account name: `tifflas-vision`
+   - Service account name: `turbotifflas-vision`
    - Service account ID: (auto-filled, leave as is)
    - Click "CREATE AND CONTINUE"
 
@@ -61,9 +61,9 @@
 
 2. **Save the file**
    - A JSON file will download automatically
-   - File name: something like `tifflas-ocr-abc123.json`
+   - File name: something like `turbotifflas-ocr-abc123.json`
    - **IMPORTANT**: Save this file securely - it's your API credential!
-   - Suggested location: `D:\Users\gabep\Desktop\tifflas\google-vision-key.json`
+   - Suggested location: `D:\Users\gabep\Desktop\turbotifflas\google-vision-key.json`
 
 ### Step 6: Add Key to .gitignore (Security!)
 
@@ -83,7 +83,7 @@ If not, add it now to prevent accidentally pushing your key to GitHub.
 
 1. **Set environment variable** (Windows PowerShell):
    ```powershell
-   $env:GOOGLE_APPLICATION_CREDENTIALS="D:\Users\gabep\Desktop\tifflas\google-vision-key.json"
+$env:GOOGLE_APPLICATION_CREDENTIALS="D:\Users\gabep\Desktop\turbotifflas\google-vision-key.json"
    python web_app.py
    ```
 
@@ -91,7 +91,7 @@ If not, add it now to prevent accidentally pushing your key to GitHub.
    Edit `web_app.py` and add after imports:
    ```python
    import os
-   os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r'D:\Users\gabep\Desktop\tifflas\google-vision-key.json'
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r'D:\Users\gabep\Desktop\turbotifflas\google-vision-key.json'
    ```
 
 #### For Railway Deployment:

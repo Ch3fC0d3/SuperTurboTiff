@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TIFF→LAS Digitizer</title>
+    <title>TurboTIFFLAS</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" crossorigin="anonymous"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -833,7 +833,7 @@
     <div id="introModalBackdrop" class="intro-backdrop hidden" onclick="closeIntroModal()">
         <div id="introModal" class="intro-modal" onclick="event.stopPropagation()">
             <button type="button" class="intro-modal-close" onclick="closeIntroModal()" aria-label="Close">×</button>
-            <h2>Welcome to TIFF→LAS Digitizer</h2>
+            <h2>Welcome to TurboTIFFLAS</h2>
             <p>This tool converts well log images (TIFF/PNG/JPG) into QuickSyn-style LAS 1.2 files. The AI suggests defaults, but you stay in control.</p>
             <ol>
                 <li><strong>Upload image:</strong> Drop or choose your log in Step 1. The preview appears in Step 2.</li>
@@ -844,7 +844,7 @@
             </ol>
             <p style="font-size: 0.85em; color: #555;">Tip: The AI never overwrites your choices. Treat suggestions as starting points, especially for depth anchors and curve labels.</p>
             <p style="font-size: 0.85em; color: #555; margin-top: 4px;">More details (QuickSyn expectations, examples, troubleshooting):
-                <a href="https://github.com/Ch3fC0d3/tifflas#readme" target="_blank" rel="noopener noreferrer">see the full README on GitHub</a>.
+                <a href="https://github.com/Ch3fC0d3/turbotifflas#readme" target="_blank" rel="noopener noreferrer">see the full README on GitHub</a>.
             </p>
             <div class="intro-modal-actions">
                 <button type="button" class="btn" style="padding: 8px 16px; font-size: 0.9em;" onclick="closeIntroModal()">Got it</button>
@@ -854,7 +854,7 @@
 
     <div class="container">
         <div class="header">
-            <h1>TIFF→LAS Digitizer</h1>
+            <h1>TurboTIFFLAS</h1>
             <p>Convert legacy well log images to standard LAS files using Computer Vision</p>
             <a href="/las_viewer" class="las-viewer-btn" onclick="openLasViewerWithData(event)">📈 LAS Viewer</a>
             <a href="/logout" class="logout-btn">Logout</a>
@@ -1485,8 +1485,8 @@
             }
         }
 
-        const DEPTH_SESSION_KEY = 'tifflas_depth_config_v1';
-        const INTRO_SESSION_KEY = 'tifflas_intro_seen_v1';
+        const DEPTH_SESSION_KEY = 'turbotifflas_depth_config_v1';
+        const INTRO_SESSION_KEY = 'turbotifflas_intro_seen_v1';
 
         function updateDisplayBaseScale() {
             try {
@@ -1600,9 +1600,9 @@
         let overlayPointSize = 0.8;
         let overlaySettingsByCurveId = {};
 
-        const OVERLAY_SETTINGS_STORAGE_KEY = 'tifflas.overlaySettingsByCurveId.v1';
-        const OVERLAY_ACTIVE_STORAGE_KEY = 'tifflas.overlayActiveTarget.v1';
-        const OVERLAY_UI_STORAGE_KEY = 'tifflas.overlayUiState.v1';
+        const OVERLAY_SETTINGS_STORAGE_KEY = 'turbotifflas.overlaySettingsByCurveId.v1';
+        const OVERLAY_ACTIVE_STORAGE_KEY = 'turbotifflas.overlayActiveTarget.v1';
+        const OVERLAY_UI_STORAGE_KEY = 'turbotifflas.overlayUiState.v1';
 
         function saveOverlaySettingsToStorage() {
             try {
@@ -7463,6 +7463,16 @@
             // Calculate scale from image coords to base canvas coords
             const scaleX = rect.width / w;
             const scaleY = rect.height / h;
+            const jumpBreakDomPx = Math.max(18, rect.width * 0.02);
+            const jumpBreakSlope = 6.0;
+            const isImplausibleJump = (p0, p1) => {
+                if (!Array.isArray(p0) || !Array.isArray(p1) || p0.length < 2 || p1.length < 2) return false;
+                const dxDom = Math.abs((Number(p1[0]) - Number(p0[0])) * scaleX);
+                const dyDom = Math.abs((Number(p1[1]) - Number(p0[1])) * scaleY);
+                if (!Number.isFinite(dxDom) || !Number.isFinite(dyDom)) return false;
+                if (dxDom <= jumpBreakDomPx) return false;
+                return dxDom > Math.max(jumpBreakDomPx, dyDom * jumpBreakSlope);
+            };
 
             ctx.lineJoin = 'round';
             ctx.lineCap = 'round';
@@ -7569,7 +7579,7 @@
                         for (let i = 0; i < sortedPoints.length; i++) {
                             const xDom = (sortedPoints[i][0] * scaleX);
                             const yDom = (sortedPoints[i][1] * scaleY);
-                            if (!started) {
+                            if (!started || (i > 0 && isImplausibleJump(sortedPoints[i - 1], sortedPoints[i]))) {
                                 ctx.moveTo(xDom, yDom);
                                 started = true;
                             } else {
@@ -7620,6 +7630,7 @@
                         const dy = y1 - y0;
                         const domDx = dx * scaleX;
                         const domDy = dy * scaleY;
+                        if (isImplausibleJump(p0, p1)) continue;
                         const domDist = Math.hypot(domDx, domDy);
                         if (domDist <= desiredDomStep) continue;
 

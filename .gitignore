@@ -12,6 +12,8 @@ __pycache__/
 venv/
 env/
 .venv/
+*.stdout.log
+*.stderr.log
 
 # Large training / data files (too big for GitHub)
 batch_digitize_results.jsonl

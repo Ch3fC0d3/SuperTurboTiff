@@ -1,4 +1,4 @@
-"""Vercel entry point for the TIFF→LAS Flask application."""
+"""Vercel entry point for the TurboTIFFLAS Flask application."""
 import sys
 import os
 
