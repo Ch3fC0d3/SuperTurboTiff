@@ -72,14 +72,46 @@ except Exception:
 # Phase 1 & 2: Learning system imports
 from user_tracker import tracker
 from parameter_learner import ParameterLearner
-from ai_tracer import AITracer
+from ai_tracer import AITracer, CurveSegNet, LegacyCurveTraceNet
 
 # Initialize learning system after all imports
 learner = ParameterLearner(tracker)
 import hashlib
 
+def _default_curve_trace_model_candidates() -> List[Path]:
+    repo_dir = Path(__file__).resolve().parent
+    candidates = [
+        repo_dir / 'models' / 'testtiflas_black_seg_v2.pt',
+        Path.cwd() / 'models' / 'testtiflas_black_seg_v2.pt',
+        repo_dir / 'curve_trace_model.pt',
+        Path.cwd() / 'curve_trace_model.pt',
+    ]
+    return candidates
+
+
+def _resolve_default_curve_trace_model_path() -> str:
+    env_path = os.environ.get("CURVE_TRACE_MODEL_PATH")
+    if env_path:
+        return env_path
+
+    candidates = _default_curve_trace_model_candidates()
+    for p in candidates:
+        try:
+            if p.exists():
+                return str(p)
+        except Exception:
+            continue
+    return str(candidates[0])
+
+
+def _experimental_black_ai_enabled() -> bool:
+    value = str(os.environ.get("TURBOTIFFLAS_ENABLE_EXPERIMENTAL_BLACK_AI", "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 # Initialize AI tracer
-ai_tracer = AITracer("curve_trace_model.pt")
+AI_TRACER_MODEL_PATH = _resolve_default_curve_trace_model_path()
+ai_tracer = AITracer(AI_TRACER_MODEL_PATH)
 
 # Try to import Google Vision API (optional)
 try:
@@ -2536,6 +2568,8 @@ def _postprocess_missed_peaks(mask: np.ndarray, prob: np.ndarray, xs: np.ndarray
             else:
                 xs[y] = float(start + best)
 
+    return xs
+
 
 def align_rgb_channels(bgr: np.ndarray) -> np.ndarray:
     """Align RGB channels via phase correlation to reduce color fringing."""
@@ -2962,7 +2996,7 @@ def trace_curve_pixel_perfect(mask: np.ndarray, grayscale: np.ndarray = None, bg
 
     return xs, confidence
 
-def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.1, hot_side=None):
+def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", max_step=3, smooth_lambda=0.1, curv_lambda=0.0, hot_side=None, snap_threshold=1.2):
     """
     Enhanced multi-scale curve tracing with 5 scales and weighted fusion.
     
@@ -2982,10 +3016,11 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     # Note: We respect the passed smooth_lambda, but ensure it's not too high for GR.
     if curve_type.upper() == "GR" and smooth_lambda > 0.01:
         smooth_lambda = 0.001
+    snap_threshold = float(np.clip(snap_threshold, 1.0, 2.5))
     
     h, w = curve_mask.shape
     if h < 4 or w < 4:
-        return trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type, max_step, smooth_lambda, hot_side)
+        return trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type, max_step, smooth_lambda, curv_lambda, hot_side)
     
     # Adaptive scale selection based on image content
     def adaptive_scale_selection(curve_mask, curve_type):
@@ -3040,14 +3075,14 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
                 "smooth_lambda": max(0.000001, smooth_lambda * scale * jaggedness_factor),
                 "max_step": max(1, int(max_step * scale * 1.2)),  # Moderate movement to prevent teleportation
                 "rail_threshold": max(0.01, 0.1 * scale * jaggedness_factor),
-                "curv_lambda": max(0.000001, 0.001 * scale * jaggedness_factor)
+                "curv_lambda": max(0.000001, curv_lambda * scale * jaggedness_factor)
             }
         else:
             return {
                 "smooth_lambda": smooth_lambda * scale,
                 "max_step": max(1, int(max_step * scale)),
                 "rail_threshold": 0.1 * scale,
-                "curv_lambda": 0.05 * scale
+                "curv_lambda": curv_lambda * scale
             }
     
     # Calculate jaggedness factor for parameter tuning
@@ -3058,7 +3093,7 @@ def trace_curve_multiscale(curve_mask, scale_min, scale_max, curve_type="GR", ma
     jaggedness_factor = max(0.5, min(2.0, 1.0 + edge_density * 5))
     
     if len(valid_scales) < 2:
-        return trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type, max_step, smooth_lambda, hot_side)
+        return trace_curve_with_dp(curve_mask, scale_min, scale_max, curve_type, max_step, smooth_lambda, curv_lambda, hot_side)
     
     prob = curve_mask.astype(np.float32) / 255.0
     
@@ -4933,6 +4968,1101 @@ def suppress_sparse_lateral_outliers(xs, confidence=None, width_px=None, window=
     return xs_out
 
 
+def suppress_short_edge_excursions(
+    xs,
+    confidence=None,
+    width_px=None,
+    max_run=6,
+    edge_margin_px=1.5,
+    bridge_px=10.0,
+    min_excursion_px=None,
+):
+    """Remove short excursions that lock onto the ROI edge and then return."""
+    if xs is None or not hasattr(xs, "size") or xs.size < 7:
+        return xs
+
+    xs_out = xs.astype(np.float32, copy=True)
+    conf = None
+    if confidence is not None and hasattr(confidence, "size") and confidence.size == xs_out.size:
+        conf = confidence.astype(np.float32, copy=False)
+
+    try:
+        width_est = float(width_px)
+    except Exception:
+        width_est = float("nan")
+    if not np.isfinite(width_est) or width_est <= 2:
+        return xs_out
+
+    if min_excursion_px is None:
+        min_excursion_px = max(12.0, min(28.0, width_est * 0.18))
+    min_excursion_px = float(min_excursion_px)
+    edge_margin_px = float(max(0.5, edge_margin_px))
+    bridge_px = float(max(2.0, bridge_px))
+
+    def _near_left(v):
+        return np.isfinite(v) and float(v) <= edge_margin_px
+
+    def _near_right(v):
+        return np.isfinite(v) and float(v) >= (width_est - 1.0 - edge_margin_px)
+
+    i = 0
+    n = xs_out.size
+    while i < n:
+        x = xs_out[i]
+        near_left = _near_left(x)
+        near_right = _near_right(x)
+        if not near_left and not near_right:
+            i += 1
+            continue
+
+        j = i
+        while j + 1 < n:
+            x_next = xs_out[j + 1]
+            if near_left and _near_left(x_next):
+                j += 1
+                continue
+            if near_right and _near_right(x_next):
+                j += 1
+                continue
+            break
+
+        run_len = j - i + 1
+        if run_len > max(1, int(max_run)):
+            i = j + 1
+            continue
+
+        left_vals = xs_out[max(0, i - 3):i]
+        right_vals = xs_out[j + 1:min(n, j + 4)]
+        left_vals = left_vals[np.isfinite(left_vals)]
+        right_vals = right_vals[np.isfinite(right_vals)]
+        if left_vals.size == 0 or right_vals.size == 0:
+            i = j + 1
+            continue
+
+        left_ref = float(np.median(left_vals))
+        right_ref = float(np.median(right_vals))
+        if abs(left_ref - right_ref) > bridge_px:
+            i = j + 1
+            continue
+
+        run_vals = xs_out[i:j + 1]
+        run_vals = run_vals[np.isfinite(run_vals)]
+        if run_vals.size == 0:
+            i = j + 1
+            continue
+
+        run_ref = float(np.median(run_vals))
+        if min(abs(run_ref - left_ref), abs(run_ref - right_ref)) < min_excursion_px:
+            i = j + 1
+            continue
+
+        if conf is not None:
+            neigh_conf = np.concatenate((conf[max(0, i - 3):i], conf[j + 1:min(n, j + 4)]))
+            neigh_conf = neigh_conf[np.isfinite(neigh_conf)]
+            run_conf = conf[i:j + 1]
+            run_conf = run_conf[np.isfinite(run_conf)]
+            if neigh_conf.size > 0 and run_conf.size > 0:
+                if float(np.median(run_conf)) >= max(0.65, float(np.median(neigh_conf)) + 0.25):
+                    i = j + 1
+                    continue
+
+        left_anchor = float(xs_out[i - 1]) if i - 1 >= 0 and np.isfinite(xs_out[i - 1]) else left_ref
+        right_anchor = float(xs_out[j + 1]) if j + 1 < n and np.isfinite(xs_out[j + 1]) else right_ref
+        xs_out[i:j + 1] = np.linspace(left_anchor, right_anchor, run_len + 2, dtype=np.float32)[1:-1]
+        i = j + 1
+
+    return xs_out.astype(np.float32, copy=False)
+
+
+def soften_plateau_step_transitions(
+    xs,
+    width_px=None,
+    jump_px=None,
+    plateau_window=3,
+    plateau_spread_px=3.0,
+):
+    """Turn short plateau-to-plateau jumps into a short ramp."""
+    if xs is None or not hasattr(xs, "size") or xs.size < 6:
+        return xs
+
+    xs_out = xs.astype(np.float32, copy=True)
+    try:
+        width_est = float(width_px)
+    except Exception:
+        width_est = float("nan")
+    if not np.isfinite(width_est) or width_est <= 1:
+        width_est = 24.0
+
+    if jump_px is None:
+        jump_px = max(12.0, min(24.0, width_est * 0.16))
+    jump_px = float(jump_px)
+    plateau_window = max(2, int(plateau_window))
+    plateau_spread_px = float(max(1.0, plateau_spread_px))
+
+    i = 0
+    n = xs_out.size
+    while i < n - 1:
+        if not np.isfinite(xs_out[i]) or not np.isfinite(xs_out[i + 1]):
+            i += 1
+            continue
+
+        dx = float(xs_out[i + 1] - xs_out[i])
+        if abs(dx) < jump_px:
+            i += 1
+            continue
+
+        left_slice = xs_out[max(0, i - plateau_window + 1):i + 1]
+        right_slice = xs_out[i + 1:min(n, i + 1 + plateau_window)]
+        left_slice = left_slice[np.isfinite(left_slice)]
+        right_slice = right_slice[np.isfinite(right_slice)]
+        if left_slice.size < 2 or right_slice.size < 2:
+            i += 1
+            continue
+
+        left_ref = float(np.median(left_slice))
+        right_ref = float(np.median(right_slice))
+        left_spread = float(np.max(left_slice) - np.min(left_slice))
+        right_spread = float(np.max(right_slice) - np.min(right_slice))
+        if left_spread > plateau_spread_px or right_spread > plateau_spread_px:
+            i += 1
+            continue
+        if abs(right_ref - left_ref) < jump_px:
+            i += 1
+            continue
+
+        if abs(float(xs_out[i]) - left_ref) > max(plateau_spread_px * 1.5, 3.5):
+            i += 1
+            continue
+        if abs(float(xs_out[i + 1]) - right_ref) > max(plateau_spread_px * 1.5, 3.5):
+            i += 1
+            continue
+
+        delta = right_ref - left_ref
+        xs_out[i] = left_ref + (delta / 3.0)
+        xs_out[i + 1] = left_ref + (2.0 * delta / 3.0)
+        i += 2
+
+    return xs_out.astype(np.float32, copy=False)
+
+
+def resolve_black_jump_zones(
+    mask,
+    xs,
+    confidence=None,
+    width_px=None,
+    jump_px=None,
+    zone_pad=3,
+    min_prob=0.01,
+    max_candidates_per_row=4,
+):
+    """
+    Re-resolve the few remaining black jump zones using a taller local window.
+
+    Instead of trusting a single row-to-row move, this pass looks at a short
+    vertical neighborhood, extracts a few candidate ink centers per row, and
+    picks the smoothest supported path through that zone with dynamic programming.
+    """
+    if xs is None or not hasattr(xs, "size") or xs.size < 8:
+        return xs
+    if mask is None or not hasattr(mask, "shape") or mask.size == 0:
+        return xs
+
+    xs_out = np.asarray(xs, dtype=np.float32).copy()
+    n = xs_out.size
+    h, w = mask.shape[:2]
+    if h != n or w <= 1:
+        return xs_out
+
+    conf = None
+    if confidence is not None and hasattr(confidence, "size") and confidence.size == n:
+        conf = confidence.astype(np.float32, copy=False)
+
+    try:
+        width_est = float(width_px)
+    except Exception:
+        width_est = float("nan")
+    if not np.isfinite(width_est) or width_est <= 1:
+        width_est = float(w)
+
+    if jump_px is None:
+        jump_px = max(12.0, min(22.0, width_est * 0.16))
+    jump_px = float(jump_px)
+    zone_pad = max(2, int(zone_pad))
+    min_prob = float(max(0.001, min_prob))
+    max_candidates_per_row = max(2, int(max_candidates_per_row))
+
+    prob = mask.astype(np.float32) / 255.0
+    try:
+        support = np.maximum(prob, cv2.blur(prob, (3, 9)))
+    except Exception:
+        support = prob
+
+    finite = np.isfinite(xs_out)
+    jump_rows = []
+    valid_rows = np.flatnonzero(finite)
+    for idx in range(max(0, valid_rows.size - 1)):
+        y0 = int(valid_rows[idx])
+        y1 = int(valid_rows[idx + 1])
+        dy = int(y1 - y0)
+        if dy <= 0 or dy > 2:
+            continue
+        dx = abs(float(xs_out[y1]) - float(xs_out[y0]))
+        if dx < jump_px:
+            continue
+        if (dx / float(max(1, dy))) <= 6.0:
+            continue
+        jump_rows.append(y0)
+
+    if not jump_rows:
+        return xs_out
+
+    groups = []
+    start = int(jump_rows[0])
+    prev = int(jump_rows[0])
+    for y in jump_rows[1:]:
+        y = int(y)
+        if y <= prev + zone_pad + 1:
+            prev = y
+            continue
+        groups.append((start, prev + 1))
+        start = y
+        prev = y
+    groups.append((start, prev + 1))
+
+    def _sample_support(y_idx: int, x_val: float) -> float:
+        if not np.isfinite(x_val) or y_idx < 0 or y_idx >= h:
+            return 0.0
+        xc = float(np.clip(x_val, 0.0, float(w - 1)))
+        ix = int(round(xc))
+        x0 = max(0, ix - 1)
+        x1 = min(w, ix + 2)
+        band = support[y_idx, x0:x1]
+        if band.size == 0:
+            return 0.0
+        return float(np.max(band))
+
+    def _extract_candidates(y_idx: int):
+        row = support[y_idx]
+        row_max = float(np.max(row))
+        candidates = []
+        if row_max >= min_prob:
+            thr = max(min_prob, row_max * 0.42)
+            above = row >= thr
+            x0 = 0
+            while x0 < w:
+                if not above[x0]:
+                    x0 += 1
+                    continue
+                x1 = x0
+                while x1 + 1 < w and above[x1 + 1]:
+                    x1 += 1
+                seg = row[x0:x1 + 1]
+                denom = float(np.sum(seg))
+                if denom > 1e-8:
+                    coords = np.arange(x0, x1 + 1, dtype=np.float32)
+                    centroid = float(np.sum(coords * seg) / denom)
+                    max_strength = float(np.max(seg))
+                    mean_strength = float(np.mean(seg))
+                    edge_touch = x0 == 0 or x1 == (w - 1)
+                    score = (max_strength * 0.8) + (mean_strength * 0.2) - (0.10 if edge_touch else 0.0)
+                    candidates.append({
+                        "x": centroid,
+                        "strength": max_strength,
+                        "score": score,
+                        "edge": edge_touch,
+                    })
+                x0 = x1 + 1
+
+        candidates.sort(key=lambda item: item["score"], reverse=True)
+        deduped = []
+        for cand in candidates:
+            if any(abs(cand["x"] - prev_cand["x"]) < 1.2 for prev_cand in deduped):
+                continue
+            deduped.append(cand)
+            if len(deduped) >= max_candidates_per_row:
+                break
+
+        cur_x = float(xs_out[y_idx]) if np.isfinite(xs_out[y_idx]) else float("nan")
+        if np.isfinite(cur_x):
+            if not any(abs(cur_x - cand["x"]) < 1.0 for cand in deduped):
+                deduped.append({
+                    "x": cur_x,
+                    "strength": _sample_support(y_idx, cur_x),
+                    "score": _sample_support(y_idx, cur_x),
+                    "edge": cur_x <= 1.5 or cur_x >= (w - 2.5),
+                })
+
+        if not deduped and np.isfinite(cur_x):
+            deduped.append({
+                "x": cur_x,
+                "strength": _sample_support(y_idx, cur_x),
+                "score": _sample_support(y_idx, cur_x),
+                "edge": cur_x <= 1.5 or cur_x >= (w - 2.5),
+            })
+
+        if not deduped:
+            deduped.append({
+                "x": float(np.clip(np.nanmedian(xs_out[max(0, y_idx - 2):min(n, y_idx + 3)]), 0.0, float(w - 1))),
+                "strength": 0.0,
+                "score": 0.0,
+                "edge": False,
+            })
+
+        return deduped
+
+    for core_start, core_end in groups:
+        zone_start = max(0, int(core_start) - zone_pad)
+        zone_end = min(n - 1, int(core_end) + zone_pad)
+        rows = list(range(zone_start, zone_end + 1))
+        if len(rows) < 4:
+            continue
+
+        left_anchor_vals = xs_out[max(0, zone_start - 3):zone_start]
+        right_anchor_vals = xs_out[zone_end + 1:min(n, zone_end + 4)]
+        left_anchor_vals = left_anchor_vals[np.isfinite(left_anchor_vals)]
+        right_anchor_vals = right_anchor_vals[np.isfinite(right_anchor_vals)]
+        left_anchor = float(np.median(left_anchor_vals)) if left_anchor_vals.size else float("nan")
+        right_anchor = float(np.median(right_anchor_vals)) if right_anchor_vals.size else float("nan")
+
+        row_candidates = [_extract_candidates(y_idx) for y_idx in rows]
+
+        dp_scores = []
+        dp_prev = []
+        first_scores = []
+        first_prev = []
+        row0 = rows[0]
+        for cand in row_candidates[0]:
+            x_val = float(cand["x"])
+            emission = (3.5 * float(cand["strength"])) - (0.30 if cand["edge"] else 0.0)
+            cur_x = xs_out[row0]
+            if np.isfinite(cur_x):
+                conf_val = float(conf[row0]) if conf is not None else 0.35
+                emission -= (0.02 + 0.06 * conf_val) * abs(x_val - float(cur_x))
+            if np.isfinite(left_anchor):
+                emission -= 0.05 * abs(x_val - left_anchor)
+            first_scores.append(emission)
+            first_prev.append(-1)
+        dp_scores.append(np.asarray(first_scores, dtype=np.float32))
+        dp_prev.append(np.asarray(first_prev, dtype=np.int32))
+
+        for idx in range(1, len(rows)):
+            y_idx = rows[idx]
+            prev_scores = dp_scores[-1]
+            prev_cands = row_candidates[idx - 1]
+            cur_scores = np.full(len(row_candidates[idx]), -1e9, dtype=np.float32)
+            cur_prev = np.full(len(row_candidates[idx]), -1, dtype=np.int32)
+
+            for j, cand in enumerate(row_candidates[idx]):
+                x_val = float(cand["x"])
+                emission = (3.5 * float(cand["strength"])) - (0.30 if cand["edge"] else 0.0)
+                cur_x = xs_out[y_idx]
+                if np.isfinite(cur_x):
+                    conf_val = float(conf[y_idx]) if conf is not None else 0.35
+                    emission -= (0.02 + 0.06 * conf_val) * abs(x_val - float(cur_x))
+                if idx == len(rows) - 1 and np.isfinite(right_anchor):
+                    emission -= 0.05 * abs(x_val - right_anchor)
+
+                best_score = -1e9
+                best_prev = -1
+                for k, prev_cand in enumerate(prev_cands):
+                    dx = abs(x_val - float(prev_cand["x"]))
+                    transition = 0.20 * dx
+                    if dx > jump_px:
+                        transition += 5.0 + (0.20 * (dx - jump_px))
+                    elif dx > (jump_px * 0.6):
+                        transition += 0.80 + (0.05 * (dx - jump_px * 0.6))
+                    score = float(prev_scores[k]) + emission - transition
+                    if score > best_score:
+                        best_score = score
+                        best_prev = k
+
+                cur_scores[j] = best_score
+                cur_prev[j] = best_prev
+
+            dp_scores.append(cur_scores)
+            dp_prev.append(cur_prev)
+
+        if dp_scores[-1].size == 0:
+            continue
+        best_last = int(np.argmax(dp_scores[-1]))
+        best_path = np.full(len(rows), np.nan, dtype=np.float32)
+        cur_idx = best_last
+        for idx in range(len(rows) - 1, -1, -1):
+            best_path[idx] = float(row_candidates[idx][cur_idx]["x"])
+            cur_idx = int(dp_prev[idx][cur_idx]) if idx > 0 else -1
+            if idx > 0 and cur_idx < 0:
+                break
+
+        def _path_metrics(path_vals):
+            finite_path = np.isfinite(path_vals)
+            if not np.any(finite_path):
+                return float("-inf"), 999, 999
+            support_sum = 0.0
+            count = 0
+            edge_count = 0
+            for local_idx, y_idx in enumerate(rows):
+                x_val = path_vals[local_idx]
+                if not np.isfinite(x_val):
+                    continue
+                support_sum += _sample_support(y_idx, float(x_val))
+                count += 1
+                if x_val <= 1.5 or x_val >= (w - 2.5):
+                    edge_count += 1
+            jump_count = 0
+            for local_idx in range(max(0, core_start - zone_start), min(len(rows) - 1, core_end - zone_start + 1)):
+                x0 = path_vals[local_idx]
+                x1 = path_vals[local_idx + 1]
+                if not np.isfinite(x0) or not np.isfinite(x1):
+                    continue
+                if abs(float(x1) - float(x0)) >= jump_px:
+                    jump_count += 1
+            return support_sum / float(max(1, count)), jump_count, edge_count
+
+        current_path = xs_out[zone_start:zone_end + 1].astype(np.float32, copy=True)
+        cur_support, cur_jumps, cur_edges = _path_metrics(current_path)
+        new_support, new_jumps, new_edges = _path_metrics(best_path)
+
+        improvement = (cur_jumps - new_jumps) + max(0, cur_edges - new_edges)
+        if improvement <= 0:
+            continue
+        if new_support + 0.03 < cur_support:
+            continue
+
+        xs_out[zone_start:zone_end + 1] = best_path
+
+    return xs_out.astype(np.float32, copy=False)
+
+
+def _clip_trace_confidence(confidence, target_len: Optional[int] = None) -> np.ndarray:
+    if confidence is None:
+        if target_len is None:
+            return np.array([], dtype=np.float32)
+        return np.zeros(int(target_len), dtype=np.float32)
+
+    conf = np.asarray(confidence, dtype=np.float32).reshape(-1)
+    if target_len is not None and conf.size != int(target_len):
+        if conf.size == 0:
+            conf = np.zeros(int(target_len), dtype=np.float32)
+        else:
+            src = np.linspace(0.0, 1.0, conf.size, dtype=np.float32)
+            dst = np.linspace(0.0, 1.0, int(target_len), dtype=np.float32)
+            conf = np.interp(dst, src, conf).astype(np.float32)
+    conf[~np.isfinite(conf)] = 0.0
+    return np.clip(conf, 0.0, 1.0)
+
+
+def trace_black_curve_classical(
+    mask: np.ndarray,
+    scale_min: float,
+    scale_max: float,
+    curve_type: str = "GR",
+    max_step: int = 30,
+    smooth_lambda: float = 0.001,
+    curv_lambda: float = 0.001,
+    hot_side=None,
+    curve_smooth_window: int = 5,
+    outlier_threshold: float = 3.0,
+):
+    xs, confidence = trace_curve_multiscale(
+        mask,
+        scale_min=scale_min,
+        scale_max=scale_max,
+        curve_type=curve_type,
+        max_step=max_step,
+        smooth_lambda=smooth_lambda,
+        curv_lambda=curv_lambda,
+        hot_side=hot_side,
+    )
+
+    if str(curve_type or "").upper() != "GR":
+        xs = remove_outliers_and_smooth(xs, window=curve_smooth_window, outlier_threshold=outlier_threshold)
+
+    confidence = _clip_trace_confidence(confidence, xs.size if hasattr(xs, "size") else None)
+    return xs, confidence
+
+
+def trace_black_curve_ai_hybrid(
+    roi: np.ndarray,
+    mask: np.ndarray,
+    tracer,
+    scale_min: float,
+    scale_max: float,
+    curve_type: str = "GR",
+    max_step: int = 30,
+    smooth_lambda: float = 0.001,
+    curv_lambda: float = 0.001,
+    hot_side=None,
+    curve_smooth_window: int = 5,
+    outlier_threshold: float = 3.0,
+):
+    classical_xs, classical_conf = trace_black_curve_classical(
+        mask=mask,
+        scale_min=scale_min,
+        scale_max=scale_max,
+        curve_type=curve_type,
+        max_step=max_step,
+        smooth_lambda=smooth_lambda,
+        curv_lambda=curv_lambda,
+        hot_side=hot_side,
+        curve_smooth_window=curve_smooth_window,
+        outlier_threshold=outlier_threshold,
+    )
+
+    debug = {
+        "path": "classical_only",
+        "mean_ai_weight": 0.0,
+        "ai_rows": 0,
+        "classical_rows": int(np.sum(np.isfinite(classical_xs))) if hasattr(classical_xs, "size") else 0,
+    }
+
+    if tracer is None or not getattr(tracer, "is_available", lambda: False)():
+        return classical_xs, classical_conf, debug
+
+    try:
+        classical_prob = mask.astype(np.float32) / 255.0
+        ai_prob = tracer.predict_prob_map(roi)
+        ai_xs, ai_conf = tracer.trace_with_confidence(roi)
+    except Exception:
+        return classical_xs, classical_conf, debug
+
+    if ai_prob is None or ai_prob.size == 0 or ai_prob.shape != classical_prob.shape:
+        return classical_xs, classical_conf, debug
+
+    h, w = classical_prob.shape[:2]
+    if not hasattr(classical_xs, "size") or classical_xs.size != h:
+        return classical_xs, classical_conf, debug
+    if ai_xs is None or not hasattr(ai_xs, "size") or ai_xs.size != h:
+        return classical_xs, classical_conf, debug
+
+    classical_conf = _clip_trace_confidence(classical_conf, h)
+    ai_conf = _clip_trace_confidence(ai_conf, h)
+    valid_classical = np.isfinite(classical_xs)
+    valid_ai = np.isfinite(ai_xs)
+
+    disagreement_px = np.full(h, np.inf, dtype=np.float32)
+    valid_both = valid_classical & valid_ai
+    disagreement_px[valid_both] = np.abs(ai_xs[valid_both] - classical_xs[valid_both]).astype(np.float32)
+    disagreement_scale = max(5.0, float(w) * 0.08)
+    agreement = np.exp(-disagreement_px / disagreement_scale).astype(np.float32)
+    ai_row_strength = np.clip(np.max(ai_prob, axis=1), 0.0, 1.0).astype(np.float32)
+
+    row_ai_weight = 0.05 + 0.55 * np.clip((ai_conf - 0.24) / 0.34, 0.0, 1.0)
+    row_ai_weight *= (0.75 + 0.25 * ai_row_strength)
+    row_ai_weight[valid_both] *= (0.35 + 0.65 * agreement[valid_both])
+    row_ai_weight[~valid_ai] = 0.0
+
+    only_ai = valid_ai & ~valid_classical
+    row_ai_weight[only_ai] = np.maximum(row_ai_weight[only_ai], 0.45 + 0.20 * ai_conf[only_ai])
+
+    prefer_classical = (
+        valid_both
+        & (disagreement_px > max(5.0, float(w) * 0.08))
+        & (classical_conf >= np.maximum(0.12, ai_conf - 0.02))
+    )
+    row_ai_weight[prefer_classical] *= 0.08
+
+    prefer_ai = (
+        valid_both
+        & (ai_conf > (classical_conf + 0.22))
+        & (disagreement_px <= max(8.0, float(w) * 0.10))
+    )
+    row_ai_weight[prefer_ai] = np.maximum(row_ai_weight[prefer_ai], 0.68)
+    row_ai_weight = np.clip(row_ai_weight.astype(np.float32), 0.0, 0.78)
+
+    fused_prob = np.clip(
+        ((1.0 - row_ai_weight[:, None]) * classical_prob) + (row_ai_weight[:, None] * ai_prob),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    fused_prob = np.maximum(
+        fused_prob,
+        ai_prob * (0.55 + 0.35 * row_ai_weight[:, None]),
+    )
+
+    fused_xs, fused_conf = trace_curve_multiscale(
+        np.clip(fused_prob * 255.0, 0, 255).astype(np.uint8),
+        scale_min=scale_min,
+        scale_max=scale_max,
+        curve_type=curve_type,
+        max_step=max_step,
+        smooth_lambda=smooth_lambda,
+        curv_lambda=curv_lambda,
+        hot_side=hot_side,
+    )
+    fused_conf = _clip_trace_confidence(fused_conf, fused_xs.size if hasattr(fused_xs, "size") else h)
+
+    final_xs = fused_xs.astype(np.float32, copy=True)
+    final_conf = fused_conf.astype(np.float32, copy=True)
+    valid_fused = np.isfinite(final_xs)
+
+    take_classical = (~valid_fused) & valid_classical
+    final_xs[take_classical] = classical_xs[take_classical]
+    final_conf[take_classical] = np.maximum(final_conf[take_classical], classical_conf[take_classical])
+
+    take_ai = (~np.isfinite(final_xs)) & valid_ai & (ai_conf >= 0.30)
+    final_xs[take_ai] = ai_xs[take_ai]
+    final_conf[take_ai] = np.maximum(final_conf[take_ai], ai_conf[take_ai])
+
+    blend_ai = (
+        np.isfinite(final_xs)
+        & valid_ai
+        & (row_ai_weight >= 0.60)
+        & (ai_conf >= 0.42)
+        & ((~valid_classical) | (disagreement_px <= max(8.0, float(w) * 0.10)) | (ai_conf > (classical_conf + 0.18)))
+    )
+    if np.any(blend_ai):
+        blend = np.clip(0.10 + 0.45 * row_ai_weight, 0.0, 0.60)
+        final_xs[blend_ai] = ((1.0 - blend[blend_ai]) * final_xs[blend_ai]) + (blend[blend_ai] * ai_xs[blend_ai])
+        final_conf[blend_ai] = np.maximum(final_conf[blend_ai], ai_conf[blend_ai])
+
+    fallback_classical = (
+        np.isfinite(final_xs)
+        & valid_classical
+        & (disagreement_px > max(6.0, float(w) * 0.08))
+        & (ai_conf < np.maximum(0.24, classical_conf + 0.02))
+    )
+    if np.any(fallback_classical):
+        final_xs[fallback_classical] = classical_xs[fallback_classical]
+        final_conf[fallback_classical] = np.maximum(final_conf[fallback_classical], classical_conf[fallback_classical])
+
+    debug = {
+        "path": "black_ai_hybrid",
+        "mean_ai_weight": float(np.mean(row_ai_weight[valid_ai])) if np.any(valid_ai) else 0.0,
+        "ai_rows": int(np.sum(row_ai_weight >= 0.45)),
+        "classical_rows": int(np.sum(valid_classical)),
+    }
+    return final_xs, final_conf, debug
+
+
+def postprocess_black_trace(
+    mask: np.ndarray,
+    xs,
+    confidence=None,
+    curve_type: str = "GR",
+    curve_smooth_window: int = 5,
+    min_run: int = 2,
+):
+    if xs is None:
+        return np.array([], dtype=np.float32)
+
+    xs = np.asarray(xs, dtype=np.float32).copy()
+    if xs.size == 0:
+        return xs
+
+    confidence = _clip_trace_confidence(confidence, xs.size)
+    width_px = int(mask.shape[1]) if mask is not None and hasattr(mask, "shape") and len(mask.shape) >= 2 else None
+
+    try:
+        s = pd.Series(xs)
+        h_mask = int(mask.shape[0]) if mask is not None and hasattr(mask, "shape") else xs.size
+        max_gap = max(25, int(h_mask * 0.02))
+        s = s.interpolate(method='linear', limit_direction='both', limit=max_gap, limit_area=None)
+        if s.isna().any():
+            s = s.ffill(limit=max_gap).bfill(limit=max_gap)
+        xs = s.to_numpy(dtype=np.float32)
+    except Exception:
+        pass
+
+    xs = suppress_isolated_trace_teleports(
+        xs,
+        confidence=confidence,
+        width_px=width_px,
+        **get_trace_cleanup_kwargs("black", curve_type),
+    )
+
+    try:
+        xs = refine_to_stroke_centerline(
+            mask,
+            xs,
+            threshold_ratio=0.45,
+            window_size=8 if str(curve_type or "").upper() == "GR" else 10,
+        )
+    except Exception:
+        pass
+
+    xs = suppress_isolated_trace_teleports(
+        xs,
+        confidence=confidence,
+        width_px=width_px,
+        **get_trace_cleanup_kwargs("black", curve_type),
+    )
+    xs = suppress_sparse_lateral_outliers(
+        xs,
+        confidence=confidence,
+        width_px=width_px,
+    )
+    xs = bridge_short_trace_gaps(
+        mask,
+        xs,
+        max_gap=max(16, int(xs.size * 0.018)),
+        recenter_window=6 if str(curve_type or "").upper() == "GR" else 5,
+        min_prob=0.006,
+    )
+    xs = heal_supported_trace_gaps(
+        mask,
+        xs,
+        max_gap=max(20, int(xs.size * 0.02)),
+        neighbor_span=10 if str(curve_type or "").upper() == "GR" else 8,
+        search_radius=8 if str(curve_type or "").upper() == "GR" else 7,
+        min_prob=0.004,
+        support_kernel_h=9 if str(curve_type or "").upper() == "GR" else 7,
+        support_kernel_w=3,
+        min_fill_ratio=0.55,
+    )
+    xs = seal_tiny_trace_gaps(
+        xs,
+        max_gap=4 if str(curve_type or "").upper() == "GR" else 3,
+        max_total_dx=24.0 if str(curve_type or "").upper() == "GR" else 20.0,
+        max_dx_per_row=7.0 if str(curve_type or "").upper() == "GR" else 6.0,
+    )
+    try:
+        xs = refine_to_stroke_centerline(
+            mask,
+            xs,
+            threshold_ratio=0.55 if str(curve_type or "").upper() == "GR" else 0.50,
+            window_size=6 if str(curve_type or "").upper() == "GR" else 8,
+        )
+    except Exception:
+        pass
+    xs = suppress_isolated_trace_teleports(
+        xs,
+        confidence=confidence,
+        width_px=width_px,
+        **get_trace_cleanup_kwargs("black", curve_type),
+    )
+    xs = suppress_sparse_lateral_outliers(
+        xs,
+        confidence=confidence,
+        width_px=width_px,
+    )
+    xs = suppress_short_edge_excursions(
+        xs,
+        confidence=confidence,
+        width_px=width_px,
+        max_run=6 if str(curve_type or "").upper() == "GR" else 4,
+        edge_margin_px=1.5,
+        bridge_px=9.0 if str(curve_type or "").upper() == "GR" else 7.0,
+    )
+    xs = soften_plateau_step_transitions(
+        xs,
+        width_px=width_px,
+        jump_px=14.0 if str(curve_type or "").upper() == "GR" else 12.0,
+        plateau_window=3,
+        plateau_spread_px=3.0 if str(curve_type or "").upper() == "GR" else 2.5,
+    )
+    xs = resolve_black_jump_zones(
+        mask,
+        xs,
+        confidence=confidence,
+        width_px=width_px,
+        jump_px=16.0 if str(curve_type or "").upper() == "GR" else 13.0,
+        zone_pad=3 if str(curve_type or "").upper() == "GR" else 2,
+        min_prob=0.01 if str(curve_type or "").upper() == "GR" else 0.015,
+        max_candidates_per_row=4,
+    )
+    xs = suppress_isolated_trace_teleports(
+        xs,
+        confidence=confidence,
+        width_px=width_px,
+        **get_trace_cleanup_kwargs("black", curve_type),
+    )
+
+    xs_valid = xs[~np.isnan(xs)]
+    if xs_valid.size > 0 and width_px:
+        dyn_range = float(np.nanmax(xs_valid) - np.nanmin(xs_valid))
+        min_dyn = max(4.0, 0.02 * float(width_px))
+        if dyn_range < min_dyn:
+            xs_fallback = pick_curve_x_per_row(mask, min_run=min_run)
+            xs_fallback = smooth_nanmedian(xs_fallback, window=curve_smooth_window)
+            xs = xs_fallback
+            xs_valid = xs[~np.isnan(xs)]
+
+    if xs_valid.size > 0 and width_px:
+        std_x = float(np.nanstd(xs_valid))
+        std_threshold = max(1.0, 0.005 * float(width_px))
+        if std_x < std_threshold:
+            xs[:] = np.nan
+
+    return xs.astype(np.float32, copy=False)
+
+
+def bridge_short_trace_gaps(mask, xs, max_gap=12, recenter_window=4, min_prob=0.01):
+    """Fill short internal NaN gaps and re-center the bridged rows on nearby ink."""
+    if xs is None or not hasattr(xs, "size") or xs.size < 3:
+        return xs
+
+    xs_in = np.asarray(xs, dtype=np.float32)
+    valid_before = np.isfinite(xs_in)
+    if np.all(valid_before):
+        return xs_in
+
+    try:
+        s = pd.Series(xs_in)
+        s = s.interpolate(
+            method='linear',
+            limit_direction='both',
+            limit=max(1, int(max_gap)),
+            limit_area='inside',
+        )
+        xs_out = s.to_numpy(dtype=np.float32)
+    except Exception:
+        return xs_in
+
+    if mask is None or not hasattr(mask, "shape") or mask.size == 0:
+        return xs_out
+
+    prob = mask.astype(np.float32) / 255.0
+    h, w = prob.shape[:2]
+    bridged = (~valid_before) & np.isfinite(xs_out)
+    if not np.any(bridged):
+        return xs_out
+
+    search_radius = max(2, int(recenter_window))
+    min_prob = float(max(0.001, min_prob))
+    for y in np.flatnonzero(bridged):
+        if y < 0 or y >= h:
+            continue
+        x0 = float(xs_out[y])
+        if not np.isfinite(x0):
+            continue
+        ix = int(round(x0))
+        x_min = max(0, ix - search_radius)
+        x_max = min(w, ix + search_radius + 1)
+        row = prob[y, x_min:x_max]
+        if row.size == 0:
+            continue
+        row_max = float(np.max(row))
+        if row_max < min_prob:
+            continue
+        support = row >= max(min_prob, row_max * 0.65)
+        idx = np.flatnonzero(support)
+        if idx.size == 0:
+            continue
+        left_i = x_min + int(idx[0])
+        right_i = x_min + int(idx[-1]) + 1
+        band = prob[y, left_i:right_i]
+        denom = float(np.sum(band))
+        if denom <= 1e-8:
+            continue
+        coords = np.arange(left_i, right_i, dtype=np.float32)
+        xs_out[y] = float(np.sum(coords * band) / denom)
+
+    return xs_out.astype(np.float32, copy=False)
+
+
+def heal_supported_trace_gaps(
+    mask,
+    xs,
+    max_gap=18,
+    neighbor_span=8,
+    search_radius=8,
+    min_prob=0.004,
+    support_kernel_h=7,
+    support_kernel_w=3,
+    min_fill_ratio=0.6,
+):
+    """
+    Seal short internal gaps using nearby trace geometry plus local ink support.
+
+    The key difference from a plain interpolation bridge is that each filled row
+    must be backed by nearby probability-map evidence in a tight window around
+    the predicted curve continuation.
+    """
+    if xs is None or not hasattr(xs, "size") or xs.size < 5:
+        return xs
+    if mask is None or not hasattr(mask, "shape") or mask.size == 0:
+        return xs
+
+    xs_out = np.asarray(xs, dtype=np.float32).copy()
+    valid = np.isfinite(xs_out)
+    if np.all(valid):
+        return xs_out
+
+    prob = mask.astype(np.float32) / 255.0
+    h, w = prob.shape[:2]
+    if h != xs_out.size or w <= 1:
+        return xs_out
+
+    k_h = max(3, int(support_kernel_h) | 1)
+    k_w = max(1, int(support_kernel_w) | 1)
+    try:
+        support = np.maximum(prob, cv2.blur(prob, (k_w, k_h)))
+    except Exception:
+        support = prob
+
+    finite_idx = np.flatnonzero(valid)
+    if finite_idx.size < 2:
+        return xs_out
+
+    i = 0
+    n = xs_out.size
+    max_gap = max(1, int(max_gap))
+    neighbor_span = max(2, int(neighbor_span))
+    search_radius = max(2, int(search_radius))
+    min_prob = float(max(0.001, min_prob))
+    min_fill_ratio = float(np.clip(min_fill_ratio, 0.0, 1.0))
+
+    while i < n:
+        if np.isfinite(xs_out[i]):
+            i += 1
+            continue
+
+        j = i
+        while j + 1 < n and not np.isfinite(xs_out[j + 1]):
+            j += 1
+
+        run_len = j - i + 1
+        left_idx = i - 1
+        right_idx = j + 1
+        if left_idx < 0 or right_idx >= n or run_len > max_gap:
+            i = j + 1
+            continue
+        if not np.isfinite(xs_out[left_idx]) or not np.isfinite(xs_out[right_idx]):
+            i = j + 1
+            continue
+
+        left_neighbors = np.flatnonzero(np.isfinite(xs_out[max(0, left_idx - neighbor_span + 1):left_idx + 1]))
+        if left_neighbors.size:
+            left_neighbors = left_neighbors + max(0, left_idx - neighbor_span + 1)
+        else:
+            left_neighbors = np.array([left_idx], dtype=np.int64)
+
+        right_neighbors = np.flatnonzero(np.isfinite(xs_out[right_idx:min(n, right_idx + neighbor_span)]))
+        if right_neighbors.size:
+            right_neighbors = right_neighbors + right_idx
+        else:
+            right_neighbors = np.array([right_idx], dtype=np.int64)
+
+        fit_idx = np.concatenate([left_neighbors[-max(2, neighbor_span // 2):], right_neighbors[:max(2, neighbor_span // 2)]])
+        fit_idx = np.unique(fit_idx)
+        fit_x = xs_out[fit_idx]
+        if fit_idx.size >= 2:
+            try:
+                slope, intercept = np.polyfit(fit_idx.astype(np.float32), fit_x.astype(np.float32), 1)
+            except Exception:
+                slope = float(xs_out[right_idx] - xs_out[left_idx]) / float(max(1, right_idx - left_idx))
+                intercept = float(xs_out[left_idx]) - slope * float(left_idx)
+        else:
+            slope = float(xs_out[right_idx] - xs_out[left_idx]) / float(max(1, right_idx - left_idx))
+            intercept = float(xs_out[left_idx]) - slope * float(left_idx)
+
+        healed_rows = []
+        healed_vals = []
+        for y in range(i, j + 1):
+            pred_x = float(slope * float(y) + intercept)
+            pred_x = float(np.clip(pred_x, 0.0, float(w - 1)))
+            x_min = max(0, int(round(pred_x)) - search_radius)
+            x_max = min(w, int(round(pred_x)) + search_radius + 1)
+            row_support = support[y, x_min:x_max]
+            if row_support.size == 0:
+                continue
+
+            row_max = float(np.max(row_support))
+            if row_max < min_prob:
+                continue
+
+            coords = np.arange(x_min, x_max, dtype=np.float32)
+            score = row_support - (np.abs(coords - pred_x) / float(max(3, search_radius * 1.5))) * 0.08
+            best_local = int(np.argmax(score))
+            best_x = float(coords[best_local])
+            best_strength = float(row_support[best_local])
+            if best_strength < min_prob:
+                continue
+
+            band_thr = max(min_prob, row_max * 0.6, best_strength * 0.85)
+            band_mask = row_support >= band_thr
+            if not np.any(band_mask):
+                continue
+            band_idx = np.flatnonzero(band_mask)
+            left_band = x_min + int(band_idx[0])
+            right_band = x_min + int(band_idx[-1]) + 1
+            band = row_support[(left_band - x_min):(right_band - x_min)]
+            denom = float(np.sum(band))
+            if denom <= 1e-8:
+                continue
+            band_coords = np.arange(left_band, right_band, dtype=np.float32)
+            centroid_x = float(np.sum(band_coords * band) / denom)
+            if abs(centroid_x - pred_x) > float(search_radius) * 1.35:
+                continue
+
+            healed_rows.append(y)
+            healed_vals.append(centroid_x)
+
+        fill_ratio = (len(healed_rows) / float(run_len)) if run_len > 0 else 0.0
+        if healed_rows and fill_ratio >= min_fill_ratio:
+            xs_out[healed_rows] = np.asarray(healed_vals, dtype=np.float32)
+
+            run_slice = xs_out[left_idx:right_idx + 1].copy()
+            if np.any(np.isfinite(run_slice)):
+                try:
+                    s = pd.Series(run_slice)
+                    s = s.interpolate(method='linear', limit_direction='both', limit=run_len, limit_area='inside')
+                    run_slice = s.to_numpy(dtype=np.float32)
+                except Exception:
+                    pass
+                xs_out[left_idx:right_idx + 1] = run_slice
+
+        i = j + 1
+
+    return xs_out.astype(np.float32, copy=False)
+
+
+def seal_tiny_trace_gaps(
+    xs,
+    max_gap=3,
+    max_total_dx=20.0,
+    max_dx_per_row=6.5,
+):
+    """Fill tiny internal gaps when the surrounding local slope stays reasonable."""
+    if xs is None or not hasattr(xs, "size") or xs.size < 5:
+        return xs
+
+    xs_out = np.asarray(xs, dtype=np.float32).copy()
+    n = xs_out.size
+    max_gap = max(1, int(max_gap))
+    max_total_dx = float(max(2.0, max_total_dx))
+    max_dx_per_row = float(max(0.5, max_dx_per_row))
+
+    i = 0
+    while i < n:
+        if np.isfinite(xs_out[i]):
+            i += 1
+            continue
+
+        j = i
+        while j + 1 < n and not np.isfinite(xs_out[j + 1]):
+            j += 1
+
+        left_idx = i - 1
+        right_idx = j + 1
+        run_len = j - i + 1
+        if (
+            left_idx < 0
+            or right_idx >= n
+            or run_len > max_gap
+            or not np.isfinite(xs_out[left_idx])
+            or not np.isfinite(xs_out[right_idx])
+        ):
+            i = j + 1
+            continue
+
+        total_dx = abs(float(xs_out[right_idx]) - float(xs_out[left_idx]))
+        span = max(1, right_idx - left_idx)
+        if total_dx > max_total_dx and (total_dx / float(span)) > max_dx_per_row:
+            i = j + 1
+            continue
+
+        xs_out[i:j + 1] = np.linspace(
+            float(xs_out[left_idx]),
+            float(xs_out[right_idx]),
+            run_len + 2,
+            dtype=np.float32,
+        )[1:-1]
+        i = j + 1
+
+    return xs_out.astype(np.float32, copy=False)
+
+
 def pick_curve_x_per_row(mask, min_run=2):
     h, w = mask.shape
     xs = np.full(h, np.nan, dtype=np.float32)
@@ -6601,6 +7731,103 @@ def compute_depth_warnings(depth_cfg, image_height):
 
     return warnings
 
+
+def summarize_trace_debug(xs, left_px=0, top_px=0, max_gap_runs=12, max_jump_segments=12):
+    """Summarize missing-row gaps and sharp short-row jumps in a trace."""
+    if xs is None or not hasattr(xs, "size"):
+        return {
+            "rows": 0,
+            "valid_rows": 0,
+            "missing_rows": 0,
+            "gap_run_count": 0,
+            "gap_runs": [],
+            "likely_jump_count": 0,
+            "likely_jump_segments": [],
+        }
+
+    xs_arr = np.asarray(xs, dtype=np.float32).reshape(-1)
+    n = int(xs_arr.size)
+    finite = np.isfinite(xs_arr)
+
+    gap_runs = []
+    i = 0
+    while i < n:
+        if finite[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and not finite[j + 1]:
+            j += 1
+        if i > 0 and j + 1 < n:
+            gap_runs.append({
+                "start_row": int(i),
+                "end_row": int(j),
+                "length": int(j - i + 1),
+                "start_y": int(top_px + i),
+                "end_y": int(top_px + j),
+            })
+        i = j + 1
+
+    likely_jump_segments = []
+    valid_rows = np.flatnonzero(finite)
+    for idx in range(max(0, valid_rows.size - 1)):
+        y0 = int(valid_rows[idx])
+        y1 = int(valid_rows[idx + 1])
+        dy = int(y1 - y0)
+        if dy <= 0 or dy > 4:
+            continue
+        x0 = float(xs_arr[y0])
+        x1 = float(xs_arr[y1])
+        dx = abs(x1 - x0)
+        if dx <= 10.0:
+            continue
+        slope = dx / float(max(1, dy))
+        if slope <= 6.0:
+            continue
+        likely_jump_segments.append({
+            "y0": int(top_px + y0),
+            "y1": int(top_px + y1),
+            "x0": int(round(left_px + x0)),
+            "x1": int(round(left_px + x1)),
+            "dy": dy,
+            "dx": float(dx),
+            "slope": float(slope),
+        })
+
+    return {
+        "rows": n,
+        "valid_rows": int(np.sum(finite)),
+        "missing_rows": int(n - np.sum(finite)),
+        "gap_run_count": int(len(gap_runs)),
+        "gap_runs": gap_runs[:max_gap_runs],
+        "likely_jump_count": int(len(likely_jump_segments)),
+        "likely_jump_segments": likely_jump_segments[:max_jump_segments],
+    }
+
+
+def trace_quality_penalty(summary):
+    """Scalar penalty used to reject hybrid traces that are worse than classical."""
+    if not isinstance(summary, dict):
+        return float("inf")
+
+    missing_rows = float(summary.get("missing_rows", 0) or 0)
+    gap_run_count = float(summary.get("gap_run_count", 0) or 0)
+    likely_jump_count = float(summary.get("likely_jump_count", 0) or 0)
+    gap_runs = summary.get("gap_runs") or []
+    max_gap = 0.0
+    if gap_runs:
+        try:
+            max_gap = float(max((g.get("length", 0) or 0) for g in gap_runs))
+        except Exception:
+            max_gap = 0.0
+
+    return (
+        missing_rows * 1.0
+        + gap_run_count * 5.0
+        + max_gap * 2.0
+        + likely_jump_count * 1.25
+    )
+
     for c in curves_cfg:
         curve_type = (c.get('type') or '').upper()
         mnemonic = (c.get('las_mnemonic') or c.get('name') or '').upper()
@@ -6952,6 +8179,7 @@ def digitize():
     
     curve_data = {}
     curve_traces = {}
+    curve_trace_debug = {}
     curve_warnings = []
 
     for c in curves:
@@ -7061,20 +8289,65 @@ def digitize():
         dp_curv_lambda = 0.001 if mode in colored_modes else (0.001 if curve_type == 'GR' else 0.005)
         max_step_dp = 200 if mode in colored_modes else (30 if curve_type == 'GR' else 50)  # Restrict movement to prevent teleportation
 
+        ai_trace_used = False
+        ai_debug_for_curve = None
+        xs = np.full(mask.shape[0], np.nan, dtype=np.float32)
+        confidence = np.zeros(mask.shape[0], dtype=np.float32)
+
         # Optional pixel-perfect skeleton tracer (preserve every bump)
-        if ai_tracer.is_available() and trace_mode == "ai_tracer":
-            # Use the AI model for tracing
+        if ai_tracer.is_available() and trace_mode == "ai_tracer" and ai_tracer.supports_mode(mode):
+            # ML-first hybrid tracing: generate an ML probability map, fuse it
+            # with the classical score map, then let the existing multiscale
+            # tracer ride the fused signal.
             try:
-                # The AI model predicts coordinates relative to the ROI's left edge
-                # and already handles scaling to the ROI width.
-                xs = ai_tracer.trace(roi)
-                confidence = np.ones_like(xs) * 0.95 # Mock high confidence for AI
+                if mode == "black":
+                    xs, confidence, _ai_debug = trace_black_curve_ai_hybrid(
+                        roi=roi,
+                        mask=mask,
+                        tracer=ai_tracer,
+                        scale_min=left_value,
+                        scale_max=right_value,
+                        curve_type=curve_type,
+                        max_step=max_step_dp,
+                        smooth_lambda=dp_smooth_lambda,
+                        curv_lambda=dp_curv_lambda,
+                        hot_side=hot_side,
+                        curve_smooth_window=curve_smooth_window,
+                        outlier_threshold=outlier_threshold,
+                    )
+                    ai_debug_for_curve = _ai_debug
+                    ai_trace_used = True
+                else:
+                    classical_prob = mask.astype(np.float32) / 255.0
+                    ai_prob = ai_tracer.predict_prob_map(roi)
+                    if ai_prob is not None and ai_prob.size and ai_prob.shape == classical_prob.shape:
+                        fused_prob = np.clip(0.72 * ai_prob + 0.28 * classical_prob, 0.0, 1.0)
+                        fused_prob = np.maximum(fused_prob, ai_prob * 0.9)
+                        mask = np.clip(fused_prob * 255.0, 0, 255).astype(np.uint8)
+
+                        xs, confidence = trace_curve_multiscale(
+                            mask,
+                            scale_min=left_value,
+                            scale_max=right_value,
+                            curve_type=curve_type,
+                            max_step=max_step_dp,
+                            smooth_lambda=dp_smooth_lambda,
+                            curv_lambda=dp_curv_lambda,
+                            hot_side=hot_side,
+                        )
+
+                        ai_xs, ai_conf = ai_tracer.trace_with_confidence(roi)
+                        if ai_xs is not None and ai_xs.size == xs.size:
+                            valid_ai = np.isfinite(ai_xs)
+                            if np.any(valid_ai):
+                                blend = np.clip(ai_conf.astype(np.float32), 0.0, 1.0) * 0.35
+                                xs[valid_ai] = ((1.0 - blend[valid_ai]) * xs[valid_ai]) + (blend[valid_ai] * ai_xs[valid_ai])
+                                confidence = np.maximum(confidence.astype(np.float32), np.clip(ai_conf.astype(np.float32), 0.0, 1.0))
+
+                        ai_trace_used = True
             except Exception as e:
                 print(f"⚠️ AI Tracer failed for {name}: {e}")
-                # Fallback to empty if AI fails
-                xs = np.full(roi.shape[0], np.nan)
-                confidence = np.zeros(roi.shape[0])
-        elif pixel_perfect and mode in colored_modes:
+        if (not ai_trace_used) and pixel_perfect and mode in colored_modes:
             gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             if trace_mode == "skeleton_path":
                 xs, confidence = trace_curve_skeleton_path(mask)
@@ -7102,7 +8375,7 @@ def digitize():
         # For colored modes, use the "Fusion" strategy from successful memories:
         # Run both DP and Direct Centerline tracers, then merge per-row based on probability.
         # AND DISABLE EXTRA REFINEMENTS which cause the zig-zag snapping.
-        elif mode in colored_modes:
+        elif not ai_trace_used and mode in colored_modes:
             # SUPER-RESOLUTION: Upscale mask by 2x to allow sub-pixel precision
             # Use LINEAR interpolation to create smooth gradients between pixels
             mask_orig = mask
@@ -7305,7 +8578,7 @@ def digitize():
             except Exception:
                 pass
             
-        else:
+        elif not ai_trace_used:
             # For black/other modes, use enhanced multi-scale tracer
             # This tracer now includes "Grid-Safe Snapping" to handle black grids.
             # It fuses 5 different scales to find the most consistent path and rejects vertical rails.
@@ -7323,27 +8596,65 @@ def digitize():
             if curve_type.upper() != "GR":
                  xs = remove_outliers_and_smooth(xs, window=curve_smooth_window, outlier_threshold=outlier_threshold)
 
+        confidence = _clip_trace_confidence(
+            confidence if 'confidence' in locals() else None,
+            xs.size if hasattr(xs, "size") else mask.shape[0],
+        )
         width_px = mask.shape[1]
 
-        # UNIVERSAL GAP FILLING:
-        # Aggressive grid removal can leave small gaps where the curve crossed a grid line.
-        # We linearly interpolate these gaps for all modes to ensure continuity.
-        if xs.size > 0:
-            s = pd.Series(xs)
-            h_mask, w_mask = mask.shape
-            # Allow filling gaps up to 2% of image height or 25px (to cover 15px grid cuts), whichever is larger
-            max_gap = max(25, int(h_mask * 0.02))
-            s = s.interpolate(method='linear', limit_direction='both', limit=max_gap, limit_area=None)
-            # Handle edge cases
-            if s.isna().any():
-                s = s.fillna(method='ffill', limit=max_gap).fillna(method='bfill', limit=max_gap)
-            xs = s.to_numpy(dtype=np.float32)
-            xs = suppress_isolated_trace_teleports(
+        if mode == "black":
+            xs = postprocess_black_trace(
+                mask,
                 xs,
                 confidence=confidence,
-                width_px=width_px,
-                **get_trace_cleanup_kwargs(mode, curve_type),
+                curve_type=curve_type,
+                curve_smooth_window=curve_smooth_window,
+                min_run=min_run,
             )
+        else:
+            # UNIVERSAL GAP FILLING:
+            # Aggressive grid removal can leave small gaps where the curve crossed a grid line.
+            # We linearly interpolate these gaps for all modes to ensure continuity.
+            if xs.size > 0:
+                s = pd.Series(xs)
+                h_mask, w_mask = mask.shape
+                # Allow filling gaps up to 2% of image height or 25px (to cover 15px grid cuts), whichever is larger
+                max_gap = max(25, int(h_mask * 0.02))
+                s = s.interpolate(method='linear', limit_direction='both', limit=max_gap, limit_area=None)
+                # Handle edge cases
+                if s.isna().any():
+                    s = s.ffill(limit=max_gap).bfill(limit=max_gap)
+                xs = s.to_numpy(dtype=np.float32)
+                xs = suppress_isolated_trace_teleports(
+                    xs,
+                    confidence=confidence,
+                    width_px=width_px,
+                    **get_trace_cleanup_kwargs(mode, curve_type),
+                )
+                xs = bridge_short_trace_gaps(
+                    mask,
+                    xs,
+                    max_gap=max(14, int(mask.shape[0] * 0.015)),
+                    recenter_window=5,
+                    min_prob=0.006,
+                )
+                xs = heal_supported_trace_gaps(
+                    mask,
+                    xs,
+                    max_gap=max(12, int(mask.shape[0] * 0.012)),
+                    neighbor_span=7,
+                    search_radius=6,
+                    min_prob=0.005,
+                    support_kernel_h=7,
+                    support_kernel_w=3,
+                    min_fill_ratio=0.6,
+                )
+                xs = seal_tiny_trace_gaps(
+                    xs,
+                    max_gap=3,
+                    max_total_dx=18.0,
+                    max_dx_per_row=5.5,
+                )
 
         # For colored modes, apply specific enhancements (GR peaks, centerline refinement)
         if mode in colored_modes:
@@ -7421,7 +8732,31 @@ def digitize():
                 width_px=width_px,
                 **get_trace_cleanup_kwargs(mode, curve_type),
             )
-        else:
+            xs = bridge_short_trace_gaps(
+                mask,
+                xs,
+                max_gap=max(14, int(mask.shape[0] * 0.015)),
+                recenter_window=5,
+                min_prob=0.006,
+            )
+            xs = heal_supported_trace_gaps(
+                mask,
+                xs,
+                max_gap=max(12, int(mask.shape[0] * 0.012)),
+                neighbor_span=7,
+                search_radius=6,
+                min_prob=0.005,
+                support_kernel_h=7,
+                support_kernel_w=3,
+                min_fill_ratio=0.6,
+            )
+            xs = seal_tiny_trace_gaps(
+                xs,
+                max_gap=3 if curve_type.upper() == "GR" else 2,
+                max_total_dx=18.0 if curve_type.upper() == "GR" else 14.0,
+                max_dx_per_row=5.5 if curve_type.upper() == "GR" else 4.5,
+            )
+        elif mode != "black":
             try:
                 xs = refine_to_stroke_centerline(
                     mask,
@@ -7485,11 +8820,14 @@ def digitize():
                 # This creates a completely solid line that shows the exact trace.
                 for row_idx in valid_rows:
                     x_val = xs[row_idx]
-                    x_img = round(left_px + x_val)
-                    y_img = int(top + row_idx)
+                    x_img = float(left_px) + float(x_val)
+                    y_img = float(top + row_idx)
                     trace_points.append([x_img, y_img])
 
         curve_traces[name] = trace_points
+        curve_trace_debug[name] = summarize_trace_debug(xs, left_px=left_px, top_px=top)
+        if ai_debug_for_curve:
+            curve_trace_debug[name]["ai_debug"] = ai_debug_for_curve
     
     # Resample to fixed 0.5 ft step when using feet
     las_depth = base_depth
@@ -7584,6 +8922,7 @@ def digitize():
         'depth_warnings': depth_warnings,
         'curve_warnings': curve_warnings,
         'curve_traces': curve_traces,
+        'curve_trace_debug': curve_trace_debug,
         'ai_payload': ai_payload,
         'ai_summary': ai_summary,
         'digitized_depth': digitized_depth,
@@ -7959,7 +9298,7 @@ def refine_edit():
                 max_gap = 25
                 s = s.interpolate(method='linear', limit_direction='both', limit=max_gap, limit_area=None)
                 if s.isna().any():
-                    s = s.fillna(method='ffill', limit=max_gap).fillna(method='bfill', limit=max_gap)
+                    s = s.ffill(limit=max_gap).bfill(limit=max_gap)
                 xs_refined = s.to_numpy(dtype=np.float32)
             except Exception:
                 pass
@@ -7986,6 +9325,33 @@ def refine_edit():
                         confidence=confidence,
                         width_px=mask.shape[1] if mask is not None else None,
                     )
+            except Exception:
+                pass
+            try:
+                xs_refined = bridge_short_trace_gaps(
+                    mask,
+                    xs_refined,
+                    max_gap=max(16, int(mask.shape[0] * 0.018)) if mode == "black" else max(14, int(mask.shape[0] * 0.015)),
+                    recenter_window=6 if mode == "black" else 5,
+                    min_prob=0.006,
+                )
+                xs_refined = heal_supported_trace_gaps(
+                    mask,
+                    xs_refined,
+                    max_gap=max(20, int(mask.shape[0] * 0.02)) if mode == "black" else max(12, int(mask.shape[0] * 0.012)),
+                    neighbor_span=10 if mode == "black" and curve_type == 'GR' else (8 if mode == "black" else 7),
+                    search_radius=8 if mode == "black" and curve_type == 'GR' else (7 if mode == "black" else 6),
+                    min_prob=0.004 if mode == "black" else 0.005,
+                    support_kernel_h=9 if mode == "black" and curve_type == 'GR' else 7,
+                    support_kernel_w=3,
+                    min_fill_ratio=0.55 if mode == "black" else 0.6,
+                )
+                xs_refined = seal_tiny_trace_gaps(
+                    xs_refined,
+                    max_gap=4 if mode == "black" and curve_type == 'GR' else 3,
+                    max_total_dx=24.0 if mode == "black" else 18.0,
+                    max_dx_per_row=7.0 if mode == "black" else 5.5,
+                )
             except Exception:
                 pass
 
@@ -8541,6 +9907,222 @@ def batch_digitize():
     })
 
 
+def _decode_training_source_image(job: Dict, result: Optional[Dict] = None) -> Optional[np.ndarray]:
+    image_path = job.get('image_path') if isinstance(job, dict) else None
+    if image_path and os.path.exists(image_path):
+        try:
+            img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            if img is not None:
+                return img
+        except Exception:
+            pass
+
+    image_data = job.get('image') if isinstance(job, dict) else None
+    if isinstance(image_data, str) and image_data:
+        try:
+            raw = image_data.split(',', 1)[1] if ',' in image_data else image_data
+            img_bytes = base64.b64decode(raw)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                return img
+        except Exception:
+            pass
+
+    result_image = (result or {}).get('image') if isinstance(result, dict) else None
+    if isinstance(result_image, str) and result_image:
+        try:
+            raw = result_image.split(',', 1)[1] if ',' in result_image else result_image
+            img_bytes = base64.b64decode(raw)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                return img
+        except Exception:
+            pass
+
+    return None
+
+
+def _encode_roi_data_url(roi: np.ndarray, image_format: str = 'png', jpeg_quality: int = 90) -> Optional[str]:
+    if roi is None or roi.size == 0:
+        return None
+
+    fmt = str(image_format or 'png').strip().lower()
+    if fmt == 'jpg':
+        fmt = 'jpeg'
+
+    if fmt == 'jpeg':
+        ok, buf = cv2.imencode('.jpg', roi, [cv2.IMWRITE_JPEG_QUALITY, int(max(50, min(100, jpeg_quality)))])
+        mime = 'image/jpeg'
+    else:
+        ok, buf = cv2.imencode('.png', roi)
+        mime = 'image/png'
+
+    if not ok:
+        return None
+
+    b64 = base64.b64encode(buf.tobytes()).decode('ascii')
+    return f'data:{mime};base64,{b64}'
+
+
+def _normalize_mode_filter(mode_filter) -> set[str]:
+    if mode_filter is None:
+        return {'black'}
+    if isinstance(mode_filter, list):
+        raw_items = mode_filter
+    else:
+        raw_items = str(mode_filter).split(',')
+    modes = {str(x).strip().lower() for x in raw_items if str(x).strip()}
+    return modes or {'black'}
+
+
+@app.route('/api/export_curve_training_examples', methods=['POST'])
+def export_curve_training_examples():
+    """Flatten batch digitize jobs/results into trainer-ready per-curve examples."""
+    data = request.json or {}
+    jobs = data.get('jobs') or []
+    results = data.get('results') or []
+    export_format = str(data.get('format') or 'json').strip().lower()
+    mode_filter = _normalize_mode_filter(data.get('mode_filter'))
+    image_format = str(data.get('image_format') or 'png').strip().lower()
+    jpeg_quality = int(data.get('jpeg_quality', 90))
+
+    if not jobs or not isinstance(jobs, list):
+        return jsonify({'success': False, 'error': 'Missing jobs list'}), 400
+    if not results or not isinstance(results, list):
+        return jsonify({'success': False, 'error': 'Missing results list'}), 400
+
+    result_map = {}
+    for idx, item in enumerate(results):
+        if not isinstance(item, dict):
+            continue
+        res_idx = item.get('index', idx)
+        result_map[res_idx] = item
+
+    items = []
+    skipped = []
+
+    for idx, job in enumerate(jobs):
+        if not isinstance(job, dict):
+            continue
+        result = result_map.get(idx)
+        if not isinstance(result, dict) or not result.get('success'):
+            skipped.append({'index': idx, 'reason': 'missing_or_failed_result'})
+            continue
+
+        config = job.get('config') or {}
+        depth_cfg = config.get('depth') or {}
+        curves_cfg = config.get('curves') or []
+        preview_filters = job.get('preview_filters') or {}
+        header_metadata = job.get('header_metadata') or {}
+        curve_traces = result.get('curve_traces') or {}
+        metadata = result.get('metadata') or {}
+        null_val = float(metadata.get('null_value', (config.get('global_options') or {}).get('null', -999.25)))
+
+        img = _decode_training_source_image(job, result)
+        if img is None:
+            skipped.append({'index': idx, 'reason': 'source_image_unavailable'})
+            continue
+
+        img_h, img_w = img.shape[:2]
+        top_px = max(0, min(img_h - 1, int(depth_cfg.get('top_px', 0)))) if img_h > 0 else 0
+        bottom_px = max(0, min(img_h, int(depth_cfg.get('bottom_px', img_h)))) if img_h > 0 else 0
+        if bottom_px <= top_px:
+            skipped.append({'index': idx, 'reason': 'invalid_depth_bounds'})
+            continue
+
+        for curve_cfg in curves_cfg:
+            curve_name = curve_cfg.get('las_mnemonic') or curve_cfg.get('name')
+            if not curve_name:
+                continue
+
+            mode_name = str(curve_cfg.get('mode', 'black')).strip().lower()
+            if mode_name not in mode_filter:
+                continue
+
+            trace = curve_traces.get(curve_name)
+            if trace is None:
+                continue
+
+            left_px = max(0, min(img_w - 1, int(curve_cfg.get('left_px', 0)))) if img_w > 0 else 0
+            right_px = max(0, min(img_w, int(curve_cfg.get('right_px', img_w)))) if img_w > 0 else 0
+            if right_px <= left_px:
+                continue
+
+            roi = img[top_px:bottom_px, left_px:right_px]
+            if roi is None or roi.size == 0:
+                continue
+
+            roi_h, roi_w = roi.shape[:2]
+            trace_arr = np.asarray(trace, dtype=np.float32)
+            if trace_arr.size == 0:
+                continue
+            if trace_arr.size > roi_h:
+                trace_arr = trace_arr[:roi_h]
+            elif trace_arr.size < roi_h:
+                trace_arr = np.pad(trace_arr, (0, roi_h - trace_arr.size), mode='edge')
+
+            roi_data_url = _encode_roi_data_url(roi, image_format=image_format, jpeg_quality=jpeg_quality)
+            if not roi_data_url:
+                continue
+
+            items.append({
+                'example_id': f'job_{idx:04d}_{curve_name}',
+                'source_index': idx,
+                'curve_name': curve_name,
+                'curve_type': curve_cfg.get('type', 'GR'),
+                'mode': mode_name,
+                'roi_image': roi_data_url,
+                'trace': trace_arr.tolist(),
+                'null_value': null_val,
+                'roi': {
+                    'top_px': top_px,
+                    'bottom_px': bottom_px,
+                    'left_px': left_px,
+                    'right_px': right_px,
+                    'width_px': roi_w,
+                    'height_px': roi_h,
+                },
+                'track': {
+                    'left_value': curve_cfg.get('left_value'),
+                    'right_value': curve_cfg.get('right_value'),
+                    'unit': curve_cfg.get('las_unit') or curve_cfg.get('unit', ''),
+                    'hot_side': curve_cfg.get('hot_side'),
+                },
+                'depth': {
+                    'top_depth': depth_cfg.get('top_depth'),
+                    'bottom_depth': depth_cfg.get('bottom_depth'),
+                    'unit': depth_cfg.get('unit', 'FT'),
+                },
+                'preview_filters': preview_filters,
+                'header_metadata': header_metadata,
+                'source_image_path': job.get('image_path'),
+            })
+
+    payload = {
+        'success': True,
+        'schema': 'curve_examples_v1',
+        'mode_filter': sorted(mode_filter),
+        'count': len(items),
+        'skipped': skipped,
+        'items': items,
+    }
+
+    if export_format == 'jsonl':
+        lines = [json.dumps(item, ensure_ascii=False) for item in items]
+        return jsonify({
+            'success': True,
+            'schema': 'curve_examples_v1',
+            'format': 'jsonl',
+            'count': len(items),
+            'data': '\n'.join(lines),
+            'skipped': skipped,
+        })
+
+    return jsonify(payload)
+
+
 @app.route('/api/export_training_data', methods=['POST'])
 def export_training_data():
     """Export digitized data as ML-ready training dataset.
@@ -8746,7 +10328,12 @@ def _ml_load_curve_trace_model(model_path: str, device: str = 'cpu') -> Tuple['t
      if not state_dict:
          raise ValueError('Model file missing state_dict')
 
-     model = _CurveTraceNet()
+     model_type = str(payload.get('model_type', 'legacy_regression'))
+     if model_type in {'segmentation_v2', 'segmentation'}:
+         model = CurveSegNet()
+     else:
+         model = LegacyCurveTraceNet()
+         model_type = 'legacy_regression'
      model.load_state_dict(state_dict)
      model.eval()
      model.to(device)
@@ -8755,6 +10342,9 @@ def _ml_load_curve_trace_model(model_path: str, device: str = 'cpu') -> Tuple['t
          'input_h': int(payload.get('input_h', 256)),
          'input_w': int(payload.get('input_w', 128)),
          'curve': payload.get('curve'),
+         'model_type': model_type,
+         'target_width_px': float(payload.get('target_width_px', 2.5)),
+         'mask_blur_sigma': float(payload.get('mask_blur_sigma', 0.8)),
      }
 
      cache['model_path'] = model_path
@@ -8764,33 +10354,70 @@ def _ml_load_curve_trace_model(model_path: str, device: str = 'cpu') -> Tuple['t
      return model, meta
 
 
+def _ml_legacy_output_to_prob_map(pred_out, meta: Dict, roi_w: int, roi_h: int) -> np.ndarray:
+     pred_arr = np.asarray(pred_out.detach().cpu().numpy(), dtype=np.float32)
+     pred_arr = np.squeeze(pred_arr)
+
+     in_h = int(meta.get('input_h', 256))
+     in_w = int(meta.get('input_w', 128))
+
+     if pred_arr.ndim == 1:
+         pred_px = pred_arr * float(max(1, roi_w - 1))
+         src_y = np.linspace(0.0, float(max(0, in_h - 1)), num=in_h, dtype=np.float32)
+         dst_y = np.linspace(0.0, float(max(0, in_h - 1)), num=roi_h, dtype=np.float32)
+         pred_px_full = np.interp(dst_y, src_y, pred_px).astype(np.float32)
+         sigma_px = max(1.25, min(6.0, float(meta.get('target_width_px', 2.5))))
+         xs = np.arange(roi_w, dtype=np.float32)[None, :]
+         return np.exp(-0.5 * ((xs - pred_px_full[:, None]) / sigma_px) ** 2).astype(np.float32)
+
+     if pred_arr.ndim == 2:
+         prob_small = pred_arr
+         if prob_small.shape == (in_w, in_h):
+             prob_small = prob_small.T
+         elif prob_small.shape != (in_h, in_w):
+             prob_small = cv2.resize(prob_small, (in_w, in_h), interpolation=cv2.INTER_LINEAR)
+
+         if float(np.nanmax(prob_small)) > 1.0 or float(np.nanmin(prob_small)) < 0.0:
+             prob_small = 1.0 / (1.0 + np.exp(-np.clip(prob_small, -20.0, 20.0)))
+
+         return cv2.resize(prob_small.astype(np.float32), (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+
+     raise ValueError(f'Unsupported legacy model output shape: {pred_arr.shape}')
+
+
+def _ml_prob_map_to_trace(prob: np.ndarray) -> np.ndarray:
+     prob = np.asarray(prob, dtype=np.float32)
+     if prob.ndim != 2 or prob.size == 0:
+         return np.array([], dtype=np.float32)
+
+     roi_h, roi_w = prob.shape[:2]
+     x_coords = np.arange(roi_w, dtype=np.float32)
+     pred_px_full = np.full(roi_h, np.nan, dtype=np.float32)
+     for y in range(roi_h):
+         row = prob[y]
+         row_max = float(np.max(row))
+         if row_max < 1e-4:
+             continue
+         thr = max(0.12, row_max * 0.55)
+         support = row >= thr
+         if not np.any(support):
+             continue
+         idx = np.flatnonzero(support)
+         left_i = int(idx[0])
+         right_i = int(idx[-1]) + 1
+         band = row[left_i:right_i]
+         denom = float(np.sum(band))
+         if denom <= 1e-8:
+             continue
+         pred_px_full[y] = float(np.sum(x_coords[left_i:right_i] * band) / denom)
+     return pred_px_full
+
+
 def _ml_resolve_curve_trace_model_path(requested_path: Optional[str]) -> str:
      if requested_path:
          return requested_path
 
-     env_path = os.environ.get('CURVE_TRACE_MODEL_PATH')
-     if env_path:
-         return env_path
-
-     candidates = [
-         Path(__file__).with_name('curve_trace_model.pt'),
-         Path.cwd() / 'curve_trace_model.pt',
-     ]
-
-     try:
-         desktop_dir = Path(__file__).resolve().parent.parent
-         candidates.append(desktop_dir / 'TestTiflas' / 'curve_trace_model.pt')
-     except Exception:
-         pass
-
-     for p in candidates:
-         try:
-             if p.exists():
-                 return str(p)
-         except Exception:
-             continue
-
-     return str(candidates[0])
+     return _resolve_default_curve_trace_model_path()
 
 
 @app.route('/api/download_las_zip', methods=['POST'])
@@ -8896,19 +10523,51 @@ def ml_predict_curve_trace():
          x = (roi_resized.astype(np.float32) / 255.0)[None, None, :, :]
          x_t = torch.from_numpy(x).to(device)
 
-         with torch.no_grad():
-             pred_norm = model(x_t)[0].detach().cpu().numpy().astype(np.float32)
-
          roi_w = int(right_px - left_px)
          roi_h = int(bottom_px - top_px)
          if roi_w <= 1 or roi_h <= 1:
              return jsonify({'success': False, 'error': 'ROI too small'}), 400
 
-         pred_px = pred_norm * float(roi_w - 1)
+         with torch.no_grad():
+             pred_out = model(x_t)
 
-         src_y = np.linspace(0.0, float(in_h - 1), num=in_h, dtype=np.float32)
-         dst_y = np.linspace(0.0, float(in_h - 1), num=roi_h, dtype=np.float32)
-         pred_px_full = np.interp(dst_y, src_y, pred_px).astype(np.float32)
+         if str(meta.get('model_type')) in {'segmentation_v2', 'segmentation'}:
+             prob_small = torch.sigmoid(pred_out[0]).detach().cpu().numpy().astype(np.float32)
+             prob = cv2.resize(prob_small, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+             blur_sigma = float(meta.get('mask_blur_sigma', 0.8))
+             if blur_sigma > 1e-3:
+                 try:
+                     prob = cv2.GaussianBlur(prob, (0, 0), blur_sigma)
+                 except Exception:
+                     pass
+             x_coords = np.arange(roi_w, dtype=np.float32)
+             pred_px_full = np.full(roi_h, np.nan, dtype=np.float32)
+             for y in range(roi_h):
+                 row = prob[y]
+                 row_max = float(np.max(row))
+                 if row_max < 1e-4:
+                     continue
+                 thr = max(0.12, row_max * 0.55)
+                 support = row >= thr
+                 if not np.any(support):
+                     continue
+                 idx = np.flatnonzero(support)
+                 left_i = int(idx[0])
+                 right_i = int(idx[-1]) + 1
+                 band = row[left_i:right_i]
+                 denom = float(np.sum(band))
+                 if denom <= 1e-8:
+                     continue
+                 pred_px_full[y] = float(np.sum(x_coords[left_i:right_i] * band) / denom)
+         else:
+             prob = _ml_legacy_output_to_prob_map(pred_out, meta=meta, roi_w=roi_w, roi_h=roi_h)
+             blur_sigma = float(meta.get('mask_blur_sigma', 0.8))
+             if blur_sigma > 1e-3:
+                 try:
+                     prob = cv2.GaussianBlur(prob, (0, 0), blur_sigma)
+                 except Exception:
+                     pass
+             pred_px_full = _ml_prob_map_to_trace(prob)
 
          return jsonify({
              'success': True,

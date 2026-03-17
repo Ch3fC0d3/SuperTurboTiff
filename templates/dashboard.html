@@ -7463,15 +7463,87 @@
             // Calculate scale from image coords to base canvas coords
             const scaleX = rect.width / w;
             const scaleY = rect.height / h;
-            const jumpBreakDomPx = Math.max(18, rect.width * 0.02);
-            const jumpBreakSlope = 6.0;
+            const jumpBreakDomPx = Math.max(28, rect.width * 0.032);
+            const jumpBreakSlope = 10.0;
+            const jumpBreakMinYDomPx = 26.0;
+            const jumpBreakMaxRowGap = 4.0;
+            const jumpBreakMinImgDx = Math.max(10.0, w * 0.012);
+            const jumpBreakImgSlope = 6.5;
+            const shelfNeighborImgDx = Math.max(5.0, w * 0.0065);
+            const shelfNeighborRowGap = 3.0;
+            const shelfPlateauStepImgDx = Math.max(8.0, w * 0.010);
+            const steppedPlateauNeighborImgDx = Math.max(4.0, w * 0.0055);
+            const steppedPlateauStepImgDx = Math.max(14.0, w * 0.018);
+            const _imgDx = (a, b) => Math.abs(Number(b[0]) - Number(a[0]));
+            const _imgDy = (a, b) => Math.abs(Number(b[1]) - Number(a[1]));
+            const _imgSignedDx = (a, b) => Number(b[0]) - Number(a[0]);
             const isImplausibleJump = (p0, p1) => {
                 if (!Array.isArray(p0) || !Array.isArray(p1) || p0.length < 2 || p1.length < 2) return false;
+                const dxImg = _imgDx(p0, p1);
+                const dyImg = _imgDy(p0, p1);
                 const dxDom = Math.abs((Number(p1[0]) - Number(p0[0])) * scaleX);
                 const dyDom = Math.abs((Number(p1[1]) - Number(p0[1])) * scaleY);
-                if (!Number.isFinite(dxDom) || !Number.isFinite(dyDom)) return false;
-                if (dxDom <= jumpBreakDomPx) return false;
-                return dxDom > Math.max(jumpBreakDomPx, dyDom * jumpBreakSlope);
+                if (!Number.isFinite(dxImg) || !Number.isFinite(dyImg) || !Number.isFinite(dxDom) || !Number.isFinite(dyDom)) return false;
+                if (dyDom >= jumpBreakMinYDomPx) return false;
+                if (dyImg > jumpBreakMaxRowGap) return false;
+                if (dxDom <= jumpBreakDomPx || dxImg <= jumpBreakMinImgDx) return false;
+                return dxDom > Math.max(jumpBreakDomPx, dyDom * jumpBreakSlope) &&
+                    (dxImg / Math.max(1.0, dyImg)) > jumpBreakImgSlope;
+            };
+            const isShelfTransition = (pts, leftIdx, rightIdx) => {
+                if (!Array.isArray(pts) || leftIdx <= 0 || rightIdx >= pts.length - 1) return false;
+                const pPrev = pts[leftIdx];
+                const pCurr = pts[rightIdx];
+                const pBefore = pts[leftIdx - 1];
+                const pAfter = pts[rightIdx + 1];
+                if (!Array.isArray(pPrev) || !Array.isArray(pCurr) || !Array.isArray(pBefore) || !Array.isArray(pAfter)) return false;
+
+                const stepDx = _imgDx(pPrev, pCurr);
+                const prevDx = _imgDx(pBefore, pPrev);
+                const nextDx = _imgDx(pCurr, pAfter);
+                const prevDy = _imgDy(pBefore, pPrev);
+                const nextDy = _imgDy(pCurr, pAfter);
+                if (!Number.isFinite(stepDx) || !Number.isFinite(prevDx) || !Number.isFinite(nextDx)) return false;
+                if (stepDx < shelfPlateauStepImgDx) return false;
+                if (prevDy > shelfNeighborRowGap || nextDy > shelfNeighborRowGap) return false;
+                return prevDx <= shelfNeighborImgDx && nextDx <= shelfNeighborImgDx;
+            };
+            const isSteppedPlateauTransition = (pts, leftIdx, rightIdx) => {
+                if (!Array.isArray(pts) || leftIdx < 0 || rightIdx >= pts.length) return false;
+                const pL = pts[leftIdx];
+                const pR = pts[rightIdx];
+                if (!Array.isArray(pL) || !Array.isArray(pR)) return false;
+
+                const currDx = _imgSignedDx(pL, pR);
+                const currAbsDx = Math.abs(currDx);
+                const currDy = _imgDy(pL, pR);
+                if (!Number.isFinite(currDx) || currAbsDx < steppedPlateauStepImgDx || currDy > shelfNeighborRowGap) return false;
+
+                const sameSign = (a, b) => Math.sign(a) !== 0 && Math.sign(a) === Math.sign(b);
+
+                if (leftIdx >= 2 && rightIdx + 1 < pts.length) {
+                    const pLL = pts[leftIdx - 1];
+                    const pRR = pts[rightIdx + 1];
+                    if (Array.isArray(pLL) && Array.isArray(pRR)) {
+                        const prevDx = _imgSignedDx(pLL, pL);
+                        const nextDx = _imgSignedDx(pR, pRR);
+                        const prevAbsDx = Math.abs(prevDx);
+                        const nextAbsDx = Math.abs(nextDx);
+                        const prevDy = _imgDy(pLL, pL);
+                        const nextDy = _imgDy(pR, pRR);
+
+                        const prevPlateau = prevAbsDx <= steppedPlateauNeighborImgDx && prevDy <= shelfNeighborRowGap;
+                        const nextPlateau = nextAbsDx <= steppedPlateauNeighborImgDx && nextDy <= shelfNeighborRowGap;
+                        const prevStep = prevAbsDx >= steppedPlateauStepImgDx && prevDy <= shelfNeighborRowGap && sameSign(prevDx, currDx);
+                        const nextStep = nextAbsDx >= steppedPlateauStepImgDx && nextDy <= shelfNeighborRowGap && sameSign(nextDx, currDx);
+
+                        if ((prevPlateau && nextStep) || (prevStep && nextPlateau)) {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
             };
 
             ctx.lineJoin = 'round';
@@ -7579,7 +7651,11 @@
                         for (let i = 0; i < sortedPoints.length; i++) {
                             const xDom = (sortedPoints[i][0] * scaleX);
                             const yDom = (sortedPoints[i][1] * scaleY);
-                            if (!started || (i > 0 && isImplausibleJump(sortedPoints[i - 1], sortedPoints[i]))) {
+                            const shouldBreak = i > 0 &&
+                                isImplausibleJump(sortedPoints[i - 1], sortedPoints[i]) &&
+                                !isShelfTransition(sortedPoints, i - 1, i) &&
+                                !isSteppedPlateauTransition(sortedPoints, i - 1, i);
+                            if (!started || shouldBreak) {
                                 ctx.moveTo(xDom, yDom);
                                 started = true;
                             } else {
@@ -7599,7 +7675,7 @@
                     // Densify: fill long gaps with interpolated stick samples so the stroke looks continuous.
                     // We keep the original editable points as-is; this only affects rendering density.
                     const stickSamples = [];
-                    const desiredDomStep = 3.0; // px between sticks on screen (any direction)
+                    const desiredDomStep = 2.4; // px between sticks on screen (any direction)
                     const maxStickSamples = 12000;
                     for (let i = 0; i < sortedPoints.length && stickSamples.length < maxStickSamples; i++) {
                         const p0 = sortedPoints[i];
@@ -7630,7 +7706,11 @@
                         const dy = y1 - y0;
                         const domDx = dx * scaleX;
                         const domDy = dy * scaleY;
-                        if (isImplausibleJump(p0, p1)) continue;
+                        if (
+                            isImplausibleJump(p0, p1) &&
+                            !isShelfTransition(sortedPoints, i, i + 1) &&
+                            !isSteppedPlateauTransition(sortedPoints, i, i + 1)
+                        ) continue;
                         const domDist = Math.hypot(domDx, domDy);
                         if (domDist <= desiredDomStep) continue;
 
@@ -8241,6 +8321,12 @@
 
                     if (data.curve_traces && typeof data.curve_traces === 'object') {
                         const traces = data.curve_traces;
+                        window.lastCurveTraceDebug = (data.curve_trace_debug && typeof data.curve_trace_debug === 'object')
+                            ? data.curve_trace_debug
+                            : null;
+                        if (window.lastCurveTraceDebug) {
+                            console.info('[trace debug]', window.lastCurveTraceDebug);
+                        }
                         lastCurveTraces = traces;
                         curveIndexToTraceKey = {};
                         const emptyTraceCurves = [];
