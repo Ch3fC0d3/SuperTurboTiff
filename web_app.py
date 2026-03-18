@@ -80,9 +80,25 @@ import hashlib
 
 def _default_curve_trace_model_candidates() -> List[Path]:
     repo_dir = Path(__file__).resolve().parent
+    volume_mount = str(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "").strip()
+    volume_dir = Path(volume_mount) if volume_mount else None
     candidates = [
+        *(([
+            volume_dir / 'models' / 'testtiflas_black_seg_v2_pairs_wvgs.pt',
+            volume_dir / 'models' / 'testtiflas_black_seg_v2_pairs.pt',
+            volume_dir / 'models' / 'testtiflas_black_seg_v2_captures.pt',
+            volume_dir / 'models' / 'testtiflas_black_seg_v2.pt',
+        ] if volume_dir else [])),
+        repo_dir / 'models' / 'testtiflas_black_seg_v2_pairs_wvgs.pt',
+        Path.cwd() / 'models' / 'testtiflas_black_seg_v2_pairs_wvgs.pt',
+        repo_dir / 'models' / 'testtiflas_black_seg_v2_pairs.pt',
+        Path.cwd() / 'models' / 'testtiflas_black_seg_v2_pairs.pt',
+        repo_dir / 'models' / 'testtiflas_black_seg_v2_captures.pt',
+        Path.cwd() / 'models' / 'testtiflas_black_seg_v2_captures.pt',
         repo_dir / 'models' / 'testtiflas_black_seg_v2.pt',
         Path.cwd() / 'models' / 'testtiflas_black_seg_v2.pt',
+        repo_dir / 'deploy_models' / 'testtiflas_black_seg_v2_pairs_wvgs.pt',
+        Path.cwd() / 'deploy_models' / 'testtiflas_black_seg_v2_pairs_wvgs.pt',
         repo_dir / 'curve_trace_model.pt',
         Path.cwd() / 'curve_trace_model.pt',
     ]
@@ -107,6 +123,19 @@ def _resolve_default_curve_trace_model_path() -> str:
 def _experimental_black_ai_enabled() -> bool:
     value = str(os.environ.get("TURBOTIFFLAS_ENABLE_EXPERIMENTAL_BLACK_AI", "")).strip().lower()
     return value in {"1", "true", "yes", "on"}
+
+
+def _training_captures_base_dir() -> Path:
+    repo_dir = Path(__file__).resolve().parent
+    explicit = str(os.environ.get("TURBOTIFFLAS_TRAINING_CAPTURES_DIR") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    volume_mount = str(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "").strip()
+    if volume_mount:
+        return Path(volume_mount) / 'training_captures'
+
+    return repo_dir / 'training_captures'
 
 
 # Initialize AI tracer
@@ -9975,6 +10004,244 @@ def _normalize_mode_filter(mode_filter) -> set[str]:
         raw_items = str(mode_filter).split(',')
     modes = {str(x).strip().lower() for x in raw_items if str(x).strip()}
     return modes or {'black'}
+
+
+def _find_curve_config_for_capture(curves_cfg, curve_id: str, trace_key: Optional[str] = None) -> Optional[Dict]:
+    if not isinstance(curves_cfg, list):
+        return None
+
+    wanted = []
+    for raw in (curve_id, trace_key):
+        key = str(raw or "").strip().upper()
+        if key:
+            wanted.append(key)
+    if not wanted:
+        return None
+
+    for curve_cfg in curves_cfg:
+        if not isinstance(curve_cfg, dict):
+            continue
+        names = []
+        for raw in (
+            curve_cfg.get("las_mnemonic"),
+            curve_cfg.get("name"),
+            curve_cfg.get("display_name"),
+            curve_cfg.get("type"),
+        ):
+            name = str(raw or "").strip().upper()
+            if name:
+                names.append(name)
+        if any(name in wanted for name in names):
+            return curve_cfg
+    return None
+
+
+def _trace_points_to_local_trace(
+    trace_points,
+    top_px: int,
+    left_px: int,
+    roi_h: int,
+    roi_w: int,
+    null_val: float = -999.25,
+) -> tuple[np.ndarray, list]:
+    trace = np.full((max(0, int(roi_h)),), float(null_val), dtype=np.float32)
+    local_points = []
+    if not isinstance(trace_points, list) or trace.size == 0:
+        return trace, local_points
+
+    row_buckets: dict[int, list[float]] = defaultdict(list)
+    roi_w = max(1, int(roi_w))
+    for pt in trace_points:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            continue
+        try:
+            x_img = float(pt[0])
+            y_img = float(pt[1])
+        except Exception:
+            continue
+        if not np.isfinite(x_img) or not np.isfinite(y_img):
+            continue
+
+        row_idx = int(round(y_img - float(top_px)))
+        if row_idx < 0 or row_idx >= trace.size:
+            continue
+
+        local_x = float(np.clip(x_img - float(left_px), 0.0, float(roi_w - 1)))
+        row_buckets[row_idx].append(local_x)
+
+        local_pt = [local_x, float(row_idx)]
+        if len(pt) >= 3 and isinstance(pt[2], (int, float)) and np.isfinite(pt[2]):
+            local_pt.append(int(pt[2]))
+        local_points.append(local_pt)
+
+    for row_idx, vals in row_buckets.items():
+        if vals:
+            trace[row_idx] = float(np.median(np.asarray(vals, dtype=np.float32)))
+
+    return trace.astype(np.float32, copy=False), local_points
+
+
+@app.route('/api/save_bad_black_segment', methods=['POST'])
+def save_bad_black_segment():
+    """Save the current black curve ROI + live trace for later training review."""
+    data = request.json or {}
+    config = data.get('config') or {}
+    depth_cfg = config.get('depth') or {}
+    curves_cfg = config.get('curves') or []
+    curve_id = str(data.get('curve_id') or '').strip().upper()
+    trace_key = str(data.get('trace_key') or '').strip()
+    trace_points = data.get('trace_points') or []
+    preview_filters = data.get('preview_filters') or {}
+    header_metadata = data.get('header_metadata') or {}
+    capture_source = str(data.get('capture_source') or 'dashboard').strip()
+    capture_event = str(data.get('capture_event') or '').strip().lower() or None
+    capture_session_id = str(data.get('capture_session_id') or '').strip() or None
+    capture_status = str(data.get('status') or 'needs_review').strip().lower()
+    download_format = str(data.get('download_format') or '').strip().lower() or None
+    auto_capture = bool(data.get('auto_capture'))
+    notes = str(data.get('notes') or '').strip()
+    trace_debug = data.get('trace_debug') if isinstance(data.get('trace_debug'), dict) else {}
+    digitized_curve = data.get('digitized_curve') if isinstance(data.get('digitized_curve'), dict) else {}
+
+    allowed_status = {'needs_review', 'corrected'}
+    if capture_status not in allowed_status:
+        capture_status = 'needs_review'
+
+    if not curve_id:
+        return jsonify({'success': False, 'error': 'Missing curve_id'}), 400
+    if not isinstance(trace_points, list) or not trace_points:
+        return jsonify({'success': False, 'error': 'Missing trace_points'}), 400
+
+    curve_cfg = data.get('curve_config') if isinstance(data.get('curve_config'), dict) else None
+    if curve_cfg is None:
+        curve_cfg = _find_curve_config_for_capture(curves_cfg, curve_id, trace_key)
+    if not isinstance(curve_cfg, dict):
+        return jsonify({'success': False, 'error': f'Could not find curve config for {curve_id}'}), 400
+
+    mode_name = str(curve_cfg.get('mode', 'black')).strip().lower()
+    if mode_name != 'black':
+        return jsonify({'success': False, 'error': f'Curve {curve_id} is not in black mode'}), 400
+
+    img = _decode_training_source_image(data, None)
+    if img is None:
+        return jsonify({'success': False, 'error': 'Could not decode source image'}), 400
+
+    img_h, img_w = img.shape[:2]
+    top_px = max(0, min(img_h - 1, int(depth_cfg.get('top_px', 0)))) if img_h > 0 else 0
+    bottom_px = max(0, min(img_h, int(depth_cfg.get('bottom_px', img_h)))) if img_h > 0 else 0
+    left_px = max(0, min(img_w - 1, int(curve_cfg.get('left_px', 0)))) if img_w > 0 else 0
+    right_px = max(0, min(img_w, int(curve_cfg.get('right_px', img_w)))) if img_w > 0 else 0
+    if bottom_px <= top_px:
+        return jsonify({'success': False, 'error': 'Invalid depth bounds for capture'}), 400
+    if right_px <= left_px:
+        return jsonify({'success': False, 'error': 'Invalid curve bounds for capture'}), 400
+
+    roi = img[top_px:bottom_px, left_px:right_px]
+    if roi is None or roi.size == 0:
+        return jsonify({'success': False, 'error': 'Empty ROI for capture'}), 400
+
+    null_val = float((config.get('global_options') or {}).get('null', -999.25))
+    roi_h, roi_w = roi.shape[:2]
+    trace_arr, local_points = _trace_points_to_local_trace(
+        trace_points=trace_points,
+        top_px=top_px,
+        left_px=left_px,
+        roi_h=roi_h,
+        roi_w=roi_w,
+        null_val=null_val,
+    )
+    if trace_arr.size == 0:
+        return jsonify({'success': False, 'error': 'No trace rows available for capture'}), 400
+
+    try:
+        mask = compute_prob_map(roi, mode='black', ui_filters=preview_filters)
+    except Exception:
+        mask = None
+
+    now = datetime.utcnow()
+    date_str = now.strftime('%Y-%m-%d')
+    ts = now.strftime('%Y%m%dT%H%M%S.%fZ')
+    capture_id = f"{ts}_{curve_id}"
+
+    out_dir = _training_captures_base_dir() / 'bad_black_segments' / date_str
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    roi_path = out_dir / f'{capture_id}_roi.png'
+    cv2.imwrite(str(roi_path), roi)
+
+    mask_path = None
+    if mask is not None and hasattr(mask, 'size') and mask.size:
+        mask_path = out_dir / f'{capture_id}_mask.png'
+        cv2.imwrite(str(mask_path), mask)
+
+    roi_data_url = _encode_roi_data_url(roi, image_format='png', jpeg_quality=90)
+    mask_data_url = _encode_roi_data_url(mask, image_format='png', jpeg_quality=90) if mask is not None else None
+    trace_export = [float(v) if np.isfinite(v) and v != float(null_val) else float(null_val) for v in trace_arr.tolist()]
+
+    record = {
+        'schema': 'bad_black_segment_v2',
+        'capture_id': capture_id,
+        'saved_at_utc': now.isoformat() + 'Z',
+        'capture_source': capture_source,
+        'capture_event': capture_event,
+        'capture_session_id': capture_session_id,
+        'auto_capture': auto_capture,
+        'download_format': download_format,
+        'status': capture_status,
+        'training_ready': capture_status == 'corrected',
+        'notes': notes or None,
+        'curve_name': curve_id,
+        'curve_type': curve_cfg.get('type', 'GR'),
+        'mode': mode_name,
+        'roi_image': roi_data_url,
+        'mask_image': mask_data_url,
+        'trace': trace_export,
+        'null_value': null_val,
+        'trace_points_local': local_points,
+        'trace_debug': trace_debug,
+        'digitized_curve': digitized_curve,
+        'roi': {
+            'top_px': top_px,
+            'bottom_px': bottom_px,
+            'left_px': left_px,
+            'right_px': right_px,
+            'width_px': roi_w,
+            'height_px': roi_h,
+        },
+        'track': {
+            'left_value': curve_cfg.get('left_value'),
+            'right_value': curve_cfg.get('right_value'),
+            'unit': curve_cfg.get('las_unit') or curve_cfg.get('unit', ''),
+            'hot_side': curve_cfg.get('hot_side'),
+        },
+        'depth': {
+            'top_depth': depth_cfg.get('top_depth'),
+            'bottom_depth': depth_cfg.get('bottom_depth'),
+            'unit': depth_cfg.get('unit', 'FT'),
+        },
+        'preview_filters': preview_filters,
+        'header_metadata': header_metadata,
+        'roi_image_path': str(roi_path),
+        'mask_image_path': str(mask_path) if mask_path else None,
+    }
+
+    json_path = out_dir / f'{capture_id}.json'
+    with json_path.open('w', encoding='utf-8') as fh:
+        json.dump(record, fh, ensure_ascii=False, indent=2)
+
+    jsonl_path = out_dir / 'captures.jsonl'
+    with jsonl_path.open('a', encoding='utf-8') as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+    trace_rows = int(np.sum(np.isfinite(trace_arr) & (trace_arr != float(null_val))))
+    return jsonify({
+        'success': True,
+        'capture_id': capture_id,
+        'curve_id': curve_id,
+        'status': capture_status,
+        'trace_rows': trace_rows,
+        'record_path': str(json_path),
+    })
 
 
 @app.route('/api/export_curve_training_examples', methods=['POST'])

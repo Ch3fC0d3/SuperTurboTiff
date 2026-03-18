@@ -30,7 +30,10 @@ training_execution_results.txt
 verification_results.txt
 user_preferences.json
 corrections/
+training_captures/
+pair_training_examples*/
 *.ckpt.pt
+turbotifflas.ml.pid
 
 # User-uploaded / sample data files
 *.tiff

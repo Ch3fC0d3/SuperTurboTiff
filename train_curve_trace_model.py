@@ -458,11 +458,15 @@ class CurveExampleDataset(Dataset):
             if allowed_modes and mode_name not in allowed_modes:
                 continue
 
-            if not item.get("roi_image") or item.get("trace") is None:
+            roi_image_path = str(item.get("roi_image_path") or "").strip()
+            if not item.get("roi_image") and not roi_image_path:
+                continue
+            if item.get("trace") is None:
                 continue
 
             self.items.append({
                 "roi_image": item.get("roi_image"),
+                "roi_image_path": roi_image_path,
                 "trace": item.get("trace"),
                 "null_val": float(item.get("null_value", -999.25)),
                 "curve_name": curve_name or "UNKNOWN",
@@ -483,8 +487,16 @@ class CurveExampleDataset(Dataset):
 
     def __getitem__(self, idx: int):
         it = self.items[idx]
+        roi = None
+        roi_path = str(it.get("roi_image_path") or "").strip()
+        if roi_path:
+            try:
+                roi = cv2.imread(roi_path, cv2.IMREAD_COLOR)
+            except Exception:
+                roi = None
         try:
-            roi = _decode_data_url_image(it["roi_image"])
+            if roi is None or roi.size == 0:
+                roi = _decode_data_url_image(it["roi_image"])
         except Exception:
             return None
         if roi is None or roi.size == 0:
@@ -505,6 +517,143 @@ class CurveExampleDataset(Dataset):
         sample.update({
             "curve_name": it["curve_name"],
             "mode_name": it["mode_name"],
+        })
+        return sample
+
+
+class SavedCaptureDataset(Dataset):
+    """Train from in-app saved black segment captures."""
+
+    VALID_SCHEMAS = {"bad_black_segment_v1", "bad_black_segment_v2"}
+
+    def __init__(
+        self,
+        captures_dir: Path,
+        out_h: int = 256,
+        out_w: int = 128,
+        curve_filter: str | None = None,
+        mode_filter: str | None = None,
+        label_sigma_px: float = 2.5,
+        include_needs_review: bool = False,
+    ):
+        self.out_h = int(out_h)
+        self.out_w = int(out_w)
+        self.label_sigma_px = float(label_sigma_px)
+        self.items = []
+        self.supported_modes: set[str] = set()
+
+        curve_filter_norm = str(curve_filter or "").strip().upper()
+        allowed_modes = {
+            _normalize_mode_name(x)
+            for x in str(mode_filter or "").split(",")
+            if str(x).strip()
+        }
+
+        captures_dir = Path(captures_dir)
+        total_records = 0
+        training_ready_records = 0
+        skipped_unready = 0
+        source_paths = sorted(captures_dir.rglob("captures.jsonl"))
+        if not source_paths:
+            source_paths = sorted(
+                path for path in captures_dir.rglob("*.json")
+                if path.name.lower() != "captures.jsonl"
+            )
+
+        for source_path in source_paths:
+            for item in _iter_json_items(source_path):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("schema") not in self.VALID_SCHEMAS:
+                    continue
+
+                total_records += 1
+                curve_name = str(item.get("curve_name") or item.get("name") or "").strip().upper()
+                if curve_filter_norm and curve_name != curve_filter_norm:
+                    continue
+
+                mode_name = _normalize_mode_name(item.get("mode"))
+                if allowed_modes and mode_name not in allowed_modes:
+                    continue
+
+                training_ready = bool(item.get("training_ready"))
+                if not training_ready and str(item.get("status") or "").strip().lower() == "corrected":
+                    training_ready = True
+                if training_ready:
+                    training_ready_records += 1
+                elif not include_needs_review:
+                    skipped_unready += 1
+                    continue
+
+                roi_path = Path(str(item.get("roi_image_path") or "")).expanduser()
+                if (not roi_path or not roi_path.exists()) and not item.get("roi_image"):
+                    continue
+                if item.get("trace") is None:
+                    continue
+
+                self.items.append({
+                    "roi_image": item.get("roi_image") or "",
+                    "roi_image_path": str(roi_path) if roi_path and roi_path.exists() else "",
+                    "trace": item.get("trace"),
+                    "null_val": float(item.get("null_value", -999.25)),
+                    "curve_name": curve_name or "UNKNOWN",
+                    "mode_name": mode_name,
+                    "capture_id": str(item.get("capture_id") or ""),
+                    "capture_status": str(item.get("status") or ""),
+                    "notes": str(item.get("notes") or ""),
+                })
+                self.supported_modes.add(mode_name)
+
+        print(
+            f"[saved_captures_dataset] Complete: scanned {total_records} records, "
+            f"training_ready={training_ready_records}, skipped_unready={skipped_unready}, "
+            f"using {len(self.items)} captures across modes={sorted(self.supported_modes)}"
+        )
+
+        if not self.items:
+            raise ValueError(
+                "No usable saved capture records found. Save corrected black segments first "
+                "or rerun with --include-needs-review."
+            )
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx: int):
+        it = self.items[idx]
+        roi = None
+        roi_path = str(it.get("roi_image_path") or "").strip()
+        if roi_path:
+            try:
+                roi = cv2.imread(roi_path, cv2.IMREAD_COLOR)
+            except Exception:
+                roi = None
+        if (roi is None or roi.size == 0) and it.get("roi_image"):
+            try:
+                roi = _decode_data_url_image(it["roi_image"])
+            except Exception:
+                roi = None
+        if roi is None or roi.size == 0:
+            return None
+
+        sample = _build_training_tensors_from_roi(
+            roi=roi,
+            trace=it["trace"],
+            orig_w=roi.shape[1],
+            out_h=self.out_h,
+            out_w=self.out_w,
+            null_val=float(it["null_val"]),
+            label_sigma_px=self.label_sigma_px,
+        )
+        if sample is None:
+            return None
+
+        sample.update({
+            "curve_name": it["curve_name"],
+            "mode_name": it["mode_name"],
+            "capture_id": it["capture_id"],
+            "capture_status": it["capture_status"],
+            "notes": it["notes"],
         })
         return sample
 
@@ -687,7 +836,13 @@ def main():
     ap.add_argument("--configs", default="training_data.configs.json")
     ap.add_argument("--results", default="training_data.json")
     ap.add_argument("--examples", default="")
+    ap.add_argument("--saved-captures-dir", default="")
     ap.add_argument("--corrections-dir", default="")
+    ap.add_argument(
+        "--include-needs-review",
+        action="store_true",
+        help="Include uncorrected 'Save bad black segment' captures in training",
+    )
     ap.add_argument("--curve", default=None)
     ap.add_argument("--mode-filter", default="")
     ap.add_argument("--out", default="curve_trace_model.pt")
@@ -702,6 +857,11 @@ def main():
     ap.add_argument("--mask-blur-sigma", type=float, default=0.8)
     ap.add_argument("--log-every", type=int, default=25)
     ap.add_argument("--progress-file", default="")
+    ap.add_argument(
+        "--init-model",
+        default="",
+        help="Initialize from an existing segmentation_v2 checkpoint before training",
+    )
     ap.add_argument("--resume", action="store_true", help="Resume from latest epoch checkpoint if available")
     args = ap.parse_args()
 
@@ -720,7 +880,17 @@ def main():
 
     _write_progress({"stage": "dataset_loading"})
 
-    if args.examples:
+    if args.saved_captures_dir:
+        ds = SavedCaptureDataset(
+            captures_dir=Path(args.saved_captures_dir),
+            out_h=args.h,
+            out_w=args.w,
+            curve_filter=args.curve,
+            mode_filter=args.mode_filter,
+            label_sigma_px=args.target_width_px,
+            include_needs_review=bool(args.include_needs_review),
+        )
+    elif args.examples:
         ds = CurveExampleDataset(
             examples_path=Path(args.examples),
             out_h=args.h,
@@ -768,6 +938,23 @@ def main():
 
     out_path = Path(args.out)
     start_epoch = 1
+    initialized_from = ""
+
+    def _load_initial_weights(model_path: Path):
+        nonlocal initialized_from
+        payload = torch.load(str(model_path), map_location=device)
+        state_dict = payload.get("state_dict") if isinstance(payload, dict) else None
+        if state_dict is None and isinstance(payload, dict):
+            state_dict = payload
+        if not isinstance(state_dict, dict):
+            raise ValueError(f"Checkpoint at {model_path} does not contain a valid state_dict")
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        initialized_from = str(model_path)
+        print(
+            f"Initialized model from: {model_path} "
+            f"(missing={len(missing)}, unexpected={len(unexpected)})"
+        )
+
     if args.resume:
         ckpt_path = out_path.with_suffix(".ckpt.pt")
         if ckpt_path.exists():
@@ -778,6 +965,10 @@ def main():
             print(f"Resumed from checkpoint: epoch {ckpt['epoch']} (loss={ckpt.get('avg_loss', 0.0):.6f})")
         else:
             print("No checkpoint found, starting from scratch.")
+            if args.init_model:
+                _load_initial_weights(Path(args.init_model))
+    elif args.init_model:
+        _load_initial_weights(Path(args.init_model))
 
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
@@ -848,6 +1039,13 @@ def main():
             "input_h": int(args.h),
             "input_w": int(args.w),
             "curve": args.curve,
+            "source_type": (
+                "saved_captures" if args.saved_captures_dir else
+                "examples" if args.examples else
+                "corrections" if args.corrections_dir else
+                "configs_results"
+            ),
+            "initialized_from": initialized_from or None,
             "model_type": "segmentation_v2",
             "supported_modes": supported_modes,
             "target_width_px": float(args.target_width_px),
@@ -860,6 +1058,13 @@ def main():
         "input_h": int(args.h),
         "input_w": int(args.w),
         "curve": args.curve,
+        "source_type": (
+            "saved_captures" if args.saved_captures_dir else
+            "examples" if args.examples else
+            "corrections" if args.corrections_dir else
+            "configs_results"
+        ),
+        "initialized_from": initialized_from or None,
         "model_type": "segmentation_v2",
         "supported_modes": supported_modes,
         "target_width_px": float(args.target_width_px),

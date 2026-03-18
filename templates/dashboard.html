@@ -1229,8 +1229,24 @@
                                             </select>
                                         </div>
                                     </div>
-                                    <div class="hint-text" style="font-size: 0.8em; margin-top: 4px;">
+                                <div class="hint-text" style="font-size: 0.8em; margin-top: 4px;">
                                         Drag points to adjust. Snap-to-curve helps find the nearest colored line. Ctrl+Z to undo.
+                                    </div>
+                                    <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;">
+                                        <input type="text" id="blackSegmentNote" placeholder="note e.g. right shoulder missed" style="min-width: 260px; flex: 1 1 260px; font-size: 0.8em; padding: 5px 8px;">
+                                        <button class="btn" type="button" id="saveBadBlackSegmentBtn" onclick="saveBadBlackSegment()" style="padding: 4px 10px; font-size: 0.8em;">
+                                            Save bad black segment
+                                        </button>
+                                        <button class="btn" type="button" id="saveCorrectedBlackSegmentBtn" onclick="saveCorrectedBlackSegment()" style="padding: 4px 10px; font-size: 0.8em;">
+                                            Save corrected black segment
+                                        </button>
+                                        <span class="hint-text" style="font-size: 0.78em;">
+                                            Save corrected after editing for a stronger training label.
+                                        </span>
+                                        <label for="autoBlackCaptureToggle" class="hint-text" style="font-size: 0.78em; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+                                            <input type="checkbox" id="autoBlackCaptureToggle" checked onchange="setAutoBlackCaptureEnabled(this.checked)" style="cursor: pointer;">
+                                            Auto-snapshot black on digitize/download
+                                        </label>
                                     </div>
                                 </div>
                             </div>
@@ -1298,6 +1314,12 @@
         let lastCurveTraces = null;      // last curve_traces overlay returned from backend
         let curveIndexToTraceKey = null; // { [curveIndex:number]: string } mapping from UI curve index to curve_traces key
         let editUndoStack = [];          // stack of { curveKey, idx, oldValue, oldTraceX } for Ctrl+Z
+        let lastDigitizeRequestConfig = null;
+        let lastDigitizePreviewFilters = null;
+        let lastDigitizeHeaderMetadata = null;
+        let autoBlackCaptureEnabled = true;
+        let autoBlackCaptureSessionId = null;
+        let autoBlackCaptureCompleted = {};
 
         let pinnedDepthIndices = new Map();
         let lastMouseImgX = null;
@@ -1603,6 +1625,7 @@
         const OVERLAY_SETTINGS_STORAGE_KEY = 'turbotifflas.overlaySettingsByCurveId.v1';
         const OVERLAY_ACTIVE_STORAGE_KEY = 'turbotifflas.overlayActiveTarget.v1';
         const OVERLAY_UI_STORAGE_KEY = 'turbotifflas.overlayUiState.v1';
+        const AUTO_BLACK_CAPTURE_STORAGE_KEY = 'turbotifflas.autoBlackCapture.v1';
 
         function saveOverlaySettingsToStorage() {
             try {
@@ -2020,10 +2043,47 @@
             window.location.href = '/las_viewer';
         }
 
+        function saveAutoBlackCapturePreference() {
+            try {
+                if (!window || !window.localStorage) return;
+                window.localStorage.setItem(AUTO_BLACK_CAPTURE_STORAGE_KEY, autoBlackCaptureEnabled ? '1' : '0');
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        function setAutoBlackCaptureEnabled(enabled, options = {}) {
+            autoBlackCaptureEnabled = enabled !== false;
+            const toggle = document.getElementById('autoBlackCaptureToggle');
+            if (toggle) toggle.checked = !!autoBlackCaptureEnabled;
+            if (!options || options.persist !== false) {
+                saveAutoBlackCapturePreference();
+            }
+        }
+
+        function loadAutoBlackCapturePreference() {
+            let enabled = true;
+            try {
+                if (window && window.localStorage) {
+                    const raw = window.localStorage.getItem(AUTO_BLACK_CAPTURE_STORAGE_KEY);
+                    if (raw === '0') enabled = false;
+                }
+            } catch (e) {
+                // ignore
+            }
+            setAutoBlackCaptureEnabled(enabled, { persist: false });
+        }
+
+        function resetAutoBlackCaptureSession() {
+            autoBlackCaptureSessionId = `auto_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            autoBlackCaptureCompleted = {};
+        }
+
         // ── Initialization ─────────────────────────────────────────────────────────
         document.addEventListener('DOMContentLoaded', () => {
             loadOverlaySettingsFromStorage();
             loadOverlayUiStateFromStorage();
+            loadAutoBlackCapturePreference();
             populateOverlayCurveSelectFromTracks();
             if (typeof syncToolbarCurveLockButton === 'function') syncToolbarCurveLockButton();
         });
@@ -2444,6 +2504,397 @@
 
             if (!foundKey) return null;
             return { key: foundKey, entry: lastDigitizedCurves[foundKey] };
+        }
+
+        function getCurrentPreviewFilters() {
+            const invertBtn = document.getElementById('btnFilterInvert');
+            const contrastBtn = document.getElementById('btnFilterContrast');
+            return {
+                invert: !!(invertBtn && invertBtn.classList.contains('active')),
+                contrast: !!(contrastBtn && contrastBtn.classList.contains('active')),
+            };
+        }
+
+        function syncHeaderMetadataFromInputs() {
+            if (!headerMetadata || typeof headerMetadata !== 'object') {
+                headerMetadata = {};
+            }
+            const getVal = (id) => {
+                const el = document.getElementById(id);
+                return el ? el.value.trim() : '';
+            };
+
+            headerMetadata.well = getVal('headerWell') || headerMetadata.well;
+            headerMetadata.comp = getVal('headerComp') || headerMetadata.comp;
+            headerMetadata.company = headerMetadata.comp;
+            headerMetadata.api = getVal('headerApi') || headerMetadata.api;
+            headerMetadata.date = getVal('headerDate') || headerMetadata.date;
+            headerMetadata.fld = getVal('headerFld') || headerMetadata.fld;
+            headerMetadata.field = headerMetadata.fld;
+            headerMetadata.loc = getVal('headerLoc') || headerMetadata.loc;
+            headerMetadata.location = headerMetadata.loc;
+            headerMetadata.county = getVal('headerCnty') || headerMetadata.county;
+            headerMetadata.state = getVal('headerState') || headerMetadata.state;
+            headerMetadata.prov = getVal('headerProv') || headerMetadata.prov;
+            headerMetadata.province = headerMetadata.prov;
+            headerMetadata.srvc = getVal('headerSrvc') || headerMetadata.srvc;
+            headerMetadata.service = headerMetadata.srvc;
+            return headerMetadata;
+        }
+
+        function buildDigitizeConfigFromInputs() {
+            const depthCfg = getDepthConfigFromInputs();
+            if (!depthCfg) return null;
+
+            const config = {
+                depth: {
+                    top_px: depthCfg.top_px,
+                    bottom_px: depthCfg.bottom_px,
+                    top_depth: depthCfg.top_depth,
+                    bottom_depth: depthCfg.bottom_depth,
+                    unit: depthCfg.unit,
+                },
+                global_options: {
+                    downsample: 1,
+                    blur: 3,
+                    min_run: 2,
+                    smooth_window: 5,
+                    snap_threshold: parseFloat(document.getElementById('snapThreshold')?.value || 1.20),
+                    null: -999.25,
+                },
+                curves: [],
+            };
+
+            const numCurves = parseInt(document.getElementById('numCurves')?.value || '0', 10);
+            const usedMnemonics = {};
+            for (let i = 0; i < numCurves; i++) {
+                const type = document.getElementById(`type${i}`)?.value || '';
+                const displayName = document.getElementById(`name${i}`)?.value || '';
+                const displayUnit = document.getElementById(`unit${i}`)?.value || '';
+                const lasMnemonicInput = document.getElementById(`lasMnemonic${i}`)?.value.trim() || '';
+                const lasUnitInput = document.getElementById(`lasUnit${i}`)?.value.trim() || '';
+
+                const defaults = curveTypeDefaults[type] || {};
+                const lasMnemonic = lasMnemonicInput || (defaults.mnemonic || (displayName ? displayName.toUpperCase() : `CURVE${i + 1}`));
+                const lasUnit = lasUnitInput || (defaults.unit || displayUnit);
+
+                let mnemonicKey = String(lasMnemonic || '').toUpperCase().trim();
+                if (!mnemonicKey) mnemonicKey = `CURVE${i + 1}`;
+                if (usedMnemonics[mnemonicKey]) {
+                    const n = usedMnemonics[mnemonicKey] + 1;
+                    usedMnemonics[mnemonicKey] = n;
+                    mnemonicKey = `${mnemonicKey}_${n}`;
+                } else {
+                    usedMnemonics[mnemonicKey] = 1;
+                }
+
+                config.curves.push({
+                    type: type,
+                    display_name: displayName,
+                    display_unit: displayUnit,
+                    name: mnemonicKey,
+                    unit: lasUnit,
+                    las_mnemonic: mnemonicKey,
+                    las_unit: lasUnit,
+                    left_px: parseInt(document.getElementById(`leftPx${i}`)?.value || '0', 10),
+                    right_px: parseInt(document.getElementById(`rightPx${i}`)?.value || '0', 10),
+                    left_value: parseFloat(document.getElementById(`leftVal${i}`)?.value || '0'),
+                    right_value: parseFloat(document.getElementById(`rightVal${i}`)?.value || '0'),
+                    mode: document.getElementById(`mode${i}`)?.value || 'black',
+                });
+            }
+
+            return config;
+        }
+
+        function findCurveConfigById(curves, curveId) {
+            if (!Array.isArray(curves) || !curveId) return null;
+            const target = String(curveId).trim().toUpperCase();
+            for (const curve of curves) {
+                if (!curve || typeof curve !== 'object') continue;
+                const names = [
+                    curve.las_mnemonic,
+                    curve.name,
+                    curve.display_name,
+                    curve.type,
+                ].filter(Boolean).map(v => String(v).trim().toUpperCase());
+                if (names.includes(target)) return curve;
+            }
+            return null;
+        }
+
+        function resolveBlackCaptureCurve(config) {
+            if (!config || !Array.isArray(config.curves)) {
+                return { error: 'Please digitize the image first so there is a curve config to save.' };
+            }
+
+            const blackCurves = config.curves.filter(c => String(c && c.mode || '').trim().toLowerCase() === 'black');
+            if (!blackCurves.length) {
+                return { error: 'No black curve is configured in the current job.' };
+            }
+
+            const requestedIds = [];
+            let sawNonBlackSelection = null;
+            const overlaySel = document.getElementById('overlayCurveSelect');
+            if (editCurveDataKey) requestedIds.push(String(editCurveDataKey).trim().toUpperCase());
+            if (editCurveId) requestedIds.push(String(editCurveId).trim().toUpperCase());
+            if (overlaySel && overlaySel.value && overlaySel.value !== '__all_unlocked__') {
+                requestedIds.push(String(overlaySel.value).trim().toUpperCase());
+            }
+
+            for (const requestedId of requestedIds) {
+                const curveCfg = findCurveConfigById(config.curves, requestedId);
+                if (!curveCfg) continue;
+                if (String(curveCfg.mode || '').trim().toLowerCase() !== 'black') {
+                    sawNonBlackSelection = requestedId;
+                    continue;
+                }
+                return {
+                    curveId: String(curveCfg.las_mnemonic || curveCfg.name || requestedId).trim().toUpperCase(),
+                    curveCfg,
+                };
+            }
+
+            if (blackCurves.length === 1) {
+                const curveCfg = blackCurves[0];
+                return {
+                    curveId: String(curveCfg.las_mnemonic || curveCfg.name || 'BLACK').trim().toUpperCase(),
+                    curveCfg,
+                };
+            }
+
+            if (sawNonBlackSelection) {
+                return { error: `Selected curve ${sawNonBlackSelection} is not black. Pick the black curve in the Curve dropdown first.` };
+            }
+            return { error: 'Select the specific black curve in the Curve dropdown before saving.' };
+        }
+
+        function resolveTraceKeyForCurveId(curveId) {
+            if (!curveId || !lastCurveTraces || typeof lastCurveTraces !== 'object') {
+                return null;
+            }
+            if (Array.isArray(lastCurveTraces[curveId])) return curveId;
+            const upper = String(curveId).trim().toUpperCase();
+            for (const key of Object.keys(lastCurveTraces)) {
+                if (String(key).trim().toUpperCase() === upper && Array.isArray(lastCurveTraces[key])) {
+                    return key;
+                }
+            }
+            return null;
+        }
+
+        function collectBlackCaptureSelections(config, options = {}) {
+            const selectedOnly = !!options.selectedOnly;
+            if (!config || !Array.isArray(config.curves)) {
+                return { error: 'Please digitize the image first so there is a curve config to save.' };
+            }
+            if (!lastCurveTraces || typeof lastCurveTraces !== 'object') {
+                return { error: 'Please run Digitize first so there is a trace to save.' };
+            }
+
+            const blackCurves = config.curves.filter(c => String(c && c.mode || '').trim().toLowerCase() === 'black');
+            if (!blackCurves.length) {
+                return { error: 'No black curve is configured in the current job.' };
+            }
+
+            const candidates = [];
+            if (selectedOnly) {
+                const selection = resolveBlackCaptureCurve(config);
+                if (!selection || selection.error) {
+                    return { error: selection && selection.error ? selection.error : 'Could not determine which black curve to save.' };
+                }
+                candidates.push(selection);
+            } else {
+                for (const curveCfg of blackCurves) {
+                    const curveId = String(curveCfg.las_mnemonic || curveCfg.name || curveCfg.type || 'BLACK').trim().toUpperCase();
+                    candidates.push({ curveId, curveCfg });
+                }
+            }
+
+            const selections = [];
+            for (const candidate of candidates) {
+                const curveId = String(candidate.curveId || '').trim().toUpperCase();
+                const curveCfg = candidate.curveCfg;
+                if (!curveId || !curveCfg) continue;
+
+                ensureTracePointsHaveDepthIndex(curveId);
+                const traceKey = resolveTraceKeyForCurveId(curveId) || curveId;
+                const tracePoints = Array.isArray(lastCurveTraces[traceKey]) ? lastCurveTraces[traceKey] : null;
+                if (!tracePoints || !tracePoints.length) {
+                    if (selectedOnly) {
+                        return { error: `No current trace points found for ${curveId}.` };
+                    }
+                    continue;
+                }
+
+                const traceDebug = (window.lastCurveTraceDebug && typeof window.lastCurveTraceDebug === 'object')
+                    ? (window.lastCurveTraceDebug[traceKey] || window.lastCurveTraceDebug[curveId] || null)
+                    : null;
+                const digitizedEntry = findDigitizedCurveEntry(curveId) || findDigitizedCurveEntry(traceKey);
+
+                selections.push({
+                    curveId,
+                    traceKey,
+                    curveCfg,
+                    tracePoints,
+                    traceDebug,
+                    digitizedEntry: digitizedEntry ? digitizedEntry.entry : null,
+                });
+            }
+
+            if (!selections.length) {
+                return { error: selectedOnly ? 'No black trace points are available to save.' : 'No black trace snapshots were available for auto-capture.' };
+            }
+
+            return { selections };
+        }
+
+        function buildBlackCapturePayload(selection, options = {}) {
+            const config = options.config || lastDigitizeRequestConfig || buildDigitizeConfigFromInputs();
+            return {
+                image: uploadedImage,
+                config: config,
+                preview_filters: lastDigitizePreviewFilters || getCurrentPreviewFilters(),
+                header_metadata: lastDigitizeHeaderMetadata || syncHeaderMetadataFromInputs() || null,
+                curve_id: selection.curveId,
+                trace_key: selection.traceKey,
+                curve_config: selection.curveCfg,
+                trace_points: selection.tracePoints,
+                trace_debug: selection.traceDebug,
+                digitized_curve: selection.digitizedEntry || null,
+                capture_source: options.captureSource || 'dashboard',
+                capture_event: options.captureEvent || null,
+                capture_session_id: options.captureSessionId || null,
+                auto_capture: !!options.autoCapture,
+                download_format: options.downloadFormat || null,
+                status: options.status || 'needs_review',
+                notes: options.notes || null,
+            };
+        }
+
+        async function postBlackCapturePayload(payload) {
+            const response = await fetch('/api/save_bad_black_segment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (e) {
+                data = null;
+            }
+
+            if (!response.ok || !data || !data.success) {
+                const msg = (data && (data.error || data.message)) ? (data.error || data.message) : `HTTP ${response.status}`;
+                throw new Error(msg);
+            }
+            return data;
+        }
+
+        async function autoCaptureBlackSegments(eventName, options = {}) {
+            if (!autoBlackCaptureEnabled) return;
+            if (!uploadedImage || !lastCurveTraces || typeof lastCurveTraces !== 'object') return;
+
+            const sessionId = autoBlackCaptureSessionId || `auto_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            autoBlackCaptureSessionId = sessionId;
+            if (autoBlackCaptureCompleted[eventName]) return;
+
+            const config = lastDigitizeRequestConfig || buildDigitizeConfigFromInputs();
+            const collected = collectBlackCaptureSelections(config, { selectedOnly: false });
+            if (!collected || !Array.isArray(collected.selections) || !collected.selections.length) {
+                return;
+            }
+
+            autoBlackCaptureCompleted[eventName] = true;
+            let saved = 0;
+            const noteText = options.notes || (eventName === 'digitize_post'
+                ? 'Automatic black snapshot after digitize.'
+                : 'Automatic black snapshot at download.');
+
+            for (const selection of collected.selections) {
+                try {
+                    const payload = buildBlackCapturePayload(selection, {
+                        config,
+                        captureSource: options.captureSource || `auto_black_capture_${eventName}`,
+                        captureEvent: eventName,
+                        captureSessionId: sessionId,
+                        autoCapture: true,
+                        downloadFormat: options.downloadFormat || null,
+                        status: 'needs_review',
+                        notes: noteText,
+                    });
+                    await postBlackCapturePayload(payload);
+                    saved += 1;
+                } catch (err) {
+                    console.warn(`[auto black capture] ${eventName} failed for ${selection.curveId}:`, err);
+                }
+            }
+
+            if (saved > 0) {
+                console.info(`[auto black capture] ${eventName}: saved ${saved} capture(s)`);
+            }
+        }
+
+        async function saveBlackSegment(kind) {
+            const isCorrected = String(kind || '').trim().toLowerCase() === 'corrected';
+            const btn = document.getElementById(isCorrected ? 'saveCorrectedBlackSegmentBtn' : 'saveBadBlackSegmentBtn');
+            if (btn) btn.disabled = true;
+            try {
+                if (!uploadedImage) {
+                    showStatus('Please upload an image first.', 'info');
+                    return;
+                }
+                if (!lastCurveTraces || typeof lastCurveTraces !== 'object') {
+                    showStatus('Please run Digitize first so there is a trace to save.', 'info');
+                    return;
+                }
+
+                const config = lastDigitizeRequestConfig || buildDigitizeConfigFromInputs();
+                if (!config) {
+                    showStatus('Could not resolve the current digitize config. Please run Digitize again first.', 'error');
+                    return;
+                }
+
+                const collected = collectBlackCaptureSelections(config, { selectedOnly: true });
+                if (!collected || collected.error) {
+                    showStatus(collected && collected.error ? collected.error : 'Could not determine which black curve to save.', 'info');
+                    return;
+                }
+
+                const selection = collected.selections[0];
+                const curveId = selection.curveId;
+                const noteEl = document.getElementById('blackSegmentNote');
+                const noteText = noteEl ? String(noteEl.value || '').trim() : '';
+                const payload = buildBlackCapturePayload(selection, {
+                    config,
+                    captureSource: isCorrected ? 'dashboard_save_corrected_black_segment' : 'dashboard_save_bad_black_segment',
+                    captureEvent: isCorrected ? 'manual_corrected_save' : 'manual_bad_save',
+                    status: isCorrected ? 'corrected' : 'needs_review',
+                    notes: noteText || null,
+                });
+                const data = await postBlackCapturePayload(payload);
+
+                const rows = Number.isFinite(data.trace_rows) ? ` (${data.trace_rows} traced rows)` : '';
+                const kindLabel = isCorrected ? 'corrected black segment' : 'bad black segment';
+                showStatus(`Saved ${kindLabel} for ${curveId}${rows}. Capture ID: ${data.capture_id}`, 'success');
+                if (noteEl && noteText) {
+                    noteEl.value = '';
+                }
+            } catch (err) {
+                showStatus(`Failed to save ${isCorrected ? 'corrected' : 'bad'} black segment: ${err.message}`, 'error');
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function saveBadBlackSegment() {
+            return saveBlackSegment('bad');
+        }
+
+        async function saveCorrectedBlackSegment() {
+            return saveBlackSegment('corrected');
         }
 
         function applyCurveXShiftForCurve(index) {
@@ -8138,106 +8589,24 @@
             startProcessingTimer();
 
             try {
-                const depthCfg = getDepthConfigFromInputs();
-                if (!depthCfg) {
+                const config = buildDigitizeConfigFromInputs();
+                if (!config) {
                     showStatus('Please enter valid top/bottom pixels and depth values before digitizing.', 'error');
                     if (btn) btn.disabled = false;
                     return;
                 }
-
-                const config = {
-                    depth: {
-                        top_px: depthCfg.top_px,
-                        bottom_px: depthCfg.bottom_px,
-                        top_depth: depthCfg.top_depth,
-                        bottom_depth: depthCfg.bottom_depth,
-                        unit: depthCfg.unit,
-                    },
-                    global_options: {
-                        downsample: 1,
-                        blur: 3,
-                        min_run: 2,
-                        smooth_window: 5,
-                        snap_threshold: parseFloat(document.getElementById('snapThreshold')?.value || 1.20),
-                        null: -999.25,
-                    },
-                    curves: [],
-                };
-
-                const numCurves = parseInt(document.getElementById('numCurves').value);
-                const usedMnemonics = {};
-                for (let i = 0; i < numCurves; i++) {
-                    const type = document.getElementById(`type${i}`).value;
-                    const displayName = document.getElementById(`name${i}`).value;
-                    const displayUnit = document.getElementById(`unit${i}`).value;
-                    const lasMnemonicInput = document.getElementById(`lasMnemonic${i}`).value.trim();
-                    const lasUnitInput = document.getElementById(`lasUnit${i}`).value.trim();
-
-                    const defaults = curveTypeDefaults[type] || {};
-                    const lasMnemonic = lasMnemonicInput || (defaults.mnemonic || (displayName ? displayName.toUpperCase() : `CURVE${i + 1}`));
-                    const lasUnit = lasUnitInput || (defaults.unit || displayUnit);
-
-                    // Ensure unique LAS mnemonic (required for LAS + avoids trace-key collisions)
-                    let mnemonicKey = String(lasMnemonic || '').toUpperCase().trim();
-                    if (!mnemonicKey) mnemonicKey = `CURVE${i + 1}`;
-                    if (usedMnemonics[mnemonicKey]) {
-                        const n = usedMnemonics[mnemonicKey] + 1;
-                        usedMnemonics[mnemonicKey] = n;
-                        mnemonicKey = `${mnemonicKey}_${n}`;
-                        const mnEl = document.getElementById(`lasMnemonic${i}`);
-                        if (mnEl) mnEl.value = mnemonicKey;
-                    } else {
-                        usedMnemonics[mnemonicKey] = 1;
-                    }
-
-                    config.curves.push({
-                        type: type,
-                        display_name: displayName,
-                        display_unit: displayUnit,
-                        name: mnemonicKey,
-                        unit: lasUnit,
-                        las_mnemonic: mnemonicKey,
-                        las_unit: lasUnit,
-                        left_px: parseInt(document.getElementById(`leftPx${i}`).value),
-                        right_px: parseInt(document.getElementById(`rightPx${i}`).value),
-                        left_value: parseFloat(document.getElementById(`leftVal${i}`).value),
-                        right_value: parseFloat(document.getElementById(`rightVal${i}`).value),
-                        mode: document.getElementById(`mode${i}`).value,
-                    });
-                }
+                const depthCfg = config.depth;
 
                 saveDepthConfigToSession();
                 renderDepthOverlays();
 
-                const invertBtn = document.getElementById('btnFilterInvert');
-                const contrastBtn = document.getElementById('btnFilterContrast');
-                const previewFilters = {
-                    invert: !!(invertBtn && invertBtn.classList.contains('active')),
-                    contrast: !!(contrastBtn && contrastBtn.classList.contains('active')),
-                };
+                const previewFilters = getCurrentPreviewFilters();
 
                 // Scrape header metadata from inputs (user edits override AI detection)
-                if (!headerMetadata) headerMetadata = {};
-                const getVal = (id) => {
-                    const el = document.getElementById(id);
-                    return el ? el.value.trim() : '';
-                };
-                
-                headerMetadata.well = getVal('headerWell') || headerMetadata.well;
-                headerMetadata.comp = getVal('headerComp') || headerMetadata.comp;
-                headerMetadata.company = headerMetadata.comp; // sync
-                headerMetadata.api = getVal('headerApi') || headerMetadata.api;
-                headerMetadata.date = getVal('headerDate') || headerMetadata.date;
-                headerMetadata.fld = getVal('headerFld') || headerMetadata.fld;
-                headerMetadata.field = headerMetadata.fld;
-                headerMetadata.loc = getVal('headerLoc') || headerMetadata.loc;
-                headerMetadata.location = headerMetadata.loc;
-                headerMetadata.county = getVal('headerCnty') || headerMetadata.county;
-                headerMetadata.state = getVal('headerState') || headerMetadata.state;
-                headerMetadata.prov = getVal('headerProv') || headerMetadata.prov;
-                headerMetadata.province = headerMetadata.prov;
-                headerMetadata.srvc = getVal('headerSrvc') || headerMetadata.srvc;
-                headerMetadata.service = headerMetadata.srvc;
+                syncHeaderMetadataFromInputs();
+                lastDigitizeRequestConfig = JSON.parse(JSON.stringify(config));
+                lastDigitizePreviewFilters = JSON.parse(JSON.stringify(previewFilters));
+                lastDigitizeHeaderMetadata = headerMetadata ? JSON.parse(JSON.stringify(headerMetadata)) : null;
 
                 const response = await fetch('/digitize', {
                     method: 'POST',
@@ -8400,7 +8769,11 @@
                     primaryRegionDrag.active = false;
                     headerRegionDrag = false;
 
+                    resetAutoBlackCaptureSession();
                     showStatus(message, statusType);
+                    void autoCaptureBlackSegments('digitize_post', {
+                        captureSource: 'auto_black_capture_digitize_post',
+                    });
                 } else {
                     const msg = (data && (data.error || data.message)) ? (data.error || data.message) : 'Error during digitization';
                     showStatus('❌ ' + msg, 'error');
@@ -8486,6 +8859,10 @@
                 URL.revokeObjectURL(url);
                 
                 showStatus('✅ ZIP download started.', 'success');
+                void autoCaptureBlackSegments('download_snapshot', {
+                    captureSource: 'auto_black_capture_download',
+                    downloadFormat: 'zip',
+                });
 
             } catch (err) {
                 console.error('ZIP download failed:', err);
@@ -8529,6 +8906,10 @@
             a.download = lastLasFilename || 'digitized_log.las';
             a.click();
             URL.revokeObjectURL(url);
+            void autoCaptureBlackSegments('download_snapshot', {
+                captureSource: 'auto_black_capture_download',
+                downloadFormat: 'las',
+            });
         }
 
         function showStatus(message, type) {

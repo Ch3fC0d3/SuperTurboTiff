@@ -68,6 +68,7 @@ Railway uses these files (already created):
 - `requirements.txt` - Python dependencies
 - `web_app.py` - Flask app (runs on port from $PORT env var)
 - `railway.json` - Deployment config (optional)
+- `deploy_models/testtiflas_black_seg_v2_pairs_wvgs.pt` - tracked fallback black model used on GitHub deploys
 
 ## 💰 Cost Estimate
 
@@ -86,6 +87,25 @@ Railway uses these files (already created):
 If you want to add Google Vision API later:
 1. Railway Dashboard → Your Project → Variables
 2. Add: `GOOGLE_APPLICATION_CREDENTIALS` = (paste JSON key)
+
+### Recommended for persistent training captures
+
+If you want `Save bad black segment`, `Save corrected black segment`, and the new automatic black snapshots to survive redeploys:
+
+1. Add a Railway Volume
+2. Mount it at a path such as `/data`
+3. Add this variable:
+
+```env
+TURBOTIFFLAS_TRAINING_CAPTURES_DIR=/data/training_captures
+```
+
+Optional if you later want to load a model from the volume:
+
+```env
+CURVE_TRACE_MODEL_PATH=/data/models/your_model.pt
+RAILWAY_VOLUME_MOUNT_PATH=/data
+```
 
 ## 🚦 Ready to Deploy?
 
