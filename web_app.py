@@ -75,6 +75,7 @@ except Exception:
 from user_tracker import tracker
 from parameter_learner import ParameterLearner
 from ai_tracer import AITracer, CurveSegNet, LegacyCurveTraceNet
+from single_well_interpretation import build_single_well_interpretation, load_interpretation as load_single_well_interpretation, save_interpretation as save_single_well_interpretation
 import portal_store
 
 # Initialize learning system after all imports
@@ -139,6 +140,51 @@ def _training_captures_base_dir() -> Path:
         return Path(volume_mount) / 'training_captures'
 
     return repo_dir / 'training_captures'
+
+
+def _single_well_interpretations_base_dir() -> Path:
+    repo_dir = Path(__file__).resolve().parent
+    explicit = str(os.environ.get("TURBOTIFFLAS_INTERPRETATIONS_DIR") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    volume_mount = str(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "").strip()
+    if volume_mount:
+        return Path(volume_mount) / 'single_well_interpretations'
+
+    return repo_dir / 'single_well_interpretations'
+
+
+def _build_single_well_source_key(
+    image_bytes: bytes,
+    depth_cfg: Dict,
+    curves: List[Dict],
+    header_metadata: Optional[Dict] = None,
+) -> str:
+    image_sha1 = hashlib.sha1(image_bytes).hexdigest()
+    identity = {
+        "image_sha1": image_sha1,
+        "depth": {
+            "top_px": int(depth_cfg.get("top_px", 0)),
+            "bottom_px": int(depth_cfg.get("bottom_px", 0)),
+            "top_depth": float(depth_cfg.get("top_depth", 0.0)),
+            "bottom_depth": float(depth_cfg.get("bottom_depth", 0.0)),
+            "unit": str(depth_cfg.get("unit", "FT")).upper(),
+        },
+        "curves": [
+            {
+                "name": c.get("las_mnemonic") or c.get("name"),
+                "type": c.get("type"),
+                "mode": c.get("mode"),
+                "left_px": c.get("left_px"),
+                "right_px": c.get("right_px"),
+            }
+            for c in (curves or [])
+        ],
+        "header_metadata": header_metadata or {},
+    }
+    digest = hashlib.sha1(json.dumps(identity, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return digest[:24]
 
 
 # Initialize AI tracer
@@ -8824,6 +8870,12 @@ def digitize():
     gopt = cfg.get('global_options', {})
 
     header_metadata = data.get('header_metadata') if isinstance(data, dict) else None
+    single_well_source_key = _build_single_well_source_key(
+        image_bytes=img_bytes,
+        depth_cfg=depth_cfg,
+        curves=curves,
+        header_metadata=header_metadata,
+    )
 
     null_val = float(gopt.get('null', -999.25))
     downsample = int(gopt.get('downsample', 1))
@@ -9509,6 +9561,7 @@ def digitize():
     ai_summary = None
     digitized_depth = None
     digitized_curves = None
+    single_well_interpretation = None
     if depth_unit.upper() == "FT" and base_depth.size > 1:
         start = float(base_depth[0])
         stop = float(base_depth[-1])
@@ -9561,6 +9614,31 @@ def digitize():
         digitized_depth = None
         digitized_curves = None
 
+    if digitized_depth and digitized_curves:
+        try:
+            generated_interpretation = build_single_well_interpretation(
+                depth=digitized_depth,
+                digitized_curves=digitized_curves,
+                config_curves=curves,
+                depth_unit=depth_unit,
+                null_value=null_val,
+                source_key=single_well_source_key,
+                header_metadata=header_metadata,
+            )
+            saved_interpretation = load_single_well_interpretation(
+                _single_well_interpretations_base_dir(),
+                single_well_source_key,
+            )
+            single_well_interpretation = saved_interpretation or generated_interpretation
+        except Exception as exc:
+            print(f"Stage 2 single-well interpretation skipped: {exc}")
+            single_well_interpretation = {
+                "schema": "single_well_interpretation_v1",
+                "source_key": single_well_source_key,
+                "warnings": [f"Single-well interpretation failed: {exc}"],
+                "intervals": [],
+            }
+
     # Generate LAS file
     las_content = write_las_simple(las_depth, las_curve_data, depth_unit, header_metadata=header_metadata)
 
@@ -9600,6 +9678,7 @@ def digitize():
         'ai_summary': ai_summary,
         'digitized_depth': digitized_depth,
         'digitized_curves': digitized_curves,
+        'single_well_interpretation': single_well_interpretation,
     })
 
 @app.route('/health')
@@ -9801,6 +9880,52 @@ def ask_ai():
     
     # If answer contains error message from AI API, still return success but show the error
     return jsonify({'success': True, 'answer': answer})
+
+
+@app.route('/api/save_single_well_interpretation', methods=['POST'])
+def save_single_well_interpretation_route():
+    data = request.json or {}
+    interpretation = data.get('interpretation')
+    if not isinstance(interpretation, dict):
+        return jsonify({'success': False, 'error': 'Missing interpretation payload.'}), 400
+
+    source_key = str(interpretation.get('source_key') or '').strip()
+    if not source_key:
+        return jsonify({'success': False, 'error': 'Interpretation is missing source_key.'}), 400
+
+    try:
+        out_path = save_single_well_interpretation(
+            _single_well_interpretations_base_dir(),
+            interpretation,
+        )
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+    return jsonify({
+        'success': True,
+        'source_key': source_key,
+        'path': str(out_path),
+    })
+
+
+@app.route('/api/load_single_well_interpretation', methods=['POST'])
+def load_single_well_interpretation_route():
+    data = request.json or {}
+    source_key = str(data.get('source_key') or '').strip()
+    if not source_key:
+        return jsonify({'success': False, 'error': 'Missing source_key.'}), 400
+
+    interpretation = load_single_well_interpretation(
+        _single_well_interpretations_base_dir(),
+        source_key,
+    )
+    if not interpretation:
+        return jsonify({'success': False, 'error': 'No saved interpretation found for this source.'}), 404
+
+    return jsonify({
+        'success': True,
+        'interpretation': interpretation,
+    })
 
 
 @app.route('/refine_edit', methods=['POST'])

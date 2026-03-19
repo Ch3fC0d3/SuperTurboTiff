@@ -400,6 +400,224 @@
             overflow: auto !important;
             position: relative;
         }
+        .viewer-results-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            min-width: 100%;
+            width: max-content;
+        }
+        .stage2-sidecar {
+            width: 320px;
+            min-width: 320px;
+            border-radius: 12px;
+            background: linear-gradient(180deg, rgba(255,250,240,0.98) 0%, rgba(248,242,232,0.98) 100%);
+            border: 1px solid rgba(217, 84, 30, 0.18);
+            box-shadow: 0 12px 28px rgba(24, 32, 34, 0.08);
+            padding: 12px;
+            color: var(--brand-ink);
+        }
+        .stage2-sidecar.hidden {
+            display: none !important;
+        }
+        .stage2-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .stage2-toolbar h3 {
+            font-size: 1rem;
+            color: var(--brand-orange-deep);
+            margin-bottom: 4px;
+        }
+        .stage2-toolbar .btn {
+            padding: 5px 10px;
+            font-size: 0.75rem;
+        }
+        .stage2-toolbar-actions {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .stage2-summary {
+            font-size: 0.78rem;
+            color: #4b5563;
+            margin-bottom: 12px;
+            display: grid;
+            gap: 4px;
+        }
+        .stage2-layout {
+            display: grid;
+            grid-template-columns: 88px minmax(0, 1fr);
+            gap: 12px;
+            align-items: start;
+        }
+        .stage2-strip-track {
+            position: relative;
+            width: 88px;
+            min-height: 260px;
+            border-radius: 12px;
+            overflow: hidden;
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.5), rgba(255,255,255,0)),
+                repeating-linear-gradient(
+                    180deg,
+                    rgba(143, 151, 158, 0.14) 0px,
+                    rgba(143, 151, 158, 0.14) 28px,
+                    rgba(143, 151, 158, 0.06) 28px,
+                    rgba(143, 151, 158, 0.06) 56px
+                ),
+                #f4ece1;
+            border: 1px solid rgba(143, 151, 158, 0.35);
+        }
+        .stage2-strip-label {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 10px;
+            text-align: center;
+            font-size: 0.7rem;
+            letter-spacing: 0.08em;
+            color: #6b7280;
+            z-index: 2;
+            pointer-events: none;
+        }
+        .stage2-interval-block {
+            position: absolute;
+            left: 8px;
+            right: 8px;
+            border-radius: 10px;
+            padding: 6px 6px 6px 8px;
+            border-left: 5px solid var(--interval-color, #c084fc);
+            background: rgba(255,255,255,0.84);
+            box-shadow: 0 8px 18px rgba(24, 32, 34, 0.12);
+            cursor: pointer;
+            overflow: hidden;
+            transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+        }
+        .stage2-interval-block:hover {
+            transform: translateX(-1px);
+            box-shadow: 0 12px 22px rgba(24, 32, 34, 0.16);
+        }
+        .stage2-interval-block.selected {
+            outline: 2px solid rgba(217, 84, 30, 0.6);
+            box-shadow: 0 16px 28px rgba(217, 84, 30, 0.2);
+        }
+        .stage2-interval-name {
+            font-size: 0.68rem;
+            font-weight: 700;
+            line-height: 1.15;
+            color: #1f2937;
+        }
+        .stage2-interval-depth {
+            font-size: 0.62rem;
+            color: #4b5563;
+            margin-top: 2px;
+        }
+        .stage2-interval-confidence {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 8px;
+            height: 100%;
+            background: rgba(24, 32, 34, 0.08);
+        }
+        .stage2-interval-confidence-fill {
+            position: absolute;
+            left: 0;
+            bottom: 0;
+            width: 100%;
+            background: linear-gradient(180deg, #22c55e 0%, #15803d 100%);
+            border-radius: 8px 8px 0 0;
+        }
+        .stage2-details {
+            min-height: 260px;
+            border-radius: 12px;
+            border: 1px solid rgba(143, 151, 158, 0.2);
+            background: rgba(255,255,255,0.9);
+            padding: 12px;
+            display: grid;
+            gap: 10px;
+            align-content: start;
+        }
+        .stage2-details h4 {
+            font-size: 0.95rem;
+            color: var(--brand-orange-deep);
+        }
+        .stage2-details-grid {
+            display: grid;
+            gap: 8px;
+        }
+        .stage2-inline-field label {
+            display: block;
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #6b7280;
+            margin-bottom: 4px;
+        }
+        .stage2-inline-field input,
+        .stage2-inline-field select {
+            width: 100%;
+            font-size: 0.82rem;
+            padding: 6px 8px;
+            border-radius: 8px;
+            border: 1px solid #d1d5db;
+        }
+        .stage2-confirmed {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: #374151;
+            cursor: pointer;
+        }
+        .stage2-confidence-bar {
+            width: 100%;
+            height: 10px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(24, 32, 34, 0.1);
+        }
+        .stage2-confidence-fill {
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #ef4444 0%, #f59e0b 45%, #22c55e 100%);
+        }
+        .stage2-reasons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .stage2-reason-chip {
+            border: 1px solid rgba(217, 84, 30, 0.18);
+            background: rgba(249, 165, 51, 0.1);
+            color: #7c2d12;
+            border-radius: 999px;
+            padding: 4px 8px;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+        .stage2-reason-chip.active {
+            background: rgba(217, 84, 30, 0.18);
+            border-color: rgba(217, 84, 30, 0.4);
+        }
+        .stage2-reason-detail,
+        .stage2-empty-state {
+            font-size: 0.8rem;
+            line-height: 1.45;
+            color: #4b5563;
+        }
+        .stage2-meta-list {
+            display: grid;
+            gap: 4px;
+            font-size: 0.77rem;
+            color: #4b5563;
+        }
         .viewer-scroll.scroll-enabled {
             overflow: auto;
         }
@@ -483,6 +701,16 @@
                 max-width: none;
                 max-height: none;
                 position: static;
+            }
+            .viewer-results-row {
+                flex-direction: column;
+            }
+            .stage2-sidecar {
+                width: 100%;
+                min-width: 0;
+            }
+            .stage2-layout {
+                grid-template-columns: 88px minmax(0, 1fr);
             }
         }
         @media (min-width: 1201px) {
@@ -1047,9 +1275,34 @@
                         </div>
 
                         <div class="overlay-scroll viewer-scroll">
-                            <div id="overlay">
-                                <img id="imagePreview" alt="Log preview">
-                                <canvas id="curveCanvas"></canvas>
+                            <div class="viewer-results-row">
+                                <div id="overlay">
+                                    <img id="imagePreview" alt="Log preview">
+                                    <canvas id="curveCanvas"></canvas>
+                                </div>
+                                <aside id="singleWellInterpretationPanel" class="stage2-sidecar hidden">
+                                    <div class="stage2-toolbar">
+                                        <div>
+                                            <h3>Stage 2 Strip Log</h3>
+                                            <div class="hint-text">GR-first single-well interpretation</div>
+                                        </div>
+                                        <div class="stage2-toolbar-actions">
+                                            <button class="btn" type="button" id="saveInterpretationBtn" onclick="saveSingleWellInterpretation()" disabled>Save</button>
+                                            <button class="btn" type="button" id="reloadInterpretationBtn" onclick="reloadSingleWellInterpretation()" disabled>Reload</button>
+                                        </div>
+                                    </div>
+                                    <div id="singleWellInterpretationSummary" class="stage2-summary">
+                                        <div>Run Digitize to generate interval candidates.</div>
+                                    </div>
+                                    <div class="stage2-layout">
+                                        <div id="singleWellStripTrack" class="stage2-strip-track">
+                                            <div class="stage2-strip-label">Intervals</div>
+                                        </div>
+                                        <div id="singleWellIntervalDetails" class="stage2-details">
+                                            <div class="stage2-empty-state">Select an interval to inspect machine reasons, confidence, and saved metadata.</div>
+                                        </div>
+                                    </div>
+                                </aside>
                             </div>
                         </div>
                         <!-- Floating Toolbar (additional tools shown in Edit Mode) -->
@@ -1393,6 +1646,9 @@
         let autoBlackCaptureEnabled = true;
         let autoBlackCaptureSessionId = null;
         let autoBlackCaptureCompleted = {};
+        let lastSingleWellInterpretation = null;
+        let selectedSingleWellIntervalId = null;
+        let selectedSingleWellReasonIndex = null;
 
         let pinnedDepthIndices = new Map();
         let lastMouseImgX = null;
@@ -1646,6 +1902,13 @@
             if (typeof renderCurveTraceOverlays === 'function' && lastCurveTraces) {
                 try {
                     renderCurveTraceOverlays(lastCurveTraces);
+                } catch (e) {
+                    // ignore
+                }
+            }
+            if (typeof renderSingleWellInterpretation === 'function') {
+                try {
+                    renderSingleWellInterpretation();
                 } catch (e) {
                     // ignore
                 }
@@ -5642,6 +5905,9 @@
             trackOverlayDrag = null;
             lastDigitizedDepth = null;
             lastDigitizedCurves = null;
+            lastSingleWellInterpretation = null;
+            selectedSingleWellIntervalId = null;
+            selectedSingleWellReasonIndex = null;
             if (pinnedDepthIndices) pinnedDepthIndices.clear();
 
             clearPrimaryRegionOverlay();
@@ -5651,6 +5917,7 @@
             clearLabelOverlays();
             clearPhraseHighlight();
             clearDepthOverlays();
+            renderSingleWellInterpretation();
 
             const curvesContainer = document.getElementById('curvesContainer');
             if (curvesContainer) {
@@ -8714,6 +8981,7 @@
                         ? (data.error || data.message)
                         : (rawText ? rawText.slice(0, 800) : `HTTP ${response.status}`);
                     const tb = (data && data.traceback) ? `\n\n${data.traceback}` : '';
+                    setSingleWellInterpretation(null);
                     showStatus(`❌ Digitize failed (${response.status}): ${message}${tb}`, 'error');
                     return;
                 }
@@ -8816,6 +9084,8 @@
                         window.lastAiPayload = data.ai_payload;
                     }
 
+                    setSingleWellInterpretation(data.single_well_interpretation || null);
+
                     if (data.ai_summary) {
                         const insightsStep = document.getElementById('insightsStep');
                         const panel = document.getElementById('aiInsightContent');
@@ -8849,9 +9119,11 @@
                     });
                 } else {
                     const msg = (data && (data.error || data.message)) ? (data.error || data.message) : 'Error during digitization';
+                    setSingleWellInterpretation(null);
                     showStatus('❌ ' + msg, 'error');
                 }
             } catch (error) {
+                setSingleWellInterpretation(null);
                 showStatus('❌ Error: ' + error.message, 'error');
             } finally {
                 stopProcessingTimer();
@@ -9487,6 +9759,297 @@
                 </div>
             `;
             card.classList.remove('hidden');
+        }
+
+        function stage2EscapeHtml(value) {
+            return String(value == null ? '' : value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        const stage2LabelColors = {
+            'shale-rich': '#6b7280',
+            'cleaner clastic candidate': '#f59e0b',
+            'carbonate candidate': '#60a5fa',
+            'possible gas effect': '#f472b6',
+            'uncertain': '#c084fc',
+        };
+
+        function getSingleWellIntervals() {
+            if (!lastSingleWellInterpretation || !Array.isArray(lastSingleWellInterpretation.intervals)) {
+                return [];
+            }
+            return lastSingleWellInterpretation.intervals;
+        }
+
+        function getSelectedSingleWellInterval() {
+            const intervals = getSingleWellIntervals();
+            if (!intervals.length) return null;
+            const selected = intervals.find((item) => item && item.id === selectedSingleWellIntervalId);
+            return selected || intervals[0];
+        }
+
+        function getSingleWellDepthRange(interpretation) {
+            const interp = interpretation || lastSingleWellInterpretation;
+            if (interp && interp.depth_range && Number.isFinite(interp.depth_range.top) && Number.isFinite(interp.depth_range.base)) {
+                return {
+                    top: Number(interp.depth_range.top),
+                    base: Number(interp.depth_range.base),
+                };
+            }
+            if (Array.isArray(lastDigitizedDepth) && lastDigitizedDepth.length > 1) {
+                return {
+                    top: Number(lastDigitizedDepth[0]),
+                    base: Number(lastDigitizedDepth[lastDigitizedDepth.length - 1]),
+                };
+            }
+            return { top: 0, base: 1 };
+        }
+
+        function setSingleWellInterpretation(interpretation) {
+            lastSingleWellInterpretation = interpretation && typeof interpretation === 'object' ? interpretation : null;
+            selectedSingleWellReasonIndex = null;
+            const selected = getSelectedSingleWellInterval();
+            selectedSingleWellIntervalId = selected ? selected.id : null;
+            renderSingleWellInterpretation();
+        }
+
+        function selectSingleWellInterval(intervalId) {
+            selectedSingleWellIntervalId = intervalId || null;
+            selectedSingleWellReasonIndex = null;
+            renderSingleWellInterpretation();
+        }
+
+        function selectSingleWellReason(reasonIdx) {
+            selectedSingleWellReasonIndex = Number.isInteger(reasonIdx) ? reasonIdx : null;
+            renderSingleWellInterpretation();
+        }
+
+        function updateSelectedSingleWellIntervalField(field, value) {
+            const interval = getSelectedSingleWellInterval();
+            if (!interval) return;
+            interval[field] = value;
+            if (field === 'label') {
+                interval.label_color = stage2LabelColors[value] || stage2LabelColors['uncertain'];
+            }
+            if (lastSingleWellInterpretation) {
+                lastSingleWellInterpretation.updated_at_utc = new Date().toISOString();
+            }
+            renderSingleWellInterpretation();
+        }
+
+        async function saveSingleWellInterpretation() {
+            if (!lastSingleWellInterpretation || !lastSingleWellInterpretation.source_key) {
+                showStatus('No single-well interpretation is available to save yet.', 'info');
+                return;
+            }
+            const btn = document.getElementById('saveInterpretationBtn');
+            if (btn) btn.disabled = true;
+            try {
+                const resp = await fetch('/api/save_single_well_interpretation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ interpretation: lastSingleWellInterpretation }),
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) {
+                    throw new Error((data && (data.error || data.message)) || `HTTP ${resp.status}`);
+                }
+                showStatus('✅ Stage 2 interpretation saved.', 'success');
+            } catch (err) {
+                showStatus(`Failed to save Stage 2 interpretation: ${err.message}`, 'error');
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function reloadSingleWellInterpretation() {
+            if (!lastSingleWellInterpretation || !lastSingleWellInterpretation.source_key) {
+                showStatus('No source key is available for this interpretation yet.', 'info');
+                return;
+            }
+            const btn = document.getElementById('reloadInterpretationBtn');
+            if (btn) btn.disabled = true;
+            try {
+                const resp = await fetch('/api/load_single_well_interpretation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source_key: lastSingleWellInterpretation.source_key }),
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) {
+                    throw new Error((data && (data.error || data.message)) || `HTTP ${resp.status}`);
+                }
+                setSingleWellInterpretation(data.interpretation);
+                showStatus('✅ Reloaded saved Stage 2 interpretation.', 'success');
+            } catch (err) {
+                showStatus(`Could not reload Stage 2 interpretation: ${err.message}`, 'error');
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        function renderSingleWellInterpretation() {
+            const panel = document.getElementById('singleWellInterpretationPanel');
+            const summary = document.getElementById('singleWellInterpretationSummary');
+            const track = document.getElementById('singleWellStripTrack');
+            const details = document.getElementById('singleWellIntervalDetails');
+            const saveBtn = document.getElementById('saveInterpretationBtn');
+            const reloadBtn = document.getElementById('reloadInterpretationBtn');
+            if (!panel || !summary || !track || !details) return;
+
+            const interpretation = lastSingleWellInterpretation;
+            const intervals = getSingleWellIntervals();
+            const warnings = interpretation && Array.isArray(interpretation.warnings) ? interpretation.warnings : [];
+
+            if (!interpretation) {
+                panel.classList.add('hidden');
+                track.innerHTML = '<div class="stage2-strip-label">Intervals</div>';
+                details.innerHTML = '<div class="stage2-empty-state">Run Digitize to generate interval candidates.</div>';
+                summary.innerHTML = '<div>Run Digitize to generate interval candidates.</div>';
+                if (saveBtn) saveBtn.disabled = true;
+                if (reloadBtn) reloadBtn.disabled = true;
+                return;
+            }
+
+            panel.classList.remove('hidden');
+            if (saveBtn) saveBtn.disabled = !interpretation.source_key;
+            if (reloadBtn) reloadBtn.disabled = !interpretation.source_key;
+
+            const counts = {};
+            intervals.forEach((interval) => {
+                const key = interval && interval.label ? interval.label : 'uncertain';
+                counts[key] = (counts[key] || 0) + 1;
+            });
+            const countSummary = Object.entries(counts)
+                .map(([label, count]) => `${count} ${label}`)
+                .join(' • ');
+            const metaBits = [];
+            metaBits.push(`Algorithm: ${stage2EscapeHtml((interpretation.algorithm || 'gr_only_rules_v1').replace(/_/g, ' '))}`);
+            if (interpretation.gr_curve_key) {
+                metaBits.push(`GR curve: ${stage2EscapeHtml(interpretation.gr_curve_key)}`);
+            }
+            if (countSummary) {
+                metaBits.push(countSummary);
+            }
+            summary.innerHTML = `
+                <div>${metaBits.join(' • ')}</div>
+                ${warnings.length ? `<div class="hint-text">${warnings.map(stage2EscapeHtml).join(' • ')}</div>` : ''}
+            `;
+
+            const range = getSingleWellDepthRange(interpretation);
+            const span = (range.base - range.top) || 1;
+            const trackHeight = Math.max(260, Math.round((imageHeight || 0) * (zoomLevel || 1))) || 260;
+            track.style.height = `${trackHeight}px`;
+
+            const selectedInterval = getSelectedSingleWellInterval();
+            selectedSingleWellIntervalId = selectedInterval ? selectedInterval.id : null;
+
+            const intervalHtml = intervals.map((interval) => {
+                const topPctRaw = ((Number(interval.top_depth) - range.top) / span) * 100;
+                const basePctRaw = ((Number(interval.base_depth) - range.top) / span) * 100;
+                const startPct = Math.min(topPctRaw, basePctRaw);
+                const endPct = Math.max(topPctRaw, basePctRaw);
+                const heightPct = Math.max(2.2, endPct - startPct);
+                const selectedClass = selectedInterval && selectedInterval.id === interval.id ? 'selected' : '';
+                const intervalLabel = stage2EscapeHtml(interval.manual_formation_name || interval.label || 'uncertain');
+                const depthLabel = `${Number(interval.top_depth).toFixed(1)}–${Number(interval.base_depth).toFixed(1)}`;
+                return `
+                    <button
+                        type="button"
+                        class="stage2-interval-block ${selectedClass}"
+                        style="top:${startPct}%; height:${heightPct}%; --interval-color:${stage2EscapeHtml(interval.label_color || '#c084fc')};"
+                        onclick="selectSingleWellInterval('${stage2EscapeHtml(interval.id)}')"
+                        title="${intervalLabel}"
+                    >
+                        <div class="stage2-interval-name">${intervalLabel}</div>
+                        <div class="stage2-interval-depth">${stage2EscapeHtml(depthLabel)}</div>
+                        <div class="stage2-interval-confidence">
+                            <div class="stage2-interval-confidence-fill" style="height:${Math.max(6, Math.round((Number(interval.confidence) || 0) * 100))}%;"></div>
+                        </div>
+                    </button>
+                `;
+            }).join('');
+            track.innerHTML = `<div class="stage2-strip-label">Intervals</div>${intervalHtml || ''}`;
+
+            if (!selectedInterval) {
+                details.innerHTML = '<div class="stage2-empty-state">No interval candidates were generated for this well.</div>';
+                return;
+            }
+
+            const reasons = Array.isArray(selectedInterval.reasons) ? selectedInterval.reasons : [];
+            const activeReason = (selectedSingleWellReasonIndex != null && reasons[selectedSingleWellReasonIndex])
+                ? reasons[selectedSingleWellReasonIndex]
+                : reasons[0];
+            const features = selectedInterval.features || {};
+            const grFeatures = features.GR || {};
+            const supportRows = ['RHOB', 'NPHI', 'RES']
+                .filter((key) => features[key] && features[key].mean != null)
+                .map((key) => `<div><strong>${key}</strong>: mean ${Number(features[key].mean).toFixed(2)}</div>`)
+                .join('');
+            const reasonChips = reasons.map((reason, idx) => `
+                <button
+                    type="button"
+                    class="stage2-reason-chip ${activeReason === reason ? 'active' : ''}"
+                    onclick="selectSingleWellReason(${idx})"
+                    title="${stage2EscapeHtml(reason.detail || '')}"
+                >${stage2EscapeHtml(reason.label || reason.code || 'reason')}</button>
+            `).join('');
+            const labelOptions = [
+                'shale-rich',
+                'cleaner clastic candidate',
+                'carbonate candidate',
+                'possible gas effect',
+                'uncertain',
+            ].map((label) => `
+                <option value="${stage2EscapeHtml(label)}" ${selectedInterval.label === label ? 'selected' : ''}>${stage2EscapeHtml(label)}</option>
+            `).join('');
+
+            details.innerHTML = `
+                <div>
+                    <h4>${stage2EscapeHtml(selectedInterval.id)} • ${stage2EscapeHtml(selectedInterval.label)}</h4>
+                    <div class="stage2-meta-list">
+                        <div>${Number(selectedInterval.top_depth).toFixed(2)}–${Number(selectedInterval.base_depth).toFixed(2)} ${stage2EscapeHtml(interpretation.depth_unit || '')}</div>
+                        <div>Thickness ${Number(selectedInterval.thickness || 0).toFixed(2)} ${stage2EscapeHtml(interpretation.depth_unit || '')} • ${Number(selectedInterval.sample_count || 0)} samples</div>
+                    </div>
+                </div>
+                <div class="stage2-details-grid">
+                    <div class="stage2-inline-field">
+                        <label>Class</label>
+                        <select onchange="updateSelectedSingleWellIntervalField('label', this.value)">
+                            ${labelOptions}
+                        </select>
+                    </div>
+                    <div class="stage2-inline-field">
+                        <label>Manual formation name</label>
+                        <input type="text" value="${stage2EscapeHtml(selectedInterval.manual_formation_name || '')}" placeholder="e.g. Upper sand" oninput="updateSelectedSingleWellIntervalField('manual_formation_name', this.value)">
+                    </div>
+                    <label class="stage2-confirmed">
+                        <input type="checkbox" ${selectedInterval.confirmed ? 'checked' : ''} onchange="updateSelectedSingleWellIntervalField('confirmed', this.checked)">
+                        Mark confirmed
+                    </label>
+                </div>
+                <div>
+                    <div class="hint-text" style="margin-bottom: 4px;">Confidence ${(Number(selectedInterval.confidence || 0) * 100).toFixed(0)}%</div>
+                    <div class="stage2-confidence-bar">
+                        <div class="stage2-confidence-fill" style="width:${Math.max(4, Math.round((Number(selectedInterval.confidence) || 0) * 100))}%;"></div>
+                    </div>
+                </div>
+                <div>
+                    <div class="hint-text" style="margin-bottom: 6px;">Machine reasons</div>
+                    <div class="stage2-reasons">${reasonChips || '<span class="hint-text">No reasons available.</span>'}</div>
+                    <div class="stage2-reason-detail" style="margin-top: 8px;">${stage2EscapeHtml(activeReason ? activeReason.detail : 'Select a reason chip to see more detail.')}</div>
+                </div>
+                <div class="stage2-meta-list">
+                    <div><strong>GR mean</strong>: ${grFeatures.mean != null ? Number(grFeatures.mean).toFixed(2) : 'n/a'}</div>
+                    <div><strong>GR std</strong>: ${grFeatures.std != null ? Number(grFeatures.std).toFixed(2) : 'n/a'}</div>
+                    <div><strong>Missing</strong>: ${grFeatures.pct_missing != null ? `${Number(grFeatures.pct_missing).toFixed(1)}%` : 'n/a'}</div>
+                    ${supportRows}
+                </div>
+            `;
         }
 
         function renderAiInsights() {
