@@ -3,149 +3,557 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - TifLAS</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        primary: {
-                            50: '#f0f9ff',
-                            100: '#e0f2fe',
-                            200: '#bae6fd',
-                            300: '#7dd3fc',
-                            400: '#38bdf8',
-                            500: '#0ea5e9',
-                            600: '#0284c7',
-                            700: '#0369a1',
-                            800: '#075985',
-                            900: '#0c4a6e',
-                        }
-                    }
-                }
+    <title>Login - TurboTIFFLAS</title>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        :root {
+            --brand-orange: #f9a533;
+            --brand-orange-deep: #d9541e;
+            --brand-silver: #d9dde0;
+            --brand-silver-deep: #8f979e;
+            --brand-charcoal: #182022;
+            --brand-charcoal-soft: #283235;
+            --brand-ink: #1f272b;
+            --brand-cream: #f5f1ea;
+            --brand-panel: #fbfaf7;
+            --brand-border: rgba(255, 255, 255, 0.08);
+            --brand-shell: linear-gradient(135deg, #263437 0%, #1d2326 45%, #121719 100%);
+            --brand-gradient: linear-gradient(135deg, var(--brand-orange-deep) 0%, var(--brand-orange) 100%);
+            --shadow-soft: 0 18px 45px rgba(9, 11, 12, 0.18);
+            --shadow-strong: 0 28px 70px rgba(0, 0, 0, 0.35);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--brand-cream);
+            background:
+                radial-gradient(circle at top left, rgba(249, 165, 51, 0.16), transparent 26%),
+                radial-gradient(circle at bottom right, rgba(217, 221, 224, 0.08), transparent 24%),
+                linear-gradient(135deg, #263437 0%, #1d2326 45%, #121719 100%);
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .page {
+            min-height: 100vh;
+            display: grid;
+            grid-template-columns: minmax(360px, 460px) 1fr;
+        }
+
+        .login-shell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 28px;
+            background: rgba(11, 15, 16, 0.26);
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(10px);
+        }
+
+        .login-card {
+            width: min(100%, 400px);
+            padding: 34px;
+            border-radius: 30px;
+            background: rgba(251, 250, 247, 0.98);
+            color: var(--brand-ink);
+            box-shadow: var(--shadow-strong);
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #5d696d;
+            font-weight: 600;
+            margin-bottom: 26px;
+        }
+
+        .back-link:hover {
+            color: var(--brand-orange-deep);
+        }
+
+        .logo {
+            display: block;
+            width: min(100%, 280px);
+            height: auto;
+            margin-bottom: 18px;
+        }
+
+        .eyebrow {
+            display: inline-block;
+            padding: 7px 12px;
+            border-radius: 999px;
+            background: rgba(249, 165, 51, 0.14);
+            color: var(--brand-orange-deep);
+            font-size: 0.76rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            margin: 16px 0 10px;
+            font-size: 2.1rem;
+            line-height: 1.05;
+            letter-spacing: -0.03em;
+        }
+
+        .intro {
+            margin: 0 0 26px;
+            color: #5d696d;
+            line-height: 1.65;
+        }
+
+        .demo-creds {
+            margin: 0 0 24px;
+            padding: 14px 16px;
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(249, 165, 51, 0.12), rgba(249, 165, 51, 0.06));
+            border: 1px solid rgba(217, 84, 30, 0.16);
+            color: #4c585d;
+            font-size: 0.93rem;
+            line-height: 1.55;
+        }
+
+        .demo-creds strong {
+            color: var(--brand-orange-deep);
+        }
+
+        .field {
+            margin-bottom: 18px;
+        }
+
+        .label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 0.94rem;
+            font-weight: 700;
+            color: #394447;
+        }
+
+        .input-wrap {
+            position: relative;
+        }
+
+        .input-wrap i {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--brand-silver-deep);
+            width: 18px;
+            height: 18px;
+        }
+
+        input[type="email"],
+        input[type="password"] {
+            width: 100%;
+            border-radius: 16px;
+            border: 1px solid rgba(31, 39, 43, 0.14);
+            background: #fff;
+            padding: 14px 14px 14px 46px;
+            font-size: 0.98rem;
+            color: var(--brand-ink);
+            transition: border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        input[type="email"]:focus,
+        input[type="password"]:focus {
+            outline: none;
+            border-color: rgba(217, 84, 30, 0.45);
+            box-shadow: 0 0 0 4px rgba(249, 165, 51, 0.16);
+        }
+
+        .form-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            margin: 14px 0 22px;
+        }
+
+        .remember {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.93rem;
+            color: #4d585c;
+        }
+
+        input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--brand-orange-deep);
+        }
+
+        .forgot {
+            color: var(--brand-orange-deep);
+            font-size: 0.93rem;
+            font-weight: 700;
+        }
+
+        .forgot:hover {
+            color: #b84419;
+        }
+
+        .submit {
+            width: 100%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            border: 0;
+            border-radius: 999px;
+            padding: 14px 22px;
+            background: var(--brand-gradient);
+            color: #fff8ef;
+            font-size: 0.98rem;
+            font-weight: 800;
+            cursor: pointer;
+            box-shadow: 0 14px 34px rgba(217, 84, 30, 0.24);
+            transition: transform 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        .submit:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 18px 38px rgba(217, 84, 30, 0.28);
+        }
+
+        .error {
+            margin-bottom: 18px;
+            padding: 12px 14px;
+            border-radius: 16px;
+            background: rgba(193, 39, 45, 0.08);
+            border: 1px solid rgba(193, 39, 45, 0.18);
+            color: #9f2529;
+            font-size: 0.94rem;
+        }
+
+        .divider {
+            position: relative;
+            margin: 24px 0 18px;
+            text-align: center;
+        }
+
+        .divider::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 50%;
+            border-top: 1px solid rgba(31, 39, 43, 0.12);
+        }
+
+        .divider span {
+            position: relative;
+            display: inline-block;
+            padding: 0 12px;
+            background: var(--brand-panel);
+            color: #7a8386;
+            font-size: 0.9rem;
+        }
+
+        .contact-btn {
+            display: inline-flex;
+            width: 100%;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            border-radius: 999px;
+            padding: 13px 20px;
+            border: 1px solid rgba(31, 39, 43, 0.1);
+            background: rgba(217, 221, 224, 0.22);
+            color: var(--brand-ink);
+            font-weight: 700;
+        }
+
+        .contact-btn:hover {
+            background: rgba(217, 221, 224, 0.32);
+        }
+
+        .helper-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 14px;
+        }
+
+        .visual-shell {
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 42px;
+        }
+
+        .visual-shell::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+            background-size: 38px 38px;
+            opacity: 0.16;
+        }
+
+        .visual-shell::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(circle at 18% 16%, rgba(249, 165, 51, 0.16), transparent 22%),
+                radial-gradient(circle at 85% 20%, rgba(217, 221, 224, 0.1), transparent 18%),
+                radial-gradient(circle at 45% 78%, rgba(249, 165, 51, 0.12), transparent 26%);
+            pointer-events: none;
+        }
+
+        .visual-card {
+            position: relative;
+            z-index: 1;
+            width: min(760px, 100%);
+            padding: 30px;
+            border-radius: 34px;
+            background: rgba(19, 26, 28, 0.64);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: var(--shadow-strong);
+            color: var(--brand-cream);
+        }
+
+        .visual-card h2 {
+            margin: 0 0 12px;
+            font-size: clamp(2rem, 3vw, 3.4rem);
+            line-height: 0.98;
+            letter-spacing: -0.03em;
+        }
+
+        .visual-card p {
+            margin: 0;
+            max-width: 620px;
+            color: rgba(245, 241, 234, 0.82);
+            line-height: 1.75;
+            font-size: 1.04rem;
+        }
+
+        .stats {
+            margin-top: 28px;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .stat {
+            padding: 16px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .stat strong {
+            display: block;
+            color: var(--brand-orange);
+            font-size: 1.15rem;
+            margin-bottom: 6px;
+        }
+
+        .stat span {
+            color: rgba(245, 241, 234, 0.78);
+            font-size: 0.92rem;
+            line-height: 1.5;
+        }
+
+        .signal-board {
+            margin-top: 28px;
+            border-radius: 24px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: linear-gradient(180deg, rgba(40, 50, 53, 0.98) 0%, rgba(19, 25, 27, 0.98) 100%);
+            min-height: 240px;
+            position: relative;
+        }
+
+        .signal-grid {
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+            background-size: 32px 32px;
+            opacity: 0.42;
+        }
+
+        .signal-board svg {
+            position: relative;
+            display: block;
+            width: 100%;
+            height: 240px;
+        }
+
+        @media (max-width: 980px) {
+            .page {
+                grid-template-columns: 1fr;
+            }
+
+            .visual-shell {
+                min-height: auto;
+                padding-top: 0;
             }
         }
-    </script>
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+
+        @media (max-width: 640px) {
+            .login-shell,
+            .visual-shell {
+                padding: 18px;
+            }
+
+            .login-card,
+            .visual-card {
+                padding: 22px;
+            }
+
+            .form-row,
+            .stats {
+                grid-template-columns: 1fr;
+                display: grid;
+            }
+
+            .form-row {
+                justify-content: initial;
+            }
+        }
+    </style>
 </head>
-<body class="min-h-screen bg-slate-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+<body>
+    <div class="page">
+        <section class="login-shell">
+            <div class="login-card">
+                <a href="/" class="back-link">
+                    <i data-lucide="arrow-left"></i>
+                    Back to Home
+                </a>
 
-    <div class="sm:mx-auto sm:w-full sm:max-w-md">
-        <a href="/" class="flex justify-center mb-6 text-slate-500 hover:text-slate-700 items-center">
-            <i data-lucide="arrow-left" class="h-4 w-4 mr-2"></i> Back to Home
-        </a>
-        <h2 class="mt-6 text-center text-3xl font-extrabold text-slate-900">
-            Sign in to your account
-        </h2>
-        <p class="mt-2 text-center text-sm text-slate-600">
-            Use <span class="font-mono font-bold">admin@tiflas.com</span> / <span class="font-mono font-bold">password</span>
-        </p>
-    </div>
+                <img class="logo" src="{{ url_for('static', filename='tiflas_logo.svg') }}" alt="TurboTIFFLAS">
+                <div class="eyebrow">Secure Workspace Login</div>
+                <h1>Sign in to your workspace.</h1>
+                <p class="intro">
+                    Open the calibration and digitization workspace, review hard curves, export LAS files,
+                    and save corrected black segments for retraining.
+                </p>
 
-    <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div class="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
-            <form class="space-y-6" action="/login" method="POST">
-                
-                {% if error %}
-                <div class="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-md text-sm">
-                    {{ error }}
+                <div class="demo-creds">
+                    Demo credentials:
+                    <strong>admin@tiflas.com</strong> /
+                    <strong>password</strong>
                 </div>
-                {% endif %}
-                
-                <div>
-                    <label for="email" class="block text-sm font-medium text-slate-700">
-                        Email address
-                    </label>
-                    <div class="mt-1 relative rounded-md shadow-sm">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <i data-lucide="mail" class="h-5 w-5 text-slate-400"></i>
+
+                <form action="/login" method="POST">
+                    {% if error %}
+                    <div class="error">{{ error }}</div>
+                    {% endif %}
+                    {% if next_url %}
+                    <input type="hidden" name="next" value="{{ next_url }}">
+                    {% endif %}
+
+                    <div class="field">
+                        <label class="label" for="email">Email address</label>
+                        <div class="input-wrap">
+                            <i data-lucide="mail"></i>
+                            <input
+                                id="email"
+                                name="email"
+                                type="email"
+                                autocomplete="email"
+                                required
+                                placeholder="you@example.com"
+                            >
                         </div>
-                        <input
-                            id="email"
-                            name="email"
-                            type="email"
-                            autocomplete="email"
-                            required
-                            class="focus:ring-primary-500 focus:border-primary-500 block w-full pl-10 sm:text-sm border-slate-300 rounded-md py-2 border"
-                            placeholder="you@example.com"
-                        >
                     </div>
-                </div>
 
-                <div>
-                    <label for="password" class="block text-sm font-medium text-slate-700">
-                        Password
-                    </label>
-                    <div class="mt-1 relative rounded-md shadow-sm">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <i data-lucide="lock" class="h-5 w-5 text-slate-400"></i>
+                    <div class="field">
+                        <label class="label" for="password">Password</label>
+                        <div class="input-wrap">
+                            <i data-lucide="lock"></i>
+                            <input
+                                id="password"
+                                name="password"
+                                type="password"
+                                autocomplete="current-password"
+                                required
+                                placeholder="••••••••"
+                            >
                         </div>
-                        <input
-                            id="password"
-                            name="password"
-                            type="password"
-                            autocomplete="current-password"
-                            required
-                            class="focus:ring-primary-500 focus:border-primary-500 block w-full pl-10 sm:text-sm border-slate-300 rounded-md py-2 border"
-                            placeholder="••••••••"
-                        >
                     </div>
-                </div>
 
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center">
-                        <input
-                            id="remember-me"
-                            name="remember-me"
-                            type="checkbox"
-                            class="h-4 w-4 text-primary-600 focus:ring-primary-500 border-slate-300 rounded"
-                        >
-                        <label for="remember-me" class="ml-2 block text-sm text-slate-900">
+                    <div class="form-row">
+                        <label class="remember" for="remember-me">
+                            <input id="remember-me" name="remember-me" type="checkbox">
                             Remember me
                         </label>
+                        <a class="forgot" href="#">Forgot your password?</a>
                     </div>
 
-                    <div class="text-sm">
-                        <a href="#" class="font-medium text-primary-600 hover:text-primary-500">
-                            Forgot your password?
-                        </a>
-                    </div>
-                </div>
-
-                <div>
-                    <button
-                        type="submit"
-                        class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        Sign in
+                    <button class="submit" type="submit">
+                        Sign In
+                        <i data-lucide="log-in"></i>
                     </button>
-                </div>
-            </form>
+                </form>
 
-            <div class="mt-6">
-                <div class="relative">
-                    <div class="absolute inset-0 flex items-center">
-                        <div class="w-full border-t border-slate-300"></div>
-                    </div>
-                    <div class="relative flex justify-center text-sm">
-                        <span class="px-2 bg-white text-slate-500">
-                            Don't have an account?
-                        </span>
-                    </div>
-                </div>
-
-                <div class="mt-6">
-                    <a
-                        href="#"
-                        class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-primary-700 bg-primary-50 hover:bg-primary-100"
-                    >
-                        Contact Sales
-                    </a>
+                <div class="divider"><span>Need access?</span></div>
+                <a class="contact-btn" href="/register">
+                    Create Account
+                    <i data-lucide="messages-square"></i>
+                </a>
+                <div class="helper-links">
+                    <a class="forgot" href="/pricing">View pricing</a>
+                    <a class="forgot" href="/">Back to home</a>
                 </div>
             </div>
-        </div>
+        </section>
+
+        <section class="visual-shell">
+            <div class="visual-card">
+                <h2>Digitize archive logs with the same visual language as the workspace.</h2>
+                <p>
+                    This login view now matches the main TurboTIFFLAS branding so the experience feels continuous
+                    from the landing page into the tracing and export tools.
+                </p>
+
+                <div class="stats">
+                    <div class="stat">
+                        <strong>Track Calibration</strong>
+                        <span>Define scales, tracks, and ranges before tracing begins.</span>
+                    </div>
+                    <div class="stat">
+                        <strong>Curve Review</strong>
+                        <span>Inspect shoulders, shelves, and black trace misses in context.</span>
+                    </div>
+                    <div class="stat">
+                        <strong>Training Capture</strong>
+                        <span>Save corrected black segments and feed them back into the model.</span>
+                    </div>
+                </div>
+
+                <div class="signal-board">
+                    <div class="signal-grid"></div>
+                    <svg viewBox="0 0 720 240" preserveAspectRatio="none" aria-hidden="true">
+                        <path d="M 88 0 C 124 28, 56 54, 96 84 S 130 142, 70 176 S 122 212, 92 240" fill="none" stroke="#37d652" stroke-width="4.8"></path>
+                        <path d="M 610 0 C 570 28, 646 62, 594 96 S 654 150, 604 188 S 656 220, 624 240" fill="none" stroke="#f9a533" stroke-width="4.8"></path>
+                        <path d="M 360 0 C 320 28, 396 56, 334 94 S 398 152, 346 194 S 406 226, 374 240" fill="none" stroke="#d9dde0" stroke-width="4.8"></path>
+                        <path d="M 96 0 C 132 30, 60 56, 101 87 S 138 141, 79 175 S 129 211, 100 240" fill="none" stroke="#ff5f70" stroke-width="3.2" opacity="0.9"></path>
+                        <path d="M 0 60 H 720 M 0 120 H 720 M 0 180 H 720" stroke="rgba(255,255,255,0.08)" stroke-width="1"></path>
+                        <path d="M 180 0 L 180 240 M 360 0 L 360 240 M 540 0 L 540 240" stroke="rgba(255,255,255,0.1)" stroke-width="1.5"></path>
+                    </svg>
+                </div>
+            </div>
+        </section>
     </div>
 
     <script>

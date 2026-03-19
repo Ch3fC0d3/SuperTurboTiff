@@ -1,0 +1,59 @@
+{% extends "portal_base.html" %}
+
+{% block title %}Pricing - TurboTIFFLAS{% endblock %}
+
+{% block page_head %}
+<div class="eyebrow"><i data-lucide="badge-dollar-sign"></i> Pricing</div>
+<h1>Choose the plan that fits your digitization workflow.</h1>
+<p>
+    Start on the free tier, move into a paid workspace when you need scale, or use the team plan for shared archive recovery.
+    Pro and Team now include a free first month before billing begins.
+</p>
+{% endblock %}
+
+{% block content %}
+<section class="grid-3" style="padding-bottom: 28px;">
+    {% for plan in pricing_plans %}
+    <article class="card" style="{% if plan.is_featured %}border:1px solid rgba(217,84,30,0.24); box-shadow: 0 24px 54px rgba(217,84,30,0.16);{% endif %}">
+        {% if plan.is_featured %}
+        <div class="eyebrow" style="margin-bottom: 14px;">Most Popular</div>
+        {% endif %}
+        <h2 style="margin-bottom: 8px;">{{ plan.name }}</h2>
+        <p style="min-height: 48px;">{{ plan.tagline }}</p>
+        <div style="margin: 22px 0 6px; font-size: 2.2rem; font-weight: 900; letter-spacing: -0.04em; color: var(--brand-ink);">
+            {{ plan.monthly_display }}
+        </div>
+        {% if plan.trial_days %}
+        <div class="status trialing" style="margin-bottom: 10px;">First {{ plan.trial_days }} days free</div>
+        {% endif %}
+        <div style="color:#7a8386; font-size:0.95rem; margin-bottom:18px;">
+            Yearly: {{ plan.yearly_display }}
+            {% if plan.monthly_equivalent %}
+            · {{ plan.monthly_equivalent }}
+            {% endif %}
+        </div>
+        <ul style="list-style:none; padding:0; margin:0 0 24px; display:grid; gap:12px;">
+            {% for item in plan.limits %}
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+                <i data-lucide="check-circle-2" style="width:18px; height:18px; color: var(--brand-orange-deep); flex: 0 0 auto; margin-top: 3px;"></i>
+                <span>{{ item }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% if current_user %}
+            {% if plan.slug == 'free' %}
+            <a class="btn btn-light" href="/billing" style="width:100%;">View Current Billing</a>
+            {% else %}
+            <a class="btn btn-primary" href="/checkout?plan={{ plan.slug }}" style="width:100%;">{{ plan.cta }}</a>
+            {% endif %}
+        {% else %}
+            {% if plan.slug == 'enterprise' %}
+            <a class="btn btn-light" href="/register?plan={{ plan.slug }}" style="width:100%;">Request Access</a>
+            {% else %}
+            <a class="btn btn-primary" href="/register?plan={{ plan.slug }}" style="width:100%;">{{ plan.cta }}</a>
+            {% endif %}
+        {% endif %}
+    </article>
+    {% endfor %}
+</section>
+{% endblock %}

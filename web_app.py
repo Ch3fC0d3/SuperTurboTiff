@@ -53,12 +53,14 @@ import base64
 import zipfile
 from typing import Dict, List, Tuple, Optional
 import tempfile
-from datetime import datetime
+from datetime import datetime, UTC, timedelta
 import uuid
 from pathlib import Path
 import requests
 import openai
 from huggingface_hub import InferenceClient
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
 
 TORCH_AVAILABLE = False
 try:
@@ -73,6 +75,7 @@ except Exception:
 from user_tracker import tracker
 from parameter_learner import ParameterLearner
 from ai_tracer import AITracer, CurveSegNet, LegacyCurveTraceNet
+import portal_store
 
 # Initialize learning system after all imports
 learner = ParameterLearner(tracker)
@@ -234,6 +237,212 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB max request size
 app.secret_key = os.environ.get("SECRET_KEY", "tiflas-dev-secret-key-change-in-prod")
 
+ADMIN_EMAIL = str(os.environ.get("TURBOTIFFLAS_ADMIN_EMAIL") or "admin@tiflas.com").strip().lower()
+ADMIN_PASSWORD = str(os.environ.get("TURBOTIFFLAS_ADMIN_PASSWORD") or "password")
+BILLING_MODE = str(os.environ.get("TURBOTIFFLAS_BILLING_MODE") or "sandbox").strip().lower() or "sandbox"
+
+portal_store.init_db(
+    admin_email=ADMIN_EMAIL,
+    admin_password_hash=generate_password_hash(ADMIN_PASSWORD),
+    admin_name="TurboTIFFLAS Admin",
+)
+
+
+def _decorate_plan(plan: Dict[str, object]) -> Dict[str, object]:
+    monthly_cents = int(plan.get("monthly_cents") or 0)
+    yearly_cents = int(plan.get("yearly_cents") or 0)
+    monthly_display = "Contact us" if monthly_cents <= 0 else f"${monthly_cents / 100:,.0f}/mo"
+    yearly_display = "Contact us" if yearly_cents <= 0 else f"${yearly_cents / 100:,.0f}/yr"
+    monthly_equivalent = None
+    if yearly_cents > 0:
+        monthly_equivalent = f"${(yearly_cents / 12) / 100:,.0f}/mo billed yearly"
+    return {
+        **plan,
+        "monthly_display": monthly_display if monthly_cents > 0 else ("Free" if str(plan.get("slug")) == "free" else "Contact us"),
+        "yearly_display": yearly_display if yearly_cents > 0 else ("Free" if str(plan.get("slug")) == "free" else "Contact us"),
+        "monthly_equivalent": monthly_equivalent,
+        "is_featured": str(plan.get("slug")) == "pro",
+        "trial_days": int(plan.get("trial_days") or 0),
+    }
+
+
+PRICING_PLANS = [_decorate_plan(plan) for plan in portal_store.PLAN_CATALOG.values()]
+PLAN_LOOKUP = {str(plan["slug"]): plan for plan in PRICING_PLANS}
+
+
+def _billing_mode_label() -> str:
+    return "sandbox" if BILLING_MODE == "sandbox" else "manual"
+
+
+def _current_user() -> Optional[Dict[str, object]]:
+    user_id = session.get("user_id")
+    user = None
+    if user_id:
+        try:
+            user = portal_store.get_user_by_id(int(user_id))
+        except Exception:
+            user = None
+    elif session.get("user"):
+        user = portal_store.get_user_by_email(str(session.get("user")))
+        if user:
+            _set_session_user(user)
+
+    if user is None:
+        for key in ("user", "user_id", "user_email", "is_admin", "plan_slug", "subscription_status", "full_name"):
+            session.pop(key, None)
+        return None
+    return user
+
+
+def _set_session_user(user: Dict[str, object]) -> None:
+    session["user"] = user.get("email")
+    session["user_id"] = user.get("id")
+    session["user_email"] = user.get("email")
+    session["is_admin"] = bool(user.get("is_admin"))
+    session["plan_slug"] = user.get("plan_slug")
+    session["subscription_status"] = user.get("subscription_status")
+    session["full_name"] = user.get("full_name")
+    session.permanent = True
+
+
+def _plan_for_user(user: Optional[Dict[str, object]]) -> Dict[str, object]:
+    if not user:
+        return PLAN_LOOKUP["free"]
+    slug = str(user.get("plan_slug") or "free")
+    return PLAN_LOOKUP.get(slug, PLAN_LOOKUP["free"])
+
+
+def _parse_utc_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=UTC)
+    except Exception:
+        return None
+
+
+def _format_portal_timestamp(value: Optional[str]) -> Optional[str]:
+    dt = _parse_utc_timestamp(value)
+    if dt is None:
+        return None
+    return dt.strftime("%b %d, %Y")
+
+
+def _trial_days_remaining(value: Optional[str]) -> Optional[int]:
+    dt = _parse_utc_timestamp(value)
+    if dt is None:
+        return None
+    remaining = dt - datetime.now(UTC)
+    return max(0, int(math.ceil(remaining.total_seconds() / 86400)))
+
+
+def _payment_status_badge(status: str) -> str:
+    return {
+        "paid": "Paid",
+        "pending": "Pending approval",
+        "scheduled": "Scheduled after trial",
+        "failed": "Failed",
+    }.get(str(status or "").lower(), str(status or "Unknown").title())
+
+
+def _coupon_type_label(discount_type: str) -> str:
+    return {
+        "percent": "Percent off",
+        "amount": "Amount off",
+        "trial_days": "Extra trial days",
+    }.get(str(discount_type or "").lower(), str(discount_type or "").replace("_", " ").title())
+
+
+def _apply_coupon_effect(
+    coupon: Optional[Dict[str, object]],
+    amount_cents: int,
+) -> Dict[str, int]:
+    if not coupon:
+        return {"discount_cents": 0, "trial_days": 0, "final_amount_cents": int(amount_cents)}
+    discount_type = str(coupon.get("discount_type") or "").lower()
+    discount_value = int(coupon.get("discount_value") or 0)
+    discount_cents = 0
+    trial_days = 0
+    if discount_type == "percent":
+        discount_cents = min(int(amount_cents), max(0, int(round(amount_cents * (discount_value / 100.0)))))
+    elif discount_type == "amount":
+        discount_cents = min(int(amount_cents), max(0, discount_value))
+    elif discount_type == "trial_days":
+        trial_days = max(0, discount_value)
+    return {
+        "discount_cents": int(discount_cents),
+        "trial_days": int(trial_days),
+        "final_amount_cents": max(0, int(amount_cents) - int(discount_cents)),
+    }
+
+
+def _trial_window_for_days(days: int, start: Optional[datetime] = None) -> tuple[Optional[str], Optional[str]]:
+    total_days = max(0, int(days))
+    if total_days <= 0:
+        return None, None
+    start_dt = start.astimezone(UTC) if start else datetime.now(UTC)
+    end_dt = start_dt + timedelta(days=total_days)
+    return (
+        start_dt.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        end_dt.strftime("%Y-%m-%d %H:%M:%S UTC"),
+    )
+
+
+def _checkout_coupon_state(
+    plan_slug: str,
+    billing_cycle: str,
+    coupon_code: str,
+    user_id: Optional[int] = None,
+) -> Dict[str, object]:
+    normalized_code = str(coupon_code or "").strip().upper()
+    base_amount_cents = portal_store.plan_amount(plan_slug, billing_cycle)
+    base_trial_days = portal_store.trial_days_for_plan(plan_slug)
+    coupon = None
+    error = None
+    effect = {
+        "discount_cents": 0,
+        "trial_days": 0,
+        "final_amount_cents": int(base_amount_cents),
+    }
+    if normalized_code:
+        coupon, error = portal_store.validate_coupon(normalized_code, plan_slug, user_id=user_id)
+        if coupon:
+            effect = _apply_coupon_effect(coupon, base_amount_cents)
+    preview = None
+    if coupon:
+        preview = {
+            **coupon,
+            **effect,
+            "total_trial_days": int(base_trial_days) + int(effect["trial_days"]),
+        }
+    return {
+        "coupon_code": normalized_code,
+        "coupon": coupon,
+        "coupon_error": error,
+        "coupon_preview": preview,
+        "base_amount_cents": int(base_amount_cents),
+        "base_trial_days": int(base_trial_days),
+        "discount_cents": int(effect["discount_cents"]),
+        "extra_trial_days": int(effect["trial_days"]),
+        "final_amount_cents": int(effect["final_amount_cents"]),
+    }
+
+
+@app.context_processor
+def inject_portal_context():
+    user = _current_user()
+    return {
+        "current_user": user,
+        "current_plan": _plan_for_user(user),
+        "pricing_plans": PRICING_PLANS,
+        "billing_mode": _billing_mode_label(),
+        "current_year": datetime.now().year,
+        "payment_status_badge": _payment_status_badge,
+        "coupon_type_label": _coupon_type_label,
+        "format_portal_timestamp": _format_portal_timestamp,
+        "trial_days_remaining": _trial_days_remaining,
+    }
+
 # ----------------------------
 # Auth Decorator
 # ----------------------------
@@ -242,8 +451,21 @@ from functools import wraps
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'user' not in session:
+        if _current_user() is None:
             return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        user = _current_user()
+        if user is None:
+            return redirect(url_for('login', next=request.url))
+        if not bool(user.get("is_admin")):
+            flash("Admin access is required to view that page.", "error")
+            return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -8045,36 +8267,458 @@ def select_primary_track_region(tracks, image_width):
 # ----------------------------
 # Flask Routes
 # ----------------------------
+def _safe_next_url(candidate: Optional[str]) -> Optional[str]:
+    if not candidate:
+        return None
+    candidate = str(candidate).strip()
+    if candidate.startswith("/") and not candidate.startswith("//"):
+        return candidate
+    return None
+
+
 @app.route('/')
 def index():
-    # If already logged in, go to dashboard
-    if 'user' in session:
+    if _current_user() is not None:
         return redirect(url_for('dashboard'))
     return render_template('index.html', app_version=APP_VERSION, build_time=APP_BUILD_TIME)
 
 
+@app.route('/pricing')
+def pricing():
+    return render_template(
+        'pricing.html',
+        app_version=APP_VERSION,
+        build_time=APP_BUILD_TIME,
+        featured_plan='pro',
+    )
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if _current_user() is not None:
+        return redirect(url_for('dashboard'))
+
+    selected_plan = str(request.values.get('plan') or 'free').strip().lower()
+    if selected_plan not in PLAN_LOOKUP:
+        selected_plan = 'free'
+
+    if request.method == 'POST':
+        full_name = str(request.form.get('full_name') or '').strip()
+        company = str(request.form.get('company') or '').strip()
+        email = str(request.form.get('email') or '').strip().lower()
+        password = str(request.form.get('password') or '')
+        confirm_password = str(request.form.get('confirm_password') or '')
+        desired_plan = str(request.form.get('plan') or selected_plan).strip().lower()
+        if desired_plan not in PLAN_LOOKUP:
+            desired_plan = 'free'
+
+        if not full_name or not email or not password:
+            return render_template(
+                'register.html',
+                error='Name, email, and password are required.',
+                selected_plan=desired_plan,
+                app_version=APP_VERSION,
+                build_time=APP_BUILD_TIME,
+            )
+        if len(password) < 8:
+            return render_template(
+                'register.html',
+                error='Password must be at least 8 characters.',
+                selected_plan=desired_plan,
+                app_version=APP_VERSION,
+                build_time=APP_BUILD_TIME,
+            )
+        if password != confirm_password:
+            return render_template(
+                'register.html',
+                error='Password confirmation does not match.',
+                selected_plan=desired_plan,
+                app_version=APP_VERSION,
+                build_time=APP_BUILD_TIME,
+            )
+        if portal_store.get_user_by_email(email):
+            return render_template(
+                'register.html',
+                error='An account with that email already exists.',
+                selected_plan=desired_plan,
+                app_version=APP_VERSION,
+                build_time=APP_BUILD_TIME,
+            )
+
+        if desired_plan == 'free':
+            initial_plan = 'free'
+            initial_status = 'trial'
+            trial_started_at = None
+            trial_ends_at = None
+        else:
+            initial_plan = desired_plan
+            initial_status = 'trialing'
+            trial_started_at, trial_ends_at = portal_store.trial_window_for_plan(desired_plan)
+        try:
+            user = portal_store.create_user(
+                email=email,
+                password_hash=generate_password_hash(password),
+                full_name=full_name,
+                company=company,
+                plan_slug=initial_plan,
+                billing_cycle='monthly',
+                subscription_status=initial_status,
+                trial_started_at=trial_started_at,
+                trial_ends_at=trial_ends_at,
+                is_admin=False,
+            )
+        except sqlite3.IntegrityError:
+            return render_template(
+                'register.html',
+                error='An account with that email already exists.',
+                selected_plan=desired_plan,
+                app_version=APP_VERSION,
+                build_time=APP_BUILD_TIME,
+            )
+
+        portal_store.update_last_login(int(user['id']))
+        user = portal_store.get_user_by_id(int(user['id'])) or user
+        _set_session_user(user)
+
+        if desired_plan != 'free':
+            flash('Account created. Your first month is free and your trial starts now.', 'success')
+            return redirect(url_for('billing'))
+
+        flash('Account created. You are ready to start digitizing.', 'success')
+        return redirect(url_for('dashboard'))
+
+    return render_template(
+        'register.html',
+        selected_plan=selected_plan,
+        app_version=APP_VERSION,
+        build_time=APP_BUILD_TIME,
+    )
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if _current_user() is not None:
+        return redirect(url_for('dashboard'))
+
     if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        
-        # Simple hardcoded auth as requested
-        if email == 'admin@tiflas.com' and password == 'password':
-            session['user'] = email
-            # Handle "next" redirect if present
-            next_url = request.args.get('next')
+        email = str(request.form.get('email') or '').strip().lower()
+        password = str(request.form.get('password') or '')
+        next_url = _safe_next_url(request.form.get('next') or request.args.get('next'))
+        user = portal_store.get_user_by_email(email)
+
+        if user and check_password_hash(str(user['password_hash']), password):
+            portal_store.update_last_login(int(user['id']))
+            user = portal_store.get_user_by_id(int(user['id'])) or user
+            _set_session_user(user)
             return redirect(next_url or url_for('dashboard'))
-        else:
-            return render_template('login.html', error='Invalid email or password')
-            
-    return render_template('login.html')
+
+        return render_template(
+            'login.html',
+            error='Invalid email or password',
+            next_url=next_url,
+        )
+
+    return render_template('login.html', next_url=_safe_next_url(request.args.get('next')))
 
 
 @app.route('/logout')
 def logout():
-    session.pop('user', None)
+    for key in ("user", "user_id", "user_email", "is_admin", "plan_slug", "subscription_status", "full_name"):
+        session.pop(key, None)
     return redirect(url_for('index'))
+
+
+@app.route('/checkout', methods=['GET', 'POST'])
+@login_required
+def checkout():
+    user = _current_user()
+    if user is None:
+        return redirect(url_for('login'))
+
+    selected_plan = str(request.values.get('plan') or user.get('plan_slug') or 'pro').strip().lower()
+    if selected_plan not in PLAN_LOOKUP:
+        selected_plan = 'pro'
+    selected_cycle = str(request.values.get('billing_cycle') or 'monthly').strip().lower()
+    if selected_cycle not in {'monthly', 'yearly'}:
+        selected_cycle = 'monthly'
+    coupon_code = str(request.values.get('coupon_code') or '').strip().upper()
+
+    if request.method == 'POST':
+        selected_plan = str(request.form.get('plan') or selected_plan).strip().lower()
+        if selected_plan not in PLAN_LOOKUP:
+            selected_plan = 'pro'
+        selected_cycle = str(request.form.get('billing_cycle') or selected_cycle).strip().lower()
+        if selected_cycle not in {'monthly', 'yearly'}:
+            selected_cycle = 'monthly'
+        coupon_code = str(request.form.get('coupon_code') or '').strip().upper()
+        coupon_state = _checkout_coupon_state(selected_plan, selected_cycle, coupon_code, user_id=int(user['id']))
+        if coupon_code and coupon_state["coupon_error"]:
+            return render_template(
+                'checkout.html',
+                error=str(coupon_state["coupon_error"]),
+                selected_plan=PLAN_LOOKUP[selected_plan],
+                selected_cycle=selected_cycle,
+                coupon_code=str(coupon_state["coupon_code"]),
+                coupon_preview=coupon_state["coupon_preview"],
+                base_amount_cents=int(coupon_state["base_amount_cents"]),
+                final_amount_cents=int(coupon_state["final_amount_cents"]),
+                discount_cents=int(coupon_state["discount_cents"]),
+                total_trial_days=int(coupon_state["base_trial_days"]) + int(coupon_state["extra_trial_days"]),
+                app_version=APP_VERSION,
+                build_time=APP_BUILD_TIME,
+            )
+
+        amount_cents = int(coupon_state["final_amount_cents"])
+        base_amount_cents = int(coupon_state["base_amount_cents"])
+        trial_days = int(coupon_state["base_trial_days"]) + int(coupon_state["extra_trial_days"])
+        coupon = coupon_state["coupon"]
+        current_trial_end = user.get('trial_ends_at')
+        trial_started_at = user.get('trial_started_at')
+        should_start_trial = (
+            selected_plan != 'enterprise'
+            and trial_days > 0
+            and not current_trial_end
+            and str(user.get('subscription_status') or '').lower() not in {'active', 'trialing'}
+        )
+
+        if selected_plan == 'enterprise':
+            provider = 'manual'
+            status = 'pending'
+            note = 'Enterprise plan request submitted for manual follow-up.'
+        elif should_start_trial:
+            provider = 'sandbox' if BILLING_MODE == 'sandbox' else 'manual'
+            status = 'scheduled'
+            trial_started_at, trial_ends_at = _trial_window_for_days(trial_days)
+            note = f'First month free activated. Billing starts after the free {trial_days}-day trial.'
+        elif trial_days > 0 and current_trial_end:
+            provider = 'sandbox' if BILLING_MODE == 'sandbox' else 'manual'
+            status = 'scheduled'
+            trial_end_dt = _parse_utc_timestamp(current_trial_end)
+            if int(coupon_state["extra_trial_days"]) > 0 and trial_end_dt is not None:
+                trial_ends_at = (trial_end_dt + timedelta(days=int(coupon_state["extra_trial_days"]))).strftime("%Y-%m-%d %H:%M:%S UTC")
+            else:
+                trial_ends_at = current_trial_end
+            note = f'Billing profile recorded. First charge begins after the free {trial_days}-day trial.'
+        else:
+            provider = 'sandbox' if BILLING_MODE == 'sandbox' else 'manual'
+            status = 'paid' if BILLING_MODE == 'sandbox' else 'pending'
+            trial_ends_at = None
+            trial_started_at = None
+            note = (
+                'Sandbox checkout completed automatically.'
+                if BILLING_MODE == 'sandbox'
+                else 'Submitted for manual billing approval.'
+            )
+        if coupon:
+            note = f"{note} Coupon {coupon['code']} applied."
+        provider_ref = f"{provider}-{uuid.uuid4().hex[:12]}"
+        payment = portal_store.create_payment(
+            user_id=int(user['id']),
+            plan_slug=selected_plan,
+            billing_cycle=selected_cycle,
+            amount_cents=amount_cents,
+            original_amount_cents=base_amount_cents,
+            discount_cents=int(coupon_state["discount_cents"]),
+            coupon_code=str(coupon["code"]) if coupon else None,
+            provider=provider,
+            provider_ref=provider_ref,
+            status=status,
+            note=note,
+            metadata={
+                'submitted_by': str(user.get('email') or ''),
+                'billing_mode': BILLING_MODE,
+                'coupon_code': str(coupon["code"]) if coupon else None,
+            },
+        )
+        if coupon:
+            portal_store.record_coupon_redemption(
+                coupon_id=int(coupon['id']),
+                user_id=int(user['id']),
+                coupon_code=str(coupon['code']),
+                discount_type=str(coupon['discount_type']),
+                discount_value=int(coupon['discount_value'] or 0),
+                amount_cents_applied=int(coupon_state["discount_cents"]),
+                trial_days_applied=int(coupon_state["extra_trial_days"]),
+                payment_id=int(payment['id']),
+                status='applied',
+            )
+        portal_store.update_user_subscription(
+            user_id=int(user['id']),
+            plan_slug=selected_plan,
+            billing_cycle=selected_cycle,
+            subscription_status='active' if status == 'paid' else ('trialing' if status == 'scheduled' else 'pending'),
+            trial_started_at=trial_started_at,
+            trial_ends_at=trial_ends_at,
+        )
+        refreshed_user = portal_store.get_user_by_id(int(user['id'])) or user
+        _set_session_user(refreshed_user)
+        coupon_message = f" Coupon {coupon['code']} applied." if coupon else ''
+        flash(
+            (
+                'Subscription activated in sandbox mode.'
+                if status == 'paid'
+                else (
+                    f'Billing profile saved. Your first charge starts after the free {trial_days}-day trial.'
+                    if status == 'scheduled'
+                    else 'Payment request submitted for review.'
+                )
+            ) + coupon_message,
+            'success',
+        )
+        return redirect(url_for('billing'))
+
+    coupon_state = _checkout_coupon_state(selected_plan, selected_cycle, coupon_code, user_id=int(user['id']))
+
+    return render_template(
+        'checkout.html',
+        selected_plan=PLAN_LOOKUP[selected_plan],
+        selected_cycle=selected_cycle,
+        coupon_code=str(coupon_state["coupon_code"]),
+        coupon_preview=coupon_state["coupon_preview"],
+        base_amount_cents=int(coupon_state["base_amount_cents"]),
+        final_amount_cents=int(coupon_state["final_amount_cents"]),
+        discount_cents=int(coupon_state["discount_cents"]),
+        total_trial_days=int(coupon_state["base_trial_days"]) + int(coupon_state["extra_trial_days"]),
+        error=str(coupon_state["coupon_error"]) if coupon_state["coupon_code"] and coupon_state["coupon_error"] else None,
+        app_version=APP_VERSION,
+        build_time=APP_BUILD_TIME,
+    )
+
+
+@app.route('/payment', methods=['GET', 'POST'])
+@login_required
+def payment():
+    return checkout()
+
+
+@app.route('/billing')
+@login_required
+def billing():
+    user = _current_user()
+    if user is None:
+        return redirect(url_for('login'))
+    payments = portal_store.list_payments(user_id=int(user['id']), limit=100)
+    return render_template(
+        'billing.html',
+        payments=payments,
+        app_version=APP_VERSION,
+        build_time=APP_BUILD_TIME,
+    )
+
+
+@app.route('/admin')
+@admin_required
+def admin_portal():
+    summary = portal_store.admin_summary()
+    users = portal_store.list_users(limit=200)
+    payments = portal_store.list_payments(limit=200)
+    coupons = portal_store.list_coupons(limit=200)
+    return render_template(
+        'admin.html',
+        summary=summary,
+        users=users,
+        payments=payments,
+        coupons=coupons,
+        app_version=APP_VERSION,
+        build_time=APP_BUILD_TIME,
+    )
+
+
+@app.route('/admin/payments/<int:payment_id>/approve', methods=['POST'])
+@admin_required
+def admin_approve_payment(payment_id: int):
+    payment = portal_store.approve_payment(payment_id)
+    if payment is None:
+        flash('Payment record not found.', 'error')
+    else:
+        flash(f"Payment #{payment_id} marked as paid and subscription activated.", 'success')
+    return redirect(url_for('admin_portal'))
+
+
+@app.route('/admin/users/<int:user_id>/subscription', methods=['POST'])
+@admin_required
+def admin_update_subscription(user_id: int):
+    current_admin = _current_user()
+    existing_user = portal_store.get_user_by_id(user_id)
+    plan_slug = str(request.form.get('plan_slug') or 'free').strip().lower()
+    billing_cycle = str(request.form.get('billing_cycle') or 'monthly').strip().lower()
+    subscription_status = str(request.form.get('subscription_status') or 'trial').strip().lower()
+    is_admin = bool(request.form.get('is_admin'))
+    if plan_slug not in PLAN_LOOKUP:
+        plan_slug = 'free'
+    if billing_cycle not in {'monthly', 'yearly'}:
+        billing_cycle = 'monthly'
+    if subscription_status not in {'trial', 'trialing', 'active', 'pending', 'canceled'}:
+        subscription_status = 'trial'
+    if current_admin and int(current_admin['id']) == int(user_id) and not is_admin:
+        flash('You cannot remove your own admin access from the admin portal.', 'error')
+        return redirect(url_for('admin_portal'))
+    if subscription_status == 'trialing':
+        if (
+            existing_user
+            and str(existing_user.get('subscription_status') or '').lower() == 'trialing'
+            and str(existing_user.get('plan_slug') or '').lower() == plan_slug
+            and existing_user.get('trial_ends_at')
+        ):
+            trial_started_at = existing_user.get('trial_started_at')
+            trial_ends_at = existing_user.get('trial_ends_at')
+        else:
+            trial_started_at, trial_ends_at = portal_store.trial_window_for_plan(plan_slug)
+    else:
+        trial_started_at, trial_ends_at = (None, None)
+    portal_store.update_user_subscription(
+        user_id=user_id,
+        plan_slug=plan_slug,
+        billing_cycle=billing_cycle,
+        subscription_status=subscription_status,
+        trial_started_at=trial_started_at,
+        trial_ends_at=trial_ends_at,
+    )
+    portal_store.update_user_admin(user_id, is_admin)
+    flash('User subscription and role updated.', 'success')
+    return redirect(url_for('admin_portal'))
+
+
+@app.route('/admin/coupons', methods=['POST'])
+@admin_required
+def admin_create_coupon():
+    code = str(request.form.get('code') or '').strip()
+    description = str(request.form.get('description') or '').strip()
+    discount_type = str(request.form.get('discount_type') or 'percent').strip().lower()
+    applies_to_plan = str(request.form.get('applies_to_plan') or '').strip().lower() or None
+    expires_at = str(request.form.get('expires_at') or '').strip() or None
+    max_redemptions_raw = str(request.form.get('max_redemptions') or '').strip()
+    active = bool(request.form.get('active'))
+    try:
+        discount_value = int(request.form.get('discount_value') or 0)
+        if discount_type == 'percent' and not (1 <= discount_value <= 100):
+            raise ValueError('Percent coupons must be between 1 and 100.')
+        if discount_type in {'amount', 'trial_days'} and discount_value < 0:
+            raise ValueError('Discount value must be zero or greater.')
+        portal_store.create_coupon(
+            code=code,
+            description=description,
+            discount_type=discount_type,
+            discount_value=discount_value,
+            applies_to_plan=applies_to_plan,
+            active=active,
+            max_redemptions=int(max_redemptions_raw) if max_redemptions_raw else None,
+            expires_at=expires_at,
+        )
+        flash('Coupon created.', 'success')
+    except sqlite3.IntegrityError:
+        flash('A coupon with that code already exists.', 'error')
+    except ValueError as exc:
+        flash(str(exc), 'error')
+    return redirect(url_for('admin_portal'))
+
+
+@app.route('/admin/coupons/<int:coupon_id>/toggle', methods=['POST'])
+@admin_required
+def admin_toggle_coupon(coupon_id: int):
+    portal_store.set_coupon_active(coupon_id, bool(request.form.get('active')))
+    flash('Coupon status updated.', 'success')
+    return redirect(url_for('admin_portal'))
 
 
 @app.route('/dashboard')

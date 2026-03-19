@@ -34,6 +34,10 @@ training_captures/
 pair_training_examples*/
 *.ckpt.pt
 turbotifflas.ml.pid
+data/turbotifflas_portal.db
+data/turbotifflas_portal.db-*
+data/*.db
+data/*.db-*
 
 # User-uploaded / sample data files
 *.tiff

@@ -1,0 +1,89 @@
+{% extends "portal_base.html" %}
+
+{% block title %}Create Account - TurboTIFFLAS{% endblock %}
+
+{% block page_head %}
+<div class="eyebrow"><i data-lucide="user-plus"></i> Account Setup</div>
+<h1>Create a real TurboTIFFLAS account.</h1>
+<p>
+    Accounts are now stored persistently with hashed passwords, subscription status, and billing history.
+    Paid plans now start with a free first month so you can get into the workspace right away.
+</p>
+{% endblock %}
+
+{% block content %}
+<section class="grid-2" style="padding-bottom: 28px;">
+    <article class="card">
+        <h2 style="margin-bottom: 10px;">Register</h2>
+        <p style="margin-bottom: 22px;">Create your workspace access. If you picked a paid plan, we’ll send you straight to checkout after signup.</p>
+        {% if error %}
+        <div class="flash error" style="margin-bottom: 18px;">{{ error }}</div>
+        {% endif %}
+        <form action="/register" method="POST">
+            <input type="hidden" name="plan" value="{{ selected_plan or 'free' }}">
+
+            <div class="field">
+                <label class="label" for="full_name">Full name</label>
+                <input class="input" id="full_name" name="full_name" type="text" required>
+            </div>
+
+            <div class="field">
+                <label class="label" for="company">Company</label>
+                <input class="input" id="company" name="company" type="text" placeholder="Optional">
+            </div>
+
+            <div class="field">
+                <label class="label" for="email">Email address</label>
+                <input class="input" id="email" name="email" type="email" required>
+            </div>
+
+            <div class="grid-2" style="gap:16px;">
+                <div class="field" style="margin-bottom:0;">
+                    <label class="label" for="password">Password</label>
+                    <input class="input" id="password" name="password" type="password" minlength="8" required>
+                </div>
+                <div class="field" style="margin-bottom:0;">
+                    <label class="label" for="confirm_password">Confirm password</label>
+                    <input class="input" id="confirm_password" name="confirm_password" type="password" minlength="8" required>
+                </div>
+            </div>
+
+            <div style="margin-top: 22px; display:flex; gap:14px; flex-wrap:wrap;">
+                <button class="btn btn-primary" type="submit">Create Account</button>
+                <a class="btn btn-light" href="/login">Already have an account?</a>
+            </div>
+        </form>
+    </article>
+
+    <article class="card">
+        <h2 style="margin-bottom: 10px;">Selected plan</h2>
+        {% set plan = pricing_plans | selectattr('slug', 'equalto', selected_plan or 'free') | list | first %}
+        {% if not plan %}
+            {% set plan = pricing_plans | first %}
+        {% endif %}
+        <div class="status {% if plan.slug == 'free' %}trial{% else %}pending{% endif %}" style="margin-bottom: 16px;">
+            {{ plan.name }}
+        </div>
+        {% if plan.trial_days %}
+        <div class="status trialing" style="margin-bottom: 16px;">First {{ plan.trial_days }} days free</div>
+        {% endif %}
+        <p style="margin-bottom: 16px;">{{ plan.tagline }}</p>
+        <div style="font-size: 2rem; font-weight: 900; margin-bottom: 12px;">{{ plan.monthly_display }}</div>
+        <ul style="list-style:none; padding:0; margin:0; display:grid; gap:12px;">
+            {% for item in plan.limits %}
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+                <i data-lucide="check-circle-2" style="width:18px; height:18px; color: var(--brand-orange-deep); flex:0 0 auto; margin-top:3px;"></i>
+                <span>{{ item }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+        <div class="notice" style="margin-top: 22px;">
+            {% if plan.trial_days %}
+            Paid plans start as trialing subscriptions. You will not be billed during the first {{ plan.trial_days }} days.
+            {% else %}
+            Free plan access starts immediately after registration.
+            {% endif %}
+        </div>
+    </article>
+</section>
+{% endblock %}

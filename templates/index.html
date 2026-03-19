@@ -3,376 +3,850 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TifLAS - Legacy Well Log Conversion</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        primary: {
-                            50: '#f0f9ff',
-                            100: '#e0f2fe',
-                            200: '#bae6fd',
-                            300: '#7dd3fc',
-                            400: '#38bdf8',
-                            500: '#0ea5e9',
-                            600: '#0284c7',
-                            700: '#0369a1',
-                            800: '#075985',
-                            900: '#0c4a6e',
-                        }
-                    }
-                }
-            }
-        }
-    </script>
-    <!-- Lucide Icons -->
+    <title>TurboTIFFLAS - Legacy Well Log Conversion</title>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        .hero-bg {
-            background-color: #0f172a; /* slate-900 */
+        :root {
+            --brand-orange: #f9a533;
+            --brand-orange-deep: #d9541e;
+            --brand-silver: #d9dde0;
+            --brand-silver-deep: #8f979e;
+            --brand-charcoal: #182022;
+            --brand-ink: #1f272b;
+            --brand-cream: #f5f1ea;
+            --brand-panel: #fbfaf7;
+            --brand-shell: linear-gradient(135deg, #263437 0%, #1d2326 45%, #121719 100%);
+            --brand-gradient: linear-gradient(135deg, var(--brand-orange-deep) 0%, var(--brand-orange) 100%);
+            --shadow-soft: 0 18px 45px rgba(9, 11, 12, 0.18);
+            --shadow-strong: 0 28px 70px rgba(0, 0, 0, 0.35);
         }
-        @keyframes scan {
-            0% { top: -10%; }
-            100% { top: 110%; }
+
+        * { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(249, 165, 51, 0.12), transparent 28%),
+                radial-gradient(circle at top right, rgba(217, 221, 224, 0.08), transparent 22%),
+                linear-gradient(180deg, #fbfaf7 0%, #f2eee8 100%);
+            color: var(--brand-ink);
         }
-        @keyframes reveal {
-            0% { clip-path: inset(0% 0 100% 0); }
-            100% { clip-path: inset(0% 0 -20% 0); }
+
+        a { color: inherit; text-decoration: none; }
+
+        .shell {
+            width: min(1180px, calc(100% - 32px));
+            margin: 0 auto;
         }
-        .scanner-bar {
-            animation: scan 6s linear infinite;
-            animation-delay: 0s;
+
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(12px);
+            background: rgba(18, 23, 25, 0.92);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
-        .revealed-layer {
-            animation: reveal 6s linear infinite;
-            animation-delay: 0s;
+
+        .topbar-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            padding: 16px 0;
+        }
+
+        .brand-lockup {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            min-width: 0;
+        }
+
+        .brand-lockup img {
+            height: 44px;
+            width: auto;
+            display: block;
+        }
+
+        .brand-copy {
+            color: rgba(245, 241, 234, 0.82);
+            font-size: 0.95rem;
+            line-height: 1.3;
+        }
+
+        .topnav {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .topnav a.link {
+            color: rgba(245, 241, 234, 0.82);
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .topnav a.link:hover { color: var(--brand-orange); }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            border-radius: 999px;
+            padding: 13px 22px;
+            font-weight: 700;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+        }
+
+        .btn:hover { transform: translateY(-1px); }
+
+        .btn-primary {
+            background: var(--brand-gradient);
+            color: #fff8ef;
+            box-shadow: 0 14px 34px rgba(217, 84, 30, 0.28);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            color: var(--brand-silver);
+        }
+
+        .hero {
+            position: relative;
+            overflow: hidden;
+            background: var(--brand-shell);
+            color: var(--brand-cream);
+        }
+
+        .hero::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+            background-size: 42px 42px;
+            opacity: 0.24;
+            pointer-events: none;
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(circle at 18% 14%, rgba(249, 165, 51, 0.18), transparent 24%),
+                radial-gradient(circle at 78% 18%, rgba(191, 197, 203, 0.12), transparent 18%),
+                radial-gradient(circle at 50% 100%, rgba(249, 165, 51, 0.12), transparent 28%);
+            pointer-events: none;
+        }
+
+        .hero-inner {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+            gap: 42px;
+            align-items: center;
+            padding: 82px 0 70px;
+        }
+
+        .hero-card {
+            background: rgba(19, 26, 28, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 28px;
+            padding: 38px;
+            box-shadow: var(--shadow-strong);
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 14px;
+            border-radius: 999px;
+            background: rgba(249, 165, 51, 0.12);
+            color: var(--brand-orange);
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            font-size: 0.76rem;
+        }
+
+        h1 {
+            margin: 18px 0 0;
+            font-size: clamp(2.7rem, 4.6vw, 5rem);
+            line-height: 0.96;
+            letter-spacing: -0.04em;
+        }
+
+        .hero-copy p {
+            margin: 22px 0 0;
+            max-width: 760px;
+            font-size: 1.14rem;
+            line-height: 1.7;
+            color: rgba(245, 241, 234, 0.84);
+        }
+
+        .hero-actions {
+            margin-top: 30px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+        }
+
+        .hero-meta {
+            margin-top: 28px;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .metric {
+            padding: 16px 18px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .metric strong {
+            display: block;
+            color: var(--brand-orange);
+            font-size: 1.3rem;
+            margin-bottom: 6px;
+        }
+
+        .metric span {
+            color: rgba(245, 241, 234, 0.76);
+            font-size: 0.94rem;
+        }
+
+        .hero-showcase {
+            position: relative;
+            min-height: 520px;
+        }
+
+        .signal-panel,
+        .workflow-panel {
+            position: absolute;
+            border-radius: 28px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: var(--shadow-strong);
+        }
+
+        .signal-panel {
+            inset: 0 0 90px 28px;
+            background:
+                radial-gradient(circle at top, rgba(255, 255, 255, 0.05), transparent 30%),
+                linear-gradient(180deg, rgba(40, 50, 53, 0.98) 0%, rgba(19, 25, 27, 0.98) 100%);
+        }
+
+        .workflow-panel {
+            right: 0;
+            bottom: 0;
+            width: min(320px, 88%);
+            background: rgba(255, 248, 239, 0.98);
+            color: var(--brand-ink);
+        }
+
+        .signal-grid {
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+            background-size: 34px 34px;
+            opacity: 0.45;
+        }
+
+        .signal-art {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .workflow-body { padding: 24px; }
+        .workflow-body h3 { margin: 0 0 8px; font-size: 1.08rem; }
+        .workflow-body p { margin: 0 0 18px; color: #516066; line-height: 1.55; }
+
+        .workflow-list { display: grid; gap: 12px; }
+
+        .workflow-step {
+            display: grid;
+            grid-template-columns: 34px 1fr;
+            gap: 12px;
+            align-items: start;
+        }
+
+        .workflow-step .num {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            color: white;
+            background: var(--brand-gradient);
+            box-shadow: 0 10px 18px rgba(217, 84, 30, 0.2);
+        }
+
+        .section { padding: 78px 0; }
+
+        .section-alt {
+            background: rgba(255, 255, 255, 0.52);
+            border-top: 1px solid rgba(24, 32, 34, 0.06);
+            border-bottom: 1px solid rgba(24, 32, 34, 0.06);
+        }
+
+        .section-head {
+            text-align: center;
+            max-width: 780px;
+            margin: 0 auto 42px;
+        }
+
+        .section-head .kicker {
+            color: var(--brand-orange-deep);
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.11em;
+            font-size: 0.76rem;
+        }
+
+        .section-head h2 {
+            margin: 14px 0 0;
+            font-size: clamp(2rem, 3vw, 3rem);
+            letter-spacing: -0.03em;
+        }
+
+        .section-head p {
+            margin: 14px 0 0;
+            color: #5f6a6e;
+            line-height: 1.75;
+            font-size: 1.05rem;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 30px;
+        }
+
+        .grid-5 {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 16px;
+        }
+
+        .card {
+            background: var(--brand-panel);
+            border-radius: 24px;
+            padding: 28px;
+            border: 1px solid rgba(24, 32, 34, 0.08);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .card-dark {
+            background: linear-gradient(180deg, rgba(34, 44, 47, 0.98) 0%, rgba(22, 29, 31, 0.98) 100%);
+            color: var(--brand-cream);
+            border-color: rgba(255, 255, 255, 0.08);
+        }
+
+        .card h3,
+        .card h4 {
+            margin-top: 0;
+            margin-bottom: 12px;
+        }
+
+        .card p {
+            margin: 0;
+            line-height: 1.72;
+            color: #5d696d;
+        }
+
+        .card-dark p,
+        .card-dark li {
+            color: rgba(245, 241, 234, 0.82);
+        }
+
+        .feature-list,
+        .bullets {
+            margin: 18px 0 0;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 16px;
+        }
+
+        .feature-list li,
+        .bullets li {
+            display: grid;
+            grid-template-columns: 44px 1fr;
+            gap: 14px;
+            align-items: start;
+        }
+
+        .icon-badge {
+            width: 44px;
+            height: 44px;
+            border-radius: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(249, 165, 51, 0.12);
+            color: var(--brand-orange-deep);
+        }
+
+        .step-card {
+            position: relative;
+            padding-top: 54px;
+        }
+
+        .step-card .step-num {
+            position: absolute;
+            top: 18px;
+            left: 18px;
+            font-weight: 900;
+            color: var(--brand-orange);
+            font-size: 0.95rem;
+            letter-spacing: 0.08em;
+        }
+
+        .cta { padding: 70px 0 86px; }
+
+        .cta-box {
+            background: var(--brand-shell);
+            border-radius: 32px;
+            padding: 40px;
+            color: var(--brand-cream);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 26px;
+            box-shadow: var(--shadow-strong);
+        }
+
+        .cta-box p {
+            color: rgba(245, 241, 234, 0.82);
+            margin: 10px 0 0;
+            line-height: 1.7;
+        }
+
+        footer {
+            padding: 24px 0 44px;
+            color: #657074;
+        }
+
+        .footer-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+            border-top: 1px solid rgba(24, 32, 34, 0.08);
+            padding-top: 24px;
+        }
+
+        .footer-brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .footer-brand img {
+            height: 34px;
+            width: auto;
+        }
+
+        @media (max-width: 1080px) {
+            .hero-inner,
+            .grid-2,
+            .grid-5,
+            .cta-box {
+                grid-template-columns: 1fr;
+                display: grid;
+            }
+
+            .hero-showcase { min-height: 420px; }
+            .signal-panel { inset: 0 18px 90px 18px; }
+
+            .workflow-panel {
+                width: calc(100% - 32px);
+                left: 16px;
+            }
+
+            .hero-meta { grid-template-columns: 1fr; }
+        }
+
+        @media (max-width: 760px) {
+            .shell { width: min(100% - 20px, 1180px); }
+
+            .topbar-inner,
+            .footer-inner {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .brand-copy { display: none; }
+
+            .hero-inner {
+                padding: 54px 0 46px;
+                gap: 28px;
+            }
+
+            .hero-card,
+            .card,
+            .cta-box {
+                padding: 24px;
+            }
+
+            .hero-actions,
+            .topnav {
+                width: 100%;
+            }
+
+            .topnav { justify-content: flex-start; }
+            .btn { width: 100%; }
+            .hero-showcase { min-height: 360px; }
+
+            .workflow-panel {
+                position: relative;
+                width: 100%;
+                left: auto;
+                right: auto;
+                bottom: auto;
+                margin-top: 18px;
+            }
+
+            .signal-panel {
+                position: relative;
+                inset: auto;
+                min-height: 240px;
+            }
         }
     </style>
 </head>
-<body class="min-h-screen bg-slate-50">
-
-    <!-- Navigation -->
-    <nav class="bg-white border-b border-slate-200 sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex items-center">
-                    <div class="flex-shrink-0 flex items-center">
-                        <span class="text-2xl font-bold text-primary-700">TifLAS</span>
-                    </div>
-                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
-                        <a href="#overview" class="border-transparent text-slate-500 hover:border-primary-500 hover:text-primary-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
-                            Overview
-                        </a>
-                        <a href="#workflow" class="border-transparent text-slate-500 hover:border-primary-500 hover:text-primary-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
-                            Workflow
-                        </a>
-                        <a href="#advantages" class="border-transparent text-slate-500 hover:border-primary-500 hover:text-primary-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
-                            Advantages
-                        </a>
-                    </div>
-                </div>
-                <div class="flex items-center">
-                    <a href="/login" class="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
-                        Login
-                    </a>
-                </div>
+<body>
+    <nav class="topbar">
+        <div class="shell topbar-inner">
+            <div class="brand-lockup">
+                <img src="{{ url_for('static', filename='tiflas_logo.svg') }}" alt="TurboTIFFLAS">
+                <div class="brand-copy">Legacy log digitization for modern workflows</div>
+            </div>
+            <div class="topnav">
+                <a class="link" href="#overview">Overview</a>
+                <a class="link" href="#workflow">Workflow</a>
+                <a class="link" href="#advantages">Advantages</a>
+                <a class="btn btn-primary" href="/login">Login</a>
             </div>
         </div>
     </nav>
 
-    <!-- Hero Section -->
-    <div class="relative bg-slate-900 overflow-hidden min-h-[600px] flex items-center">
-        <!-- Animated Background (WellLogHero approximation) -->
-        <div class="absolute inset-0 overflow-hidden pointer-events-none select-none bg-slate-900">
-            <!-- Grid Pattern -->
-            <div class="absolute inset-0 opacity-20">
-                <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-                    <defs>
-                        <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" stroke-width="0.5" class="text-slate-500" />
-                        </pattern>
-                    </defs>
-                    <rect width="100%" height="100%" fill="url(#grid)" />
-                </svg>
+    <section class="hero">
+        <div class="shell hero-inner">
+            <div class="hero-copy">
+                <div class="eyebrow">
+                    <i data-lucide="scan-search"></i>
+                    Seismograph Digitization
+                </div>
+                <h1>Turn legacy well log images into structured subsurface data.</h1>
+                <p>
+                    TurboTIFFLAS converts scanned logs into LAS files with track calibration, curve extraction,
+                    AI-assisted tracing, validation, and export tools built for real historical archives.
+                </p>
+                <div class="hero-actions">
+                    <a class="btn btn-primary" href="/login">
+                        Open Workspace
+                        <i data-lucide="arrow-right"></i>
+                    </a>
+                    <a class="btn btn-secondary" href="#workflow">
+                        See Workflow
+                        <i data-lucide="chevrons-down"></i>
+                    </a>
+                </div>
+                <div class="hero-meta">
+                    <div class="metric">
+                        <strong>TIFF to LAS</strong>
+                        <span>Convert archived raster logs into usable digital curves.</span>
+                    </div>
+                    <div class="metric">
+                        <strong>AI + CV</strong>
+                        <span>Blend classical tracing with model-assisted segmentation.</span>
+                    </div>
+                    <div class="metric">
+                        <strong>Operator-in-loop</strong>
+                        <span>Review, correct, and save hard cases for retraining.</span>
+                    </div>
+                </div>
             </div>
 
-            <!-- Track Dividers -->
-            <div class="absolute inset-0 flex justify-around opacity-20 border-slate-500">
-                <div class="border-r border-slate-500 h-full w-1/4"></div>
-                <div class="border-r border-slate-500 h-full w-1/4"></div>
-                <div class="border-r border-slate-500 h-full w-1/4"></div>
-            </div>
-
-            <div class="relative w-full h-full">
-                <!-- Layer 1: Raw / Faded Curves -->
-                <svg class="absolute inset-0 w-full h-full opacity-30" viewBox="0 0 400 600" preserveAspectRatio="none">
-                    <path d="M 50,0 Q 90,30 50,60 T 20,120 T 80,180 T 30,240 T 70,300 T 20,360 T 80,420 T 40,480 T 70,540 T 50,600" fill="none" stroke="currentColor" stroke-width="2" class="text-slate-600" style="filter: blur(1px);" />
-                    <path d="M 350,0 Q 390,40 350,80 T 310,140 T 380,200 T 320,260 T 370,320 T 330,380 T 390,440 T 340,500 T 360,560 T 350,600" fill="none" stroke="currentColor" stroke-width="2" class="text-slate-600" style="filter: blur(1px);" />
-                    <path d="M 150,0 Q 120,50 180,100 T 250,180 T 140,260 T 220,340 T 160,420 T 240,500 T 180,560 T 200,600" fill="none" stroke="currentColor" stroke-width="2" class="text-slate-600" style="filter: blur(1px);" />
-                </svg>
-
-                <!-- Scanner Animation Container -->
-                <div class="absolute inset-0 w-full h-full revealed-layer">
-                    <!-- Layer 2: Digitized / Clean Curves -->
-                    <svg class="absolute inset-0 w-full h-full" viewBox="0 0 400 600" preserveAspectRatio="none">
-                        <path d="M 50,0 Q 90,30 50,60 T 20,120 T 80,180 T 30,240 T 70,300 T 20,360 T 80,420 T 40,480 T 70,540 T 50,600" fill="none" stroke="currentColor" stroke-width="3" class="text-green-400 drop-shadow-[0_0_3px_rgba(74,222,128,0.5)]" />
-                        <path d="M 350,0 Q 390,40 350,80 T 310,140 T 380,200 T 320,260 T 370,320 T 330,380 T 390,440 T 340,500 T 360,560 T 350,600" fill="none" stroke="currentColor" stroke-width="3" class="text-sky-400 drop-shadow-[0_0_3px_rgba(56,189,248,0.5)]" />
-                        <path d="M 150,0 Q 120,50 180,100 T 250,180 T 140,260 T 220,340 T 160,420 T 240,500 T 180,560 T 200,600" fill="none" stroke="currentColor" stroke-width="3" class="text-orange-400 drop-shadow-[0_0_3px_rgba(251,146,60,0.5)]" />
+            <div class="hero-showcase">
+                <div class="signal-panel">
+                    <div class="signal-grid"></div>
+                    <svg class="signal-art" viewBox="0 0 640 520" preserveAspectRatio="none" aria-hidden="true">
+                        <path d="M 105 0 L 105 520 M 255 0 L 255 520 M 405 0 L 405 520 M 535 0 L 535 520" stroke="rgba(255,255,255,0.1)" stroke-width="2"></path>
+                        <path d="M 0 72 H 640 M 0 146 H 640 M 0 220 H 640 M 0 294 H 640 M 0 368 H 640 M 0 442 H 640" stroke="rgba(255,255,255,0.08)" stroke-width="1"></path>
+                        <path d="M 90 0 C 130 44, 52 76, 98 116 S 148 190, 74 238 S 134 308, 92 356 S 156 430, 84 520" fill="none" stroke="#37d652" stroke-width="5"></path>
+                        <path d="M 530 0 C 500 56, 572 82, 518 138 S 562 228, 496 286 S 562 360, 512 420 S 566 486, 526 520" fill="none" stroke="#f9a533" stroke-width="5"></path>
+                        <path d="M 318 0 C 278 40, 344 82, 286 130 S 348 214, 294 262 S 344 346, 282 392 S 350 470, 305 520" fill="none" stroke="#d9dde0" stroke-width="5"></path>
+                        <path d="M 111 0 C 148 46, 69 76, 106 116 S 150 189, 83 237 S 142 310, 101 357 S 165 430, 96 520" fill="none" stroke="#ff5f70" stroke-width="3.5" opacity="0.85"></path>
                     </svg>
                 </div>
-
-                <!-- The Glowing Scanner Bar -->
-                <div class="absolute left-0 right-0 h-16 bg-gradient-to-b from-transparent via-primary-500/20 to-primary-500/5 scanner-bar"
-                    style="box-shadow: 0 4px 20px -2px rgba(14, 165, 233, 0.5);">
-                    <div class="absolute bottom-0 left-0 right-0 h-[2px] bg-primary-400 shadow-[0_0_15px_rgba(56,189,248,1)]"></div>
+                <div class="workflow-panel">
+                    <div class="workflow-body">
+                        <h3>Processing Pipeline</h3>
+                        <p>From scanned image to validated LAS with room for operator correction and model retraining.</p>
+                        <div class="workflow-list">
+                            <div class="workflow-step">
+                                <div class="num">1</div>
+                                <div>
+                                    <strong>Calibrate tracks</strong>
+                                    <p>Define depth and scale so each curve can be interpreted numerically.</p>
+                                </div>
+                            </div>
+                            <div class="workflow-step">
+                                <div class="num">2</div>
+                                <div>
+                                    <strong>Trace curves</strong>
+                                    <p>Use classical CV and ML-assisted curve following to recover signal.</p>
+                                </div>
+                            </div>
+                            <div class="workflow-step">
+                                <div class="num">3</div>
+                                <div>
+                                    <strong>Review and export</strong>
+                                    <p>Adjust hard segments, validate output, and save as LAS or training captures.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
-            
-            <!-- Overlay to fade out bottom/top edges -->
-            <div class="absolute inset-0 bg-gradient-to-b from-slate-900/80 via-transparent to-slate-900/80 pointer-events-none"></div>
         </div>
-        
-        <!-- Content Overlay -->
-        <div class="relative max-w-7xl mx-auto py-24 px-4 sm:py-32 sm:px-6 lg:px-8 z-10">
-            <div class="bg-slate-900/60 backdrop-blur-sm p-8 rounded-2xl border border-slate-700/50 shadow-2xl max-w-4xl">
-                <h1 class="text-4xl font-extrabold tracking-tight text-white sm:text-5xl lg:text-6xl">
-                    Converting Legacy Well Log Images into <span class="text-primary-400">Structured Subsurface Data</span>
-                </h1>
-                <p class="mt-6 text-xl text-slate-200 max-w-3xl">
-                    TifLAS is a software platform designed to convert scanned well log images into structured LAS files that can be used in modern subsurface analysis workflows.
+    </section>
+
+    <section id="overview" class="section">
+        <div class="shell">
+            <div class="section-head">
+                <div class="kicker">Unlock Historical Data</div>
+                <h2>Recover the value trapped in scanned well log archives.</h2>
+                <p>
+                    Millions of historic logs still live as TIFFs, PDFs, and scans. TurboTIFFLAS turns them back into structured
+                    digital assets that can be searched, modeled, compared, and reused.
                 </p>
-                <div class="mt-10">
-                    <a href="/login" class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-slate-900 bg-primary-400 hover:bg-primary-500 transition-colors shadow-lg shadow-primary-500/20">
-                        Get Started <i data-lucide="arrow-right" class="ml-2 h-5 w-5"></i>
+            </div>
+            <div class="grid-2">
+                <div class="card">
+                    <h3>The technical problem</h3>
+                    <p>
+                        Legacy logs store measurements as plotted curves against depth. That makes them visually rich but numerically
+                        locked, especially when they come from paper scans, microfilm, or degraded archive images.
+                    </p>
+                    <ul class="feature-list">
+                        <li>
+                            <div class="icon-badge"><i data-lucide="lock"></i></div>
+                            <div>
+                                <strong>Data lock-in</strong>
+                                <p>Graphical curves cannot be directly used in petrophysical software or reservoir workflows.</p>
+                            </div>
+                        </li>
+                        <li>
+                            <div class="icon-badge"><i data-lucide="pen-tool"></i></div>
+                            <div>
+                                <strong>Manual digitization is slow</strong>
+                                <p>Traditional trace recovery can take hours per log and still drift on difficult tracks.</p>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+                <div class="card card-dark">
+                    <h3>The TurboTIFFLAS approach</h3>
+                    <p>
+                        Use computer vision, calibration tools, and operator review to recover curve data, reconstruct depth,
+                        validate LAS output, and feed hard segments back into training.
+                    </p>
+                    <ul class="bullets">
+                        <li>
+                            <div class="icon-badge"><i data-lucide="check-circle-2"></i></div>
+                            <div>
+                                <strong>LAS-ready output</strong>
+                                <p>Generate structured files for downstream interpretation and analysis tools.</p>
+                            </div>
+                        </li>
+                        <li>
+                            <div class="icon-badge"><i data-lucide="check-circle-2"></i></div>
+                            <div>
+                                <strong>Human-in-the-loop correction</strong>
+                                <p>Review bad segments, save corrected captures, and use them to improve future tracing.</p>
+                            </div>
+                        </li>
+                        <li>
+                            <div class="icon-badge"><i data-lucide="check-circle-2"></i></div>
+                            <div>
+                                <strong>Archive-scale potential</strong>
+                                <p>Turn large legacy collections into reusable digital datasets instead of static images.</p>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="workflow" class="section section-alt">
+        <div class="shell">
+            <div class="section-head">
+                <div class="kicker">Workflow</div>
+                <h2>Five stages from scan to standardized output.</h2>
+                <p>
+                    The pipeline combines calibration, image cleanup, curve tracing, operator review, and structured export so hard cases
+                    can be handled without losing throughput.
+                </p>
+            </div>
+            <div class="grid-5">
+                <div class="card step-card">
+                    <div class="step-num">01</div>
+                    <h3>Image preprocessing</h3>
+                    <p>Deskew, normalize contrast, suppress grid artifacts, and isolate the active tracks.</p>
+                </div>
+                <div class="card step-card">
+                    <div class="step-num">02</div>
+                    <h3>Depth scale detection</h3>
+                    <p>Recover track boundaries, depth markers, and usable calibration points.</p>
+                </div>
+                <div class="card step-card">
+                    <div class="step-num">03</div>
+                    <h3>Curve tracing</h3>
+                    <p>Run classical and ML-assisted tracing modes to follow the signal through noisy scans.</p>
+                </div>
+                <div class="card step-card">
+                    <div class="step-num">04</div>
+                    <h3>Review and correction</h3>
+                    <p>Inspect difficult shoulders, shelves, and gaps, then save corrected segments for retraining.</p>
+                </div>
+                <div class="card step-card">
+                    <div class="step-num">05</div>
+                    <h3>LAS reconstruction</h3>
+                    <p>Validate output, assemble standardized curves, and export for modern interpretation tools.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="advantages" class="section">
+        <div class="shell">
+            <div class="section-head">
+                <div class="kicker">Why It Matters</div>
+                <h2>Built for archive recovery, not toy demos.</h2>
+                <p>
+                    The real value is not just tracing one curve. It is building a repeatable workflow that can recover large historical
+                    collections and get better as operators correct the hard cases.
+                </p>
+            </div>
+            <div class="grid-2">
+                <div class="card">
+                    <h3>Key advantages</h3>
+                    <ul class="feature-list">
+                        <li>
+                            <div class="icon-badge"><i data-lucide="database"></i></div>
+                            <div>
+                                <strong>Recover value from legacy archives</strong>
+                                <p>Bring old image-based logs back into active technical workflows.</p>
+                            </div>
+                        </li>
+                        <li>
+                            <div class="icon-badge"><i data-lucide="cpu"></i></div>
+                            <div>
+                                <strong>Reduce manual labor</strong>
+                                <p>Automate most of the work while preserving room for targeted human correction.</p>
+                            </div>
+                        </li>
+                        <li>
+                            <div class="icon-badge"><i data-lucide="trending-up"></i></div>
+                            <div>
+                                <strong>Improve over time</strong>
+                                <p>Bad black segments can become saved training examples instead of recurring failures.</p>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3>System architecture</h3>
+                    <p>
+                        TurboTIFFLAS combines image preprocessing, probability-map generation, track-aware tracing,
+                        operator editing, and LAS validation in one workflow.
+                    </p>
+                    <ul class="bullets">
+                        <li>
+                            <div class="icon-badge"><i data-lucide="layers-3"></i></div>
+                            <div>
+                                <strong>Computer vision foundation</strong>
+                                <p>Grid rejection, contrast handling, calibration, and track geometry recovery.</p>
+                            </div>
+                        </li>
+                        <li>
+                            <div class="icon-badge"><i data-lucide="brain-circuit"></i></div>
+                            <div>
+                                <strong>Model-assisted tracing</strong>
+                                <p>ML helps on hard curves while corrections feed future black-model improvements.</p>
+                            </div>
+                        </li>
+                        <li>
+                            <div class="icon-badge"><i data-lucide="file-check-2"></i></div>
+                            <div>
+                                <strong>Validation and export</strong>
+                                <p>Deliver clean LAS files ready for interpretation software and downstream databases.</p>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="cta">
+        <div class="shell">
+            <div class="cta-box">
+                <div>
+                    <div class="kicker">Ready to Start?</div>
+                    <h2 style="margin: 12px 0 0; font-size: clamp(1.9rem, 3vw, 2.7rem);">Open the workspace and start digitizing.</h2>
+                    <p>
+                        Log in to calibrate tracks, review difficult curves, export LAS files, and save corrected black segments
+                        for future model training.
+                    </p>
+                </div>
+                <div style="display:flex; gap:14px; flex-wrap:wrap;">
+                    <a class="btn btn-primary" href="/login">
+                        Go to Login
+                        <i data-lucide="log-in"></i>
+                    </a>
+                    <a class="btn btn-secondary" href="#overview">
+                        Learn More
+                        <i data-lucide="arrow-up-right"></i>
                     </a>
                 </div>
             </div>
         </div>
-    </div>
+    </section>
 
-    <!-- Problem & Solution -->
-    <div id="overview" class="py-16 bg-white overflow-hidden lg:py-24">
-        <div class="relative max-w-xl mx-auto px-4 sm:px-6 lg:px-8 lg:max-w-7xl">
-            <div class="relative">
-                <h2 class="text-center text-3xl leading-8 font-extrabold tracking-tight text-slate-900 sm:text-4xl">
-                    Unlock Historical Data
-                </h2>
-                <p class="mt-4 max-w-3xl mx-auto text-center text-xl text-slate-500">
-                    Millions of historic well logs exist only as scanned images. TifLAS addresses this problem by automatically extracting curve data, depth information, and track structure.
-                </p>
-            </div>
-
-            <div class="relative mt-12 lg:mt-24 lg:grid lg:grid-cols-2 lg:gap-8 lg:items-center">
-                <div class="relative">
-                    <h3 class="text-2xl font-extrabold text-slate-900 tracking-tight">
-                        The Technical Problem
-                    </h3>
-                    <p class="mt-3 text-lg text-slate-500">
-                        Legacy logs stored as Paper, Microfilm, or Scanned images (TIFF, PNG, PDF) cannot be directly used by petrophysical software.
-                    </p>
-
-                    <dl class="mt-10 space-y-10">
-                        <div class="relative">
-                            <dt>
-                                <div class="absolute flex items-center justify-center h-12 w-12 rounded-md bg-primary-500 text-white">
-                                    <i data-lucide="lock" class="h-6 w-6"></i>
-                                </div>
-                                <p class="ml-16 text-lg leading-6 font-medium text-slate-900">Data Lock-in</p>
-                            </dt>
-                            <dd class="mt-2 ml-16 text-base text-slate-500">
-                                Data exists only as graphical curves plotted against depth, making it inaccessible for numerical analysis.
-                            </dd>
-                        </div>
-                        <div class="relative">
-                            <dt>
-                                <div class="absolute flex items-center justify-center h-12 w-12 rounded-md bg-primary-500 text-white">
-                                    <i data-lucide="bar-chart" class="h-6 w-6"></i>
-                                </div>
-                                <p class="ml-16 text-lg leading-6 font-medium text-slate-900">Manual Digitization</p>
-                            </dt>
-                            <dd class="mt-2 ml-16 text-base text-slate-500">
-                                Traditional recovery requires manual curve tracing, taking hours per log and remaining expensive.
-                            </dd>
-                        </div>
-                    </dl>
-                </div>
-
-                <div class="mt-10 -mx-4 relative lg:mt-0" aria-hidden="true">
-                    <div class="relative bg-slate-100 rounded-xl shadow-xl p-8 border border-slate-200">
-                        <h3 class="text-2xl font-extrabold text-slate-900 tracking-tight mb-4">
-                            The TifLAS Solution
-                        </h3>
-                        <p class="text-lg text-slate-600 mb-6">
-                            Using computer vision and data reconstruction techniques, TifLAS transforms scanned well log images into structured digital datasets.
-                        </p>
-                        <ul class="space-y-4">
-                            <li class="flex items-start">
-                                <i data-lucide="check-circle" class="flex-shrink-0 h-6 w-6 text-green-500"></i>
-                                <span class="ml-3 text-base text-slate-500">Petrophysical interpretation software compatible</span>
-                            </li>
-                            <li class="flex items-start">
-                                <i data-lucide="check-circle" class="flex-shrink-0 h-6 w-6 text-green-500"></i>
-                                <span class="ml-3 text-base text-slate-500">Reservoir modeling systems ready</span>
-                            </li>
-                            <li class="flex items-start">
-                                <i data-lucide="check-circle" class="flex-shrink-0 h-6 w-6 text-green-500"></i>
-                                <span class="ml-3 text-base text-slate-500">Geological data platforms integration</span>
-                            </li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Workflow Section -->
-    <div id="workflow" class="py-16 bg-slate-50 overflow-hidden lg:py-24">
-        <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="relative">
-                <h2 class="text-center text-3xl leading-8 font-extrabold tracking-tight text-slate-900 sm:text-4xl">
-                    Technical Workflow
-                </h2>
-                <p class="mt-4 max-w-3xl mx-auto text-center text-xl text-slate-500">
-                    The TifLAS processing pipeline consists of several advanced stages to ensure accuracy.
-                </p>
-            </div>
-
-            <div class="mt-12 relative">
-                <div class="grid grid-cols-1 gap-8 md:grid-cols-5">
-                    <!-- Step 1 -->
-                    <div class="relative bg-white p-6 rounded-lg shadow-md border-t-4 border-primary-500">
-                        <h3 class="text-lg font-bold text-slate-900 mb-2">1. Image Preprocessing</h3>
-                        <p class="text-sm text-slate-600">De-skewing, contrast normalization, and grid detection.</p>
-                    </div>
-                    <!-- Step 2 -->
-                    <div class="relative bg-white p-6 rounded-lg shadow-md border-t-4 border-primary-500">
-                        <h3 class="text-lg font-bold text-slate-900 mb-2">2. Depth Scale Detection</h3>
-                        <p class="text-sm text-slate-600">Reconstructing the depth scale from markers and grid lines.</p>
-                    </div>
-                    <!-- Step 3 -->
-                    <div class="relative bg-white p-6 rounded-lg shadow-md border-t-4 border-primary-500">
-                        <h3 class="text-lg font-bold text-slate-900 mb-2">3. Curve Detection</h3>
-                        <p class="text-sm text-slate-600">Identifying and isolating plotted curves using CV.</p>
-                    </div>
-                    <!-- Step 4 -->
-                    <div class="relative bg-white p-6 rounded-lg shadow-md border-t-4 border-primary-500">
-                        <h3 class="text-lg font-bold text-slate-900 mb-2">4. Curve Digitization</h3>
-                        <p class="text-sm text-slate-600">Sampling and translating curves into numerical values.</p>
-                    </div>
-                    <!-- Step 5 -->
-                    <div class="relative bg-white p-6 rounded-lg shadow-md border-t-4 border-primary-500">
-                        <h3 class="text-lg font-bold text-slate-900 mb-2">5. LAS Reconstruction</h3>
-                        <p class="text-sm text-slate-600">Structuring extracted data into standard LAS files.</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Architecture & Advantages -->
-    <div id="advantages" class="py-16 bg-white overflow-hidden lg:py-24">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="lg:text-center mb-16">
-                <h2 class="text-base text-primary-600 font-semibold tracking-wide uppercase">Why TifLAS?</h2>
-                <p class="mt-2 text-3xl leading-8 font-extrabold tracking-tight text-slate-900 sm:text-4xl">
-                    Key Advantages & Market Opportunity
-                </p>
-            </div>
-
-            <div class="grid grid-cols-1 gap-12 lg:grid-cols-2">
+    <footer>
+        <div class="shell footer-inner">
+            <div class="footer-brand">
+                <img src="{{ url_for('static', filename='tiflas_logo.svg') }}" alt="TurboTIFFLAS">
                 <div>
-                    <h3 class="text-2xl font-bold text-slate-900 mb-6">Key Advantages</h3>
-                    <div class="space-y-8">
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-12 w-12 rounded-md bg-primary-100 text-primary-600">
-                                    <i data-lucide="database" class="h-6 w-6"></i>
-                                </div>
-                            </div>
-                            <div class="ml-4">
-                                <h4 class="text-lg leading-6 font-medium text-slate-900">Recover Value from Legacy Data</h4>
-                                <p class="mt-2 text-base text-slate-500">
-                                    Make large archives of historical well logs usable again in modern digital workflows.
-                                </p>
-                            </div>
-                        </div>
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-12 w-12 rounded-md bg-primary-100 text-primary-600">
-                                    <i data-lucide="cpu" class="h-6 w-6"></i>
-                                </div>
-                            </div>
-                            <div class="ml-4">
-                                <h4 class="text-lg leading-6 font-medium text-slate-900">Reduce Manual Digitization</h4>
-                                <p class="mt-2 text-base text-slate-500">
-                                    Automated curve extraction significantly reduces the labor required to digitize logs.
-                                </p>
-                            </div>
-                        </div>
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-12 w-12 rounded-md bg-primary-100 text-primary-600">
-                                    <i data-lucide="globe" class="h-6 w-6"></i>
-                                </div>
-                            </div>
-                            <div class="ml-4">
-                                <h4 class="text-lg leading-6 font-medium text-slate-900">Improve Data Accessibility</h4>
-                                <p class="mt-2 text-base text-slate-500">
-                                    Structured LAS files can be indexed, searched, and integrated into geological databases.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="bg-slate-50 p-8 rounded-xl border border-slate-200">
-                    <h3 class="text-2xl font-bold text-slate-900 mb-6">System Architecture</h3>
-                    <p class="text-slate-600 mb-6">
-                        TifLAS is designed as a modular processing pipeline that integrates several technologies:
-                    </p>
-                    <ul class="space-y-3 mb-8">
-                        <li class="flex items-center text-slate-700">
-                            <i data-lucide="layers" class="h-5 w-5 mr-3 text-primary-500"></i>
-                            Image processing algorithms
-                        </li>
-                        <li class="flex items-center text-slate-700">
-                            <i data-lucide="layers" class="h-5 w-5 mr-3 text-primary-500"></i>
-                            Computer vision for curve detection
-                        </li>
-                        <li class="flex items-center text-slate-700">
-                            <i data-lucide="layers" class="h-5 w-5 mr-3 text-primary-500"></i>
-                            Data reconstruction and scaling
-                        </li>
-                        <li class="flex items-center text-slate-700">
-                            <i data-lucide="layers" class="h-5 w-5 mr-3 text-primary-500"></i>
-                            LAS file generation and validation
-                        </li>
-                    </ul>
-                    
-                    <div class="border-t border-slate-200 pt-6">
-                        <h4 class="text-lg font-bold text-slate-900 mb-2">Market Opportunity</h4>
-                        <p class="text-slate-600">
-                            Oil and gas companies possess vast archives of legacy log images. Digitizing this data represents a major opportunity to unlock previously inaccessible subsurface information and improve reservoir understanding without drilling new wells.
-                        </p>
-                    </div>
+                    <div style="font-weight: 700; color: var(--brand-ink);">TurboTIFFLAS</div>
+                    <div style="font-size: 0.92rem;">Build {{ app_version }} · {{ build_time }}</div>
                 </div>
             </div>
-        </div>
-    </div>
-
-    <!-- Footer -->
-    <footer class="bg-slate-900">
-        <div class="max-w-7xl mx-auto py-12 px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between items-center">
-                <div class="flex items-center">
-                    <span class="text-2xl font-bold text-white">TifLAS</span>
-                </div>
-                <p class="text-slate-400 text-sm">
-                    &copy; 2024 TifLAS. All rights reserved.
-                </p>
-            </div>
+            <div>&copy; 2026 TurboTIFFLAS. All rights reserved.</div>
         </div>
     </footer>
 

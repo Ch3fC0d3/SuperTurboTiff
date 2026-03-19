@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 280" role="img" aria-labelledby="title desc">
+  <title id="title">TIFLAS Seismograph Digitalization</title>
+  <desc id="desc">TIFLAS wordmark with orange and silver waveform lines and subtitle.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000000" flood-opacity="0.18"/>
+    </filter>
+    <linearGradient id="tifGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff7d2c"/>
+      <stop offset="100%" stop-color="#d74f1e"/>
+    </linearGradient>
+    <linearGradient id="lasGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f4f5f6"/>
+      <stop offset="50%" stop-color="#d4d8dc"/>
+      <stop offset="100%" stop-color="#8b949b"/>
+    </linearGradient>
+  </defs>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120 90 C 165 280, 250 -35, 305 90 S 440 215, 495 90 S 630 -35, 685 90 S 820 215, 875 90 S 925 90, 950 90"
+          stroke="#F7A937" stroke-width="8" filter="url(#shadow)"/>
+    <path d="M120 90 C 165 135, 210 135, 255 90 S 345 45, 390 90 S 480 135, 525 90 S 615 45, 660 90 S 750 135, 795 90 S 885 45, 930 90"
+          stroke="#bfc5cb" stroke-width="7"/>
+    <path d="M120 90 H 950" stroke="#bfc5cb" stroke-width="8"/>
+  </g>
+
+  <g font-family="Arial, Helvetica, sans-serif" font-weight="900">
+    <text x="140" y="205" font-size="126" fill="url(#tifGrad)" letter-spacing="2">TIF</text>
+    <text x="395" y="205" font-size="126" fill="url(#lasGrad)" letter-spacing="2">LAS</text>
+  </g>
+
+  <text x="470" y="255"
+        text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="56"
+        font-weight="500"
+        fill="#F7A937"
+        stroke="#4c5259"
+        stroke-width="1.5">
+    Seismograph Digitalization
+  </text>
+</svg>

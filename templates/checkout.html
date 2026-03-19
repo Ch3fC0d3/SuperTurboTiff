@@ -1,0 +1,105 @@
+{% extends "portal_base.html" %}
+
+{% block title %}Checkout - TurboTIFFLAS{% endblock %}
+
+{% block page_head %}
+<div class="eyebrow"><i data-lucide="credit-card"></i> Checkout</div>
+<h1>Activate {{ selected_plan.name }}.</h1>
+<p>
+    Review the plan, choose a billing cycle, and create a payment record for your account.
+    {% if selected_plan.trial_days %}
+    The first {{ selected_plan.trial_days }} days are free, so no charge happens today.
+    {% elif billing_mode == 'sandbox' %}
+    This environment uses sandbox billing, so activation happens immediately.
+    {% else %}
+    This environment uses manual billing, so checkout creates a pending record for admin approval.
+    {% endif %}
+</p>
+{% endblock %}
+
+{% block content %}
+<section class="grid-2" style="padding-bottom: 28px;">
+    <article class="card">
+        <h2 style="margin-bottom: 18px;">Billing selection</h2>
+        {% if error %}
+        <div class="status pending" style="margin-bottom: 16px; border-color: rgba(216, 60, 56, 0.35); color: #b42318;">{{ error }}</div>
+        {% endif %}
+        <form method="POST" action="/checkout">
+            <input type="hidden" name="plan" value="{{ selected_plan.slug }}">
+
+            <div class="field">
+                <label class="label" for="billing_cycle">Billing cycle</label>
+                <select class="select" id="billing_cycle" name="billing_cycle">
+                    <option value="monthly" {% if selected_cycle == 'monthly' %}selected{% endif %}>Monthly · {{ selected_plan.monthly_display }}</option>
+                    <option value="yearly" {% if selected_cycle == 'yearly' %}selected{% endif %}>Yearly · {{ selected_plan.yearly_display }}</option>
+                </select>
+            </div>
+
+            <div class="field">
+                <label class="label" for="coupon_code">Coupon code</label>
+                <input class="input" id="coupon_code" name="coupon_code" type="text" value="{{ coupon_code or '' }}" placeholder="Optional code for discounts or extra trial days">
+                <div class="hint">Coupon codes are validated when you submit checkout.</div>
+            </div>
+
+            <div class="field">
+                <label class="label" for="note">Billing note</label>
+                <textarea class="textarea" id="note" rows="4" placeholder="Optional internal note for this checkout" disabled>{% if selected_plan.trial_days %}This checkout records billing after a free {{ selected_plan.trial_days }}-day trial.{% elif billing_mode == 'sandbox' %}Sandbox checkout will create an active subscription immediately.{% else %}Manual billing mode will create a pending request for approval.{% endif %}</textarea>
+            </div>
+
+            <div style="display:flex; gap:14px; flex-wrap:wrap;">
+                <button class="btn btn-primary" type="submit">
+                    {% if selected_plan.trial_days %}Start Free Trial{% elif billing_mode == 'sandbox' %}Complete Sandbox Checkout{% else %}Submit Billing Request{% endif %}
+                </button>
+                <a class="btn btn-light" href="/pricing">Back to Pricing</a>
+            </div>
+        </form>
+    </article>
+
+    <article class="card">
+        <h2 style="margin-bottom: 18px;">Order summary</h2>
+        <div class="status pending" style="margin-bottom: 16px;">{{ selected_plan.name }}</div>
+        {% if total_trial_days %}
+        <div class="status trialing" style="margin-bottom: 16px;">First {{ total_trial_days }} days free</div>
+        {% endif %}
+        <p style="margin-bottom: 18px;">{{ selected_plan.tagline }}</p>
+        <div style="display:grid; gap:12px; margin-bottom: 18px;">
+            <div style="display:flex; justify-content:space-between; gap:14px;">
+                <span style="color:#7a8386;">Base price</span>
+                <strong>${{ '%.2f'|format((base_amount_cents or 0) / 100) }}</strong>
+            </div>
+            {% if discount_cents %}
+            <div style="display:flex; justify-content:space-between; gap:14px;">
+                <span style="color:#7a8386;">Discount</span>
+                <strong style="color: var(--brand-orange-deep);">- ${{ '%.2f'|format((discount_cents or 0) / 100) }}</strong>
+            </div>
+            {% endif %}
+            {% if coupon_preview %}
+            <div style="display:flex; justify-content:space-between; gap:14px;">
+                <span style="color:#7a8386;">Coupon</span>
+                <strong>{{ coupon_preview.code }}</strong>
+            </div>
+            <div class="hint">
+                {{ coupon_type_label(coupon_preview.discount_type) }}
+                {% if coupon_preview.discount_type == 'percent' %}
+                · {{ coupon_preview.discount_value }}% off
+                {% elif coupon_preview.discount_type == 'amount' %}
+                · ${{ '%.2f'|format((coupon_preview.discount_value or 0) / 100) }} off
+                {% elif coupon_preview.discount_type == 'trial_days' %}
+                · {{ coupon_preview.discount_value }} extra days
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+        <div style="font-size: 2.2rem; font-weight: 900; margin-bottom: 8px;">${{ '%.2f'|format((final_amount_cents or 0) / 100) }}</div>
+        <div style="color:#7a8386; margin-bottom: 18px;">Yearly option: {{ selected_plan.yearly_display }}</div>
+        <ul style="list-style:none; padding:0; margin:0; display:grid; gap:12px;">
+            {% for item in selected_plan.limits %}
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+                <i data-lucide="check-circle-2" style="width:18px; height:18px; color: var(--brand-orange-deep); flex:0 0 auto; margin-top:3px;"></i>
+                <span>{{ item }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </article>
+</section>
+{% endblock %}
